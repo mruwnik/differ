@@ -1,0 +1,724 @@
+/* Base styles */
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  color: #24292e;
+  background: #fff;
+}
+
+a {
+  color: #0366d6;
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+/* Layout */
+.app-container {
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 20px;
+}
+
+.loading {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  height: 100vh;
+  color: #6a737d;
+}
+
+/* Header */
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 0;
+  border-bottom: 1px solid #e1e4e8;
+  margin-bottom: 20px;
+}
+
+.header h1 {
+  margin: 0;
+  font-size: 24px;
+  font-weight: 600;
+}
+
+/* Session list */
+.session-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.session-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px;
+  border: 1px solid #e1e4e8;
+  border-radius: 6px;
+  margin-bottom: 8px;
+  transition: border-color 0.2s;
+}
+
+.session-item:hover {
+  border-color: #0366d6;
+}
+
+.session-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.session-project {
+  font-weight: 600;
+}
+
+.session-branch {
+  color: #6a737d;
+  font-size: 13px;
+}
+
+.session-badge {
+  background: #ffd33d;
+  color: #24292e;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.session-badge.zero {
+  background: #28a745;
+  color: white;
+}
+
+/* Diff view mode toggle */
+.diff-view-toggle {
+  display: flex;
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.btn-toggle {
+  padding: 4px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  background: #f6f8fa;
+  border: none;
+  border-right: 1px solid #d0d7de;
+  cursor: pointer;
+  color: #57606a;
+  transition: all 0.15s;
+}
+
+.btn-toggle:last-child {
+  border-right: none;
+}
+
+.btn-toggle:hover {
+  background: #eaeef2;
+}
+
+.btn-toggle.active {
+  background: #0969da;
+  color: white;
+}
+
+/* Diff viewer */
+.diff-container {
+  display: flex;
+  gap: 20px;
+  height: calc(100vh - 180px);
+}
+
+.file-list {
+  width: 280px;
+  flex-shrink: 0;
+  overflow-y: auto;
+  position: sticky;
+  top: 0;
+  align-self: flex-start;
+  max-height: calc(100vh - 200px);
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  padding: 12px;
+  background: #fff;
+}
+
+.file-list h3 {
+  margin: 0 0 12px 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: #57606a;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* File tree */
+.file-tree {
+  font-size: 13px;
+}
+
+.tree-folder-header,
+.tree-file {
+  display: flex;
+  align-items: center;
+  padding: 4px 8px;
+  cursor: pointer;
+  border-radius: 6px;
+  gap: 4px;
+}
+
+.tree-folder-header:hover,
+.tree-file:hover {
+  background: #f6f8fa;
+}
+
+.tree-file.active {
+  background: #ddf4ff;
+  color: #0969da;
+}
+
+.tree-indent {
+  display: inline-block;
+  flex-shrink: 0;
+}
+
+.tree-chevron {
+  font-size: 10px;
+  width: 12px;
+  color: #57606a;
+  flex-shrink: 0;
+}
+
+.tree-folder-icon,
+.tree-file-icon {
+  font-size: 14px;
+  flex-shrink: 0;
+  margin-right: 4px;
+}
+
+.tree-folder-name {
+  font-weight: 600;
+  color: #24292f;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tree-file-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 12px;
+}
+
+.tree-file.added .tree-file-name::after {
+  content: " +";
+  color: #1a7f37;
+  font-weight: bold;
+}
+
+.tree-file.modified .tree-file-name::after {
+  content: " ~";
+  color: #9a6700;
+  font-weight: bold;
+}
+
+.tree-file.deleted .tree-file-name::after {
+  content: " -";
+  color: #cf222e;
+  font-weight: bold;
+}
+
+.file-list ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.file-list li {
+  padding: 8px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-family: SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.file-list li:hover {
+  background: #f6f8fa;
+}
+
+.file-list li.active {
+  background: #0366d6;
+  color: white;
+}
+
+.file-list li.added::before {
+  content: "+";
+  color: #28a745;
+  margin-right: 8px;
+  font-weight: bold;
+}
+
+.file-list li.modified::before {
+  content: "~";
+  color: #ffd33d;
+  margin-right: 8px;
+  font-weight: bold;
+}
+
+.file-list li.deleted::before {
+  content: "-";
+  color: #d73a49;
+  margin-right: 8px;
+  font-weight: bold;
+}
+
+.file-list li.active::before {
+  color: white;
+}
+
+/* Diff content */
+.diff-content {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  max-height: calc(100vh - 200px);
+}
+
+.all-files-container {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.diff-file {
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.diff-file-header {
+  background: #f6f8fa;
+  padding: 10px 16px;
+  border-bottom: 1px solid #d0d7de;
+  font-family: SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 12px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+.diff-file-header:hover {
+  background: #eaeef2;
+}
+
+.diff-file-collapse {
+  color: #57606a;
+  font-size: 10px;
+  width: 16px;
+  text-align: center;
+}
+
+.diff-file-path {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.diff-empty-file {
+  padding: 24px;
+  text-align: center;
+  color: #57606a;
+  font-style: italic;
+}
+
+/* Expand context button */
+.diff-expand-row {
+  background: #f1f8ff;
+}
+
+.diff-expand-row td {
+  padding: 0;
+  text-align: center;
+}
+
+.diff-expand-btn {
+  width: 100%;
+  padding: 4px 8px;
+  background: transparent;
+  border: none;
+  color: #0969da;
+  font-size: 12px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  transition: background-color 0.15s;
+}
+
+.diff-expand-btn:hover {
+  background: #ddf4ff;
+}
+
+.diff-expand-icon {
+  font-weight: bold;
+}
+
+.diff-expand-text {
+  color: #57606a;
+}
+
+.diff-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 12px;
+  table-layout: auto;
+}
+
+.diff-table td {
+  padding: 0;
+  vertical-align: top;
+}
+
+.diff-line-num {
+  width: 50px;
+  min-width: 50px;
+  padding: 0 10px;
+  text-align: right;
+  color: rgba(27, 31, 35, 0.3);
+  background: #fafbfc;
+  border-right: 1px solid #e1e4e8;
+  user-select: none;
+  cursor: pointer;
+}
+
+.diff-line-num:hover {
+  color: #0366d6;
+}
+
+.diff-line-content {
+  padding: 0 10px;
+  white-space: pre;
+  overflow-x: auto;
+}
+
+/* Unified view - color the whole row */
+.diff-table.unified .diff-line.addition {
+  background: #e6ffec;
+}
+
+.diff-table.unified .diff-line.addition .diff-line-num {
+  background: #cdffd8;
+  border-color: #bef5cb;
+}
+
+.diff-table.unified .diff-line.deletion {
+  background: #ffebe9;
+}
+
+.diff-table.unified .diff-line.deletion .diff-line-num {
+  background: #ffdce0;
+  border-color: #ffc0c0;
+}
+
+.diff-table.unified .diff-line.context {
+  background: white;
+}
+
+/* Split view - separate old/new columns */
+.diff-line.split {
+  background: white;
+}
+
+/* Don't force 50% width - let content determine size */
+.diff-line.split .diff-line-content.old,
+.diff-line.split .diff-line-content.new {
+  white-space: pre;
+}
+
+/* Hide empty cells in split view */
+.diff-line.split .diff-line-content.empty,
+.diff-line.split .diff-line-num.empty {
+  display: none;
+}
+
+.diff-line.split .diff-line-content.deletion {
+  background: #ffebe9;
+}
+
+.diff-line.split .diff-line-num.old.empty + .diff-line-content.old.empty,
+.diff-line.split .diff-line-content.empty {
+  background: #f6f8fa;
+}
+
+.diff-line.split .diff-line-content.addition {
+  background: #e6ffec;
+}
+
+/* Empty cells in split view */
+.diff-line.split .diff-line-num.empty {
+  background: #f6f8fa;
+  border-color: #e1e4e8;
+}
+
+/* Line number colors in split view */
+.diff-line.split .diff-line-num.old:not(.empty) {
+  background: #fafbfc;
+}
+
+.diff-line.split .diff-line-num.new:not(.empty) {
+  background: #fafbfc;
+}
+
+.diff-hunk-header {
+  background: #f1f8ff;
+  color: rgba(27, 31, 35, 0.7);
+  padding: 4px 10px;
+}
+
+/* Unified diff view */
+.diff-table.unified .diff-line-num.unified {
+  width: 60px;
+  min-width: 60px;
+}
+
+.diff-table.unified .diff-line-content.unified {
+  padding-left: 10px;
+}
+
+.diff-table.unified .diff-line-content.unified pre {
+  font-family: SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
+}
+
+/* Comments */
+.comment-thread {
+  margin: 8px 0;
+  border: 1px solid #e1e4e8;
+  border-radius: 6px;
+  background: #f6f8fa;
+}
+
+.comment {
+  padding: 12px 16px;
+  border-bottom: 1px solid #e1e4e8;
+}
+
+.comment:last-child {
+  border-bottom: none;
+}
+
+.comment-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.comment-author {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.comment-time {
+  color: #6a737d;
+  font-size: 12px;
+}
+
+.comment-body {
+  color: #24292e;
+}
+
+.comment-actions {
+  margin-top: 8px;
+  display: flex;
+  gap: 8px;
+}
+
+.comment.resolved {
+  opacity: 0.6;
+}
+
+.comment.stale {
+  border-left: 3px solid #ffd33d;
+}
+
+.stale-warning {
+  color: #b08800;
+  font-size: 12px;
+  font-style: italic;
+  margin-bottom: 8px;
+}
+
+/* Comment form */
+.comment-form {
+  padding: 12px 16px;
+  background: white;
+}
+
+.comment-form textarea {
+  width: 100%;
+  min-height: 80px;
+  padding: 8px;
+  border: 1px solid #e1e4e8;
+  border-radius: 4px;
+  font-family: inherit;
+  font-size: 14px;
+  resize: vertical;
+}
+
+.comment-form textarea:focus {
+  outline: none;
+  border-color: #0366d6;
+  box-shadow: 0 0 0 3px rgba(3, 102, 214, 0.1);
+}
+
+.comment-form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+/* Buttons */
+.btn {
+  padding: 6px 12px;
+  font-size: 13px;
+  font-weight: 500;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.btn-primary {
+  background: #28a745;
+  color: white;
+}
+
+.btn-primary:hover {
+  background: #22863a;
+}
+
+.btn-secondary {
+  background: #fafbfc;
+  border-color: #e1e4e8;
+  color: #24292e;
+}
+
+.btn-secondary:hover {
+  background: #f3f4f6;
+}
+
+.btn-link {
+  background: none;
+  border: none;
+  color: #0366d6;
+  padding: 0;
+}
+
+.btn-link:hover {
+  text-decoration: underline;
+}
+
+/* Add comment indicator */
+.line-num-with-button {
+  position: relative;
+}
+
+.add-comment-btn {
+  position: absolute;
+  left: 2px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 18px;
+  height: 18px;
+  background: #0969da;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: bold;
+  line-height: 1;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  z-index: 5;
+}
+
+.add-comment-btn:hover {
+  background: #0550ae;
+}
+
+.diff-line:hover .add-comment-btn {
+  display: flex;
+}
+
+/* Line number links */
+.line-num-link {
+  color: rgba(27, 31, 35, 0.3);
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.line-num-link:hover {
+  color: #0366d6;
+  text-decoration: none;
+}
+
+/* Highlighted line (from URL hash) */
+.diff-line.highlighted {
+  background: #fff8c5 !important;
+}
+
+.diff-line.highlighted .diff-line-num {
+  background: #f5e14d !important;
+}
+
+.diff-line.highlighted .diff-line-content {
+  background: #fff8c5 !important;
+}
+
+/* Comment form row */
+.comment-form-row td {
+  background: #f6f8fa;
+}
+
+/* Empty state */
+.empty-state {
+  text-align: center;
+  padding: 60px 20px;
+  color: #6a737d;
+}
+
+.empty-state h2 {
+  margin: 0 0 8px 0;
+  color: #24292e;
+}

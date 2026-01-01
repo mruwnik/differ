@@ -1,0 +1,5 @@
+;; Differ configuration
+;; Override these values by setting environment variables:
+;; - PORT: Server port (default 8576)
+;; - DIFFER_URL: Full base URL for OAuth callbacks (e.g., "http://localhost:8576")
+{:port 8576}

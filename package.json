@@ -1,0 +1,24 @@
+{
+  "name": "differ",
+  "version": "0.1.0",
+  "description": "Local code review tool with MCP integration",
+  "private": true,
+  "scripts": {
+    "dev:server": "shadow-cljs watch server",
+    "dev:ui": "shadow-cljs watch ui",
+    "dev": "shadow-cljs watch server ui",
+    "build:server": "shadow-cljs release server",
+    "build:ui": "shadow-cljs release ui",
+    "build": "shadow-cljs release server ui",
+    "start": "node target/server.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.6.0",
+    "express": "^4.21.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
+  },
+  "devDependencies": {
+    "shadow-cljs": "^2.28.0"
+  }
+}
