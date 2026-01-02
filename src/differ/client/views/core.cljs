@@ -4,9 +4,33 @@
             [differ.client.views.sessions :as sessions]
             [differ.client.views.diff :as diff]))
 
+(defn- session-selector []
+  (let [sessions @(rf/subscribe [:sessions])
+        current-id @(rf/subscribe [:current-session-id])]
+    (when (seq sessions)
+      [:select.session-selector
+       {:value (or current-id "")
+        :on-change #(let [id (-> % .-target .-value)]
+                      (when (seq id)
+                        (rf/dispatch [:navigate-session id])))
+        :style {:background "transparent"
+                :border "1px solid #30363d"
+                :border-radius "6px"
+                :color "#c9d1d9"
+                :padding "4px 8px"
+                :font-size "14px"
+                :cursor "pointer"
+                :max-width "300px"}}
+       (for [s sessions]
+         ^{:key (:id s)}
+         [:option {:value (:id s)
+                   :style {:background "#0d1117"}}
+          (str (:project s) " / " (:branch s)
+               (when (pos? (:unresolved-count s 0))
+                 (str " (" (:unresolved-count s) ")")))])])))
+
 (defn header []
   (let [page @(rf/subscribe [:current-page])
-        session @(rf/subscribe [:current-session])
         connected? @(rf/subscribe [:sse-connected?])]
     [:header.header
      [:div {:style {:display "flex" :align-items "center" :gap "16px"}}
@@ -14,8 +38,7 @@
             :on-click #(rf/dispatch [:navigate-sessions])}
        "Differ"]
       (when (= page :session)
-        [:span {:style {:color "#6a737d"}}
-         (str (:project session) " / " (:branch session))])]
+        [session-selector])]
      [:div {:style {:display "flex" :align-items "center" :gap "12px"}}
       (when (= page :session)
         [:span {:style {:font-size "12px"

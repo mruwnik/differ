@@ -3,7 +3,8 @@
   (:require [reagent.core :as r]
             [re-frame.core :as rf]
             [clojure.string :as str]
-            [differ.client.views.comments :as comments]))
+            [differ.client.views.comments :as comments]
+            [differ.client.highlight :as highlight]))
 
 (defn- file-id
   "Generate a DOM id for a file section."
@@ -177,7 +178,6 @@
 
 (defn file-list []
   (let [files @(rf/subscribe [:files])
-        files-set (set files)
         changed-files @(rf/subscribe [:changed-files])
         changed-paths (set (map :path changed-files))
         selected @(rf/subscribe [:selected-file])
@@ -185,16 +185,19 @@
         untracked-files @(rf/subscribe [:untracked-files-list])
         untracked-set (set untracked-files)
         excluded-files @(rf/subscribe [:excluded-files])
+        ;; Only show files that still have changes or are untracked
+        relevant-files (filter #(or (changed-paths %) (untracked-set %)) files)
+        relevant-files-set (set relevant-files)
         ;; Only show excluded files that still have changes or are untracked
         relevant-excluded (filter #(or (changed-paths %) (untracked-set %)) excluded-files)
         ;; Filter out files that are already in review or excluded
-        available-untracked (remove #(or (files-set %) (excluded-files %)) untracked-files)]
+        available-untracked (remove #(or (relevant-files-set %) (excluded-files %)) untracked-files)]
     [:div.file-list
      [:h3 "Files in Review"]
-     (if (empty? files)
+     (if (empty? relevant-files)
        [:p {:style {:color "#6a737d" :font-size "13px"}}
         "No files in review"]
-       [file-tree files selected changed-files expanded-folders])
+       [file-tree relevant-files selected changed-files expanded-folders])
      (when (seq relevant-excluded)
        [:<>
         [:h3 {:style {:margin-top "16px"}} "Excluded"]
@@ -238,18 +241,17 @@
 
 (defn- comment-matches-line?
   "Check if a comment matches a specific line.
-   New-style comments (with line-content) match by content+context+side.
+   New-style comments (with line-content) match by line number + content + side.
    Old-style comments (without line-content) match by line number only."
   [comment line-num line-side content prev-content next-content]
   (let [{c-line :line c-side :side c-content :line-content
          c-before :context-before c-after :context-after} comment]
     (if c-content
-      ;; New style: match by content + context + side
-      (and (= c-content content)
-           (= c-side line-side)
-           ;; Context matching: only require match if comment has context stored
-           (or (nil? c-before) (= c-before prev-content))
-           (or (nil? c-after) (= c-after next-content)))
+      ;; New style: require line number match AND content match to avoid duplicates
+      ;; when same content appears on multiple lines
+      (and (= c-line line-num)
+           (= c-content content)
+           (= c-side line-side))
       ;; Old style: match by line number only
       (= c-line line-num))))
 
@@ -263,16 +265,13 @@
         is-context (= type :context)
         ;; Determine side for comment anchoring
         side (if is-deletion "old" "new")
-        ;; Only show comments on additions and context lines, not deletions
-        ;; Match by content+context for new comments, line number for old comments
-        comments-for-line (when-not is-deletion
-                            (filterv #(comment-matches-line? % line-num side content prev-content next-content)
-                                     (or file-comments [])))
+        ;; Show comments for all line types
+        comments-for-line (filterv #(comment-matches-line? % line-num side content prev-content next-content)
+                                   (or file-comments []))
         is-highlighted (and (= (:file highlighted-line) file)
                             (= (:line highlighted-line) line-num))
-        ;; Check if comment form should appear after this line (not on deletions)
-        show-form-here? (and (not is-deletion)
-                             (:visible comment-form)
+        ;; Check if comment form should appear after this line
+        show-form-here? (and (:visible comment-form)
                              (= (:file comment-form) file)
                              (= (:line comment-form) line-num)
                              (not (:parent-id comment-form)))]
@@ -282,24 +281,44 @@
        :class (when is-highlighted "highlighted")}
       ;; Left side (old file)
       [:td.diff-line-num.old
-       {:class (when is-addition "empty")}
-       (when-not is-addition old-num)]
+       {:class (str (when is-addition "empty") (when is-deletion " line-num-with-button"))}
+       (when-not is-addition
+         (if is-deletion
+           ;; Deletion: show comment button on left side
+           [:<>
+            [:button.add-comment-btn
+             {:on-click #(rf/dispatch [:show-comment-form {:file file
+                                                           :line old-num
+                                                           :side "old"
+                                                           :line-content content
+                                                           :context-before prev-content
+                                                           :context-after next-content}])
+              :title "Add comment"}
+             "+"]
+            [:a.line-num-link
+             {:href (str "#" (js/encodeURIComponent file) ":" old-num)
+              :on-click (fn [e]
+                          (.preventDefault e)
+                          (update-line-hash! file old-num))}
+             old-num]]
+           ;; Context: just show line number
+           old-num))]
       [:td.diff-line-content.old
        {:class (cond is-deletion "deletion" is-addition "empty" :else nil)}
        [:pre {:style {:margin 0 :font-family "inherit"}}
         (cond
-          is-deletion content
-          is-context content
+          is-deletion [highlight/highlight-line content file]
+          is-context [highlight/highlight-line content file]
           :else "")]]
       ;; Right side (new file)
       [:td.diff-line-num.new
-       {:class (str (when is-deletion "empty") " line-num-with-button")}
+       {:class (str (when is-deletion "empty") (when-not is-deletion " line-num-with-button"))}
        (when-not is-deletion
          [:<>
           [:button.add-comment-btn
            {:on-click #(rf/dispatch [:show-comment-form {:file file
                                                          :line new-num
-                                                         :side side
+                                                         :side "new"
                                                          :line-content content
                                                          :context-before prev-content
                                                          :context-after next-content}])
@@ -315,15 +334,15 @@
        {:class (cond is-addition "addition" is-deletion "empty" :else nil)}
        [:pre {:style {:margin 0 :font-family "inherit"}}
         (cond
-          is-addition content
-          is-context content
+          is-addition [highlight/highlight-line content file]
+          is-context [highlight/highlight-line content file]
           :else "")]]]
-     ;; Inline comments for this line (not on deletions)
+     ;; Inline comments for this line
      (when (seq comments-for-line)
        [:tr
         [:td {:col-span 4 :style {:padding 0}}
          [comments/comment-threads comments-for-line file line-num]]])
-     ;; Inline comment form after this line (not on deletions)
+     ;; Inline comment form after this line
      (when show-form-here?
        [:tr.comment-form-row
         [:td {:col-span 4 :style {:padding 0}}
@@ -334,24 +353,20 @@
   [{:keys [type content old-num new-num file]} file-comments comment-form highlighted-line
    {:keys [prev-content next-content]}]
   (let [line-num (or new-num old-num)
-        ;; Only show comments on additions and context lines, not deletions
-        ;; This prevents duplicate comments when a line is modified (deleted + added with same line num)
         is-deletion (= type :deletion)
         ;; Determine side for comment anchoring
         side (if is-deletion "old" "new")
-        ;; Match by content+context for new comments, line number for old comments
-        comments-for-line (when-not is-deletion
-                            (filterv #(comment-matches-line? % line-num side content prev-content next-content)
-                                     (or file-comments [])))
+        ;; Show comments for all line types
+        comments-for-line (filterv #(comment-matches-line? % line-num side content prev-content next-content)
+                                   (or file-comments []))
         prefix (case type
                  :addition "+"
                  :deletion "-"
                  " ")
         is-highlighted (and (= (:file highlighted-line) file)
                             (= (:line highlighted-line) line-num))
-        ;; Check if comment form should appear after this line (not on deletions)
-        show-form-here? (and (not is-deletion)
-                             (:visible comment-form)
+        ;; Check if comment form should appear after this line
+        show-form-here? (and (:visible comment-form)
                              (= (:file comment-form) file)
                              (= (:line comment-form) line-num)
                              (not (:parent-id comment-form)))]
@@ -360,16 +375,15 @@
       {:id (line-id file line-num)
        :class (str (name type) (when is-highlighted " highlighted"))}
       [:td.diff-line-num.unified.line-num-with-button
-       (when-not is-deletion
-         [:button.add-comment-btn
-          {:on-click #(rf/dispatch [:show-comment-form {:file file
-                                                        :line line-num
-                                                        :side side
-                                                        :line-content content
-                                                        :context-before prev-content
-                                                        :context-after next-content}])
-           :title "Add comment"}
-          "+"])
+       [:button.add-comment-btn
+        {:on-click #(rf/dispatch [:show-comment-form {:file file
+                                                      :line line-num
+                                                      :side side
+                                                      :line-content content
+                                                      :context-before prev-content
+                                                      :context-after next-content}])
+         :title "Add comment"}
+        "+"]
        [:a.line-num-link
         {:href (str "#" (js/encodeURIComponent file) ":" line-num)
          :on-click (fn [e]
@@ -378,13 +392,14 @@
         line-num]]
       [:td.diff-line-content.unified
        [:pre {:style {:margin 0 :font-family "inherit"}}
-        (str prefix " " content)]]]
-     ;; Inline comments for this line (not on deletions)
+        [:span prefix " "]
+        [highlight/highlight-line content file]]]]
+     ;; Inline comments for this line
      (when (seq comments-for-line)
        [:tr
         [:td {:col-span 2 :style {:padding 0}}
          [comments/comment-threads comments-for-line file line-num]]])
-     ;; Inline comment form after this line (not on deletions)
+     ;; Inline comment form after this line
      (when show-form-here?
        [:tr.comment-form-row
         [:td {:col-span 2 :style {:padding 0}}
@@ -515,13 +530,15 @@
                             content (line-content line)
                             [next-old next-new entry]
                             (case type
-                              :addition [(inc old-num) new-num
+                              ;; Addition: line only in new file, increment new-num
+                              :addition [old-num (inc new-num)
                                          {:type type :content content
-                                          :old-num nil :new-num old-num :file file}]
-                              :deletion [old-num (inc new-num)
+                                          :old-num nil :new-num new-num :file file}]
+                              ;; Deletion: line only in old file, increment old-num
+                              :deletion [(inc old-num) new-num
                                          {:type type :content content
-                                          :old-num new-num :new-num nil :file file}]
-                              ;; context
+                                          :old-num old-num :new-num nil :file file}]
+                              ;; Context: line in both files, increment both
                               [(inc old-num) (inc new-num)
                                {:type type :content content
                                 :old-num old-num :new-num new-num :file file}])]
@@ -543,9 +560,6 @@
                            :next-content (:content next-line)}]
          ^{:key idx}
          [diff-line line file-comments view-mode comment-form highlighted-line line-context]))]))
-
-(def large-file-threshold 50000) ;; Characters - files larger than this require explicit load
-(def line-count-threshold 100) ;; Files with more lines require explicit expansion
 
 (defn- format-file-size [bytes]
   (cond
@@ -572,6 +586,8 @@
         expanded-context @(rf/subscribe [:expanded-context-for-file file-path])
         staged-files @(rf/subscribe [:staged-files])
         unstaged-files @(rf/subscribe [:unstaged-files])
+        large-file-threshold @(rf/subscribe [:large-file-threshold])
+        line-count-threshold @(rf/subscribe [:line-count-threshold])
         file-info (first (filter #(= (:path %) file-path) files-with-size))
         file-size (or (:size file-info) 0)
         is-large-file (> file-size large-file-threshold)
@@ -823,6 +839,196 @@
                                                          :repo_path repo-path}])}
               "Save"]]]])))))
 
+(defn- comment-id
+  "Generate a DOM id for a comment."
+  [comment-id]
+  (str "comment-" comment-id))
+
+(defn- find-hidden-gap-for-line
+  "Find the hidden gap range that contains the given line.
+   Returns {:from from :to to :direction dir} if line is in a hidden gap, nil otherwise."
+  [file-diff expanded-context line]
+  (when (and file-diff line)
+    ;; Precompute whether line is already in an expanded range (O(n) once, not per-hunk)
+    (let [line-already-expanded? (some (fn [[[from to] _]]
+                                         (and (<= from line) (<= line to)))
+                                       expanded-context)
+          hunks (:hunks file-diff)]
+      (when-not line-already-expanded?
+        ;; Build list of gaps between hunks
+        (loop [idx 0
+               prev-end 0]
+          (if (>= idx (count hunks))
+            ;; No more hunks - no gap found
+            nil
+            (let [hunk (nth hunks idx)
+                  current-start (:new-start hunk)
+                  gap-from (if (zero? prev-end) 1 prev-end)
+                  gap-to (dec current-start)
+                  hunk-end (+ (:new-start hunk) (:new-count hunk))]
+              (cond
+                ;; Line is in this gap
+                (and (> gap-to gap-from)
+                     (<= gap-from line)
+                     (<= line gap-to))
+                {:from gap-from
+                 :to gap-to
+                 :direction (if (zero? prev-end) :up :both)}
+
+                ;; Line is within this hunk - not hidden
+                (and (<= current-start line)
+                     (< line hunk-end))
+                nil
+
+                ;; Continue to next hunk
+                :else
+                (recur (inc idx) hunk-end)))))))))
+
+(defn- scroll-to-element-when-ready!
+  "Poll for an element to exist, then scroll to it. Retries up to max-attempts times."
+  [element-id max-attempts delay-ms]
+  (let [attempt (atom 0)]
+    (letfn [(try-scroll []
+              (if-let [element (.getElementById js/document element-id)]
+                (.scrollIntoView element #js {:behavior "smooth" :block "center"})
+                (when (< @attempt max-attempts)
+                  (swap! attempt inc)
+                  (js/setTimeout try-scroll delay-ms))))]
+      (try-scroll))))
+
+(defn- scroll-to-comment! [cmt]
+  ;; First scroll to the file, then to the comment
+  (scroll-to-file! (:file cmt))
+  ;; Expand the file if collapsed
+  (rf/dispatch [:set-file-collapsed (:file cmt) false])
+  ;; Check if the comment's line is in a hidden context gap
+  (let [parsed-diff @(rf/subscribe [:parsed-diff])
+        file-diff (first (filter #(= (:file-b %) (:file cmt)) parsed-diff))
+        expanded-context @(rf/subscribe [:expanded-context-for-file (:file cmt)])
+        hidden-gap (find-hidden-gap-for-line file-diff expanded-context (:line cmt))
+        comment-line (:line cmt)]
+    ;; Expand context centered on the comment's line if hidden
+    (when hidden-gap
+      ;; Calculate a range centered on the comment line (15 lines total)
+      ;; Constrained within the gap boundaries
+      (let [half-window 7
+            gap-from (:from hidden-gap)
+            gap-to (:to hidden-gap)
+            ;; Center on comment line, but stay within gap
+            desired-from (max gap-from (- comment-line half-window))
+            desired-to (min gap-to (+ comment-line half-window))]
+        (rf/dispatch [:expand-context {:file (:file cmt)
+                                       :from desired-from
+                                       :to desired-to
+                                       :direction :both}])))
+    ;; Poll for the comment element to appear, then scroll to it
+    ;; Use more attempts if we needed to expand context (async load)
+    (let [attempts (if hidden-gap 20 5)
+          delay (if hidden-gap 100 50)]
+      (js/setTimeout
+       #(scroll-to-element-when-ready! (comment-id (:id cmt)) attempts delay)
+       50))))
+
+(defn- truncate [s max-len]
+  (if (> (count s) max-len)
+    (str (subs s 0 (- max-len 3)) "...")
+    s))
+
+(defn unresolved-dropdown []
+  (let [show? (r/atom false)]
+    (fn []
+      (let [unresolved @(rf/subscribe [:unresolved-comments])
+            count (count unresolved)]
+        [:div {:style {:position "relative"}}
+         [:span {:class (str "session-badge"
+                             (when (zero? count) " zero")
+                             (when (pos? count) " clickable"))
+                 :on-click #(when (pos? count)
+                              (swap! show? not))
+                 :style (when (pos? count)
+                          {:cursor "pointer"})}
+          (if (zero? count)
+            "All resolved"
+            (str count " unresolved"))]
+         (when (and @show? (pos? count))
+           [:<>
+            ;; Invisible overlay to catch clicks outside dropdown
+            [:div {:style {:position "fixed"
+                           :top 0 :left 0 :right 0 :bottom 0
+                           :z-index 999}
+                   :on-click #(reset! show? false)}]
+            [:div.unresolved-dropdown
+             {:style {:position "absolute"
+                      :top "100%"
+                      :right 0
+                      :margin-top "8px"
+                      :background "white"
+                      :border "1px solid #e1e4e8"
+                      :border-radius "6px"
+                      :box-shadow "0 8px 24px rgba(149,157,165,0.2)"
+                      :min-width "300px"
+                      :max-width "400px"
+                      :max-height "400px"
+                      :overflow-y "auto"
+                      :z-index 1000}}
+             [:div {:style {:padding "8px 12px"
+                            :border-bottom "1px solid #e1e4e8"
+                            :font-weight "600"
+                            :font-size "12px"
+                            :color "#6a737d"
+                            :display "flex"
+                            :justify-content "space-between"
+                            :align-items "center"}}
+              "Unresolved Comments"
+              (when (> count 1)
+                [:button {:style {:font-size "11px"
+                                  :padding "2px 8px"
+                                  :background "#f6f8fa"
+                                  :border "1px solid #e1e4e8"
+                                  :border-radius "4px"
+                                  :cursor "pointer"}
+                          :on-click (fn [e]
+                                      (.stopPropagation e)
+                                      (doseq [c unresolved]
+                                        (rf/dispatch [:resolve-comment (:id c)])))}
+                 "Resolve all"])]
+             (for [cmt unresolved]
+               ^{:key (:id cmt)}
+               [:div.unresolved-item
+                {:style {:padding "8px 12px"
+                         :border-bottom "1px solid #f0f0f0"
+                         :display "flex"
+                         :gap "8px"
+                         :align-items "flex-start"}}
+                [:div {:style {:flex 1 :cursor "pointer"}
+                       :on-click (fn [e]
+                                   (.stopPropagation e)
+                                   (reset! show? false)
+                                   (scroll-to-comment! cmt))}
+                 [:div {:style {:font-size "11px" :color "#6a737d" :margin-bottom "4px"}}
+                  (-> (:file cmt)
+                      (str/split #"/")
+                      last)
+                  (when (:line cmt)
+                    (str ":" (:line cmt)))]
+                 [:div {:style {:font-size "13px"}}
+                  (truncate (:text cmt) 80)]
+                 [:div {:style {:font-size "11px" :color "#6a737d" :margin-top "2px"}}
+                  (:author cmt)]]
+                [:button {:style {:font-size "11px"
+                                  :padding "4px 8px"
+                                  :background "#28a745"
+                                  :color "white"
+                                  :border "none"
+                                  :border-radius "4px"
+                                  :cursor "pointer"
+                                  :white-space "nowrap"}
+                          :title "Mark as resolved"
+                          :on-click (fn [e]
+                                      (.stopPropagation e)
+                                      (rf/dispatch [:resolve-comment (:id cmt)]))}
+                 "Resolve"]])]])]))))
+
 (defn session-header []
   (let [session @(rf/subscribe [:current-session])
         view-mode @(rf/subscribe [:diff-view-mode])]
@@ -865,12 +1071,7 @@
                         (rf/dispatch [:toggle-diff-view-mode]))
            :title "Unified view"}
           "Unified"]]
-        [:span {:class (str "session-badge"
-                            (when (zero? (or (:unresolved-count session) 0)) " zero"))}
-         (let [count (or (:unresolved-count session) 0)]
-           (if (zero? count)
-             "All resolved"
-             (str count " unresolved")))]
+        [unresolved-dropdown]
         [:button.btn.btn-secondary
          {:on-click #(when (js/confirm "Archive this session?")
                        (rf/dispatch [:delete-session (:session-id session)])

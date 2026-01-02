@@ -2,4 +2,12 @@
 ;; Override these values by setting environment variables:
 ;; - PORT: Server port (default 8576)
 ;; - DIFFER_URL: Full base URL for OAuth callbacks (e.g., "http://localhost:8576")
-{:port 8576}
+{:port 8576
+
+ ;; File display thresholds (client)
+ :large-file-threshold 50000      ;; Characters - files larger require explicit load
+ :line-count-threshold 400        ;; Diff lines - more than this requires explicit expand
+ :context-expand-size 15          ;; Lines to expand at a time
+
+ ;; Watcher settings (server)
+ :watcher-debounce-ms 300}        ;; Debounce file change events

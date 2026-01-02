@@ -4,9 +4,16 @@
             ["path" :as path]
             ["os" :as os]
             ["fs" :as fs]
+            [clojure.string :as str]
             [differ.util :as util]))
 
 (defonce ^:private db-instance (atom nil))
+
+(defn- in-clause
+  "Generate placeholder string for SQL IN clause.
+   (in-clause 3) => \"?,?,?\""
+  [n]
+  (str/join "," (repeat n "?")))
 
 (defn- data-dir
   "Get XDG-compliant data directory."
@@ -311,12 +318,22 @@
      (mapv row->comment rows))))
 
 (defn count-unresolved-comments
-  "Count unresolved top-level comments for a session."
-  [session-id]
-  (let [^js stmt (.prepare (db)
-                           "SELECT COUNT(*) as count FROM comments
-                WHERE session_id = ? AND resolved = 0 AND parent_id IS NULL")]
-    (.-count (.get stmt session-id))))
+  "Count unresolved top-level comments for a session.
+   Optionally filter to only count comments on specific files."
+  ([session-id]
+   (let [^js stmt (.prepare (db)
+                            "SELECT COUNT(*) as count FROM comments
+                 WHERE session_id = ? AND resolved = 0 AND parent_id IS NULL")]
+     (.-count (.get stmt session-id))))
+  ([session-id files]
+   (if (empty? files)
+     0
+     (let [query (str "SELECT COUNT(*) as count FROM comments
+                       WHERE session_id = ? AND resolved = 0 AND parent_id IS NULL
+                       AND file IN (" (in-clause (count files)) ")")
+           ^js stmt (.prepare (db) query)
+           params (into-array (cons session-id files))]
+       (.-count (.apply (.-get stmt) stmt params))))))
 
 (defn create-comment!
   "Create a new comment."

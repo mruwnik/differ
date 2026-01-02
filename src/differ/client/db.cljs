@@ -1,6 +1,12 @@
 (ns differ.client.db
   "Re-frame app-db schema and initial state.")
 
+;; Default config values (used until server config loads)
+(def default-config
+  {:large-file-threshold 50000     ;; Characters - files larger require explicit load
+   :line-count-threshold 400       ;; Diff lines - more than this requires explicit expand
+   :context-expand-size 15})       ;; Lines to expand at a time
+
 (def default-db
   {:route {:page :sessions}  ;; :sessions or :session
    :sessions []
@@ -23,7 +29,8 @@
                   :line nil
                   :parent-id nil
                   :text ""}
-   :user {:author "user"}})  ;; Default author for human comments
+   :user {:author "user"}  ;; Default author for human comments
+   :config default-config})
 
 ;; Route helpers
 (defn sessions-page? [db]

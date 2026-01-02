@@ -35,6 +35,7 @@ Sessions are tied to a (project, branch) pair. Multiple agents on the same proje
 
 ```bash
 # Start dev environment (compiles + watches + runs server)
+npm install
 clj -M:dev
 ```
 

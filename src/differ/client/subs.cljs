@@ -115,6 +115,25 @@
  (fn [comments [_ line]]
    (vec (filter #(= (:line %) line) (or comments [])))))
 
+(rf/reg-sub
+ :unresolved-comments
+ :<- [:comments]
+ :<- [:files]
+ (fn [[comments files] _]
+   ;; Get all unresolved root comments from files currently in review
+   (let [files-set (set (or files []))]
+     (if (empty? files-set)
+       []
+       (->> comments
+            (filter (fn [[file _]] (files-set file)))
+            (mapcat (fn [[file threads]]
+                      (->> threads
+                           (filter #(and (not (:resolved %))
+                                         (nil? (:parent-id %))))
+                           (map #(assoc % :file file)))))
+            (sort-by :created-at)
+            vec)))))
+
 ;; Loading states
 (rf/reg-sub
  :loading
@@ -251,3 +270,27 @@
  :excluded-files
  (fn [db _]
    (or (:excluded-files db) #{})))
+
+;; Config
+(rf/reg-sub
+ :config
+ (fn [db _]
+   (:config db)))
+
+(rf/reg-sub
+ :large-file-threshold
+ :<- [:config]
+ (fn [config _]
+   (get config :large-file-threshold 50000)))
+
+(rf/reg-sub
+ :line-count-threshold
+ :<- [:config]
+ (fn [config _]
+   (get config :line-count-threshold 400)))
+
+(rf/reg-sub
+ :context-expand-size
+ :<- [:config]
+ (fn [config _]
+   (get config :context-expand-size 15)))

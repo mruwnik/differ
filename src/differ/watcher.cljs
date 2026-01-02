@@ -6,7 +6,8 @@
                 :repo-path string
                 :debounce-timeout timeout-id}}"
   (:require ["fs" :as fs]
-            [clojure.string :as str]))
+            [clojure.string :as str]
+            [differ.config :as config]))
 
 ;; Single atom for all watcher state
 (defonce ^:private state (atom {}))
@@ -42,12 +43,13 @@
   "Emit a change event after debounce period."
   [session-id]
   (clear-debounce! session-id)
-  (let [timeout (js/setTimeout
+  (let [debounce-ms (config/get-value :watcher-debounce-ms)
+        timeout (js/setTimeout
                  (fn []
                    (swap! state update session-id dissoc :debounce-timeout)
                    (when-let [callback @on-change-callback]
                      (callback session-id)))
-                 300)]
+                 debounce-ms)]
     (swap! state assoc-in [session-id :debounce-timeout] timeout)))
 
 (defn- on-file-change [session-id _event filename]

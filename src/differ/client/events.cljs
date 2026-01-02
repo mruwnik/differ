@@ -24,7 +24,19 @@
    (let [saved-view-mode (load-preference "differ-view-mode")]
      {:db (cond-> db/default-db
             saved-view-mode (assoc :diff-view-mode saved-view-mode))
-      :dispatch [:load-sessions]})))
+      :dispatch-n [[:load-config]
+                   [:load-sessions]]})))
+
+;; Config
+(rf/reg-event-fx
+ :load-config
+ (fn [_ _]
+   {:http (api/fetch-config)}))
+
+(rf/reg-event-db
+ :config-loaded
+ (fn [db [_ response]]
+   (assoc db :config (:config response))))
 
 ;; Navigation
 (rf/reg-event-fx
@@ -47,7 +59,8 @@
               (assoc-in [:route :session-id] session-id))
       :sse-connect session-id
       :push-url {:path (str "/session/" session-id) :replace? replace?}
-      :dispatch-n [[:load-session session-id]
+      :dispatch-n [[:load-sessions]  ;; Ensure sessions list is loaded for selector
+                   [:load-session session-id]
                    [:load-diff session-id]
                    [:load-comments session-id]
                    [:load-staged-files session-id]
@@ -230,24 +243,23 @@
  (fn [db _]
    (dissoc db :highlighted-line)))
 
-(def context-expand-size 15) ;; Lines to expand at a time
-
-;; Expand context - fetch additional lines from server (15 at a time)
+;; Expand context - fetch additional lines from server
 (rf/reg-event-fx
  :expand-context
  (fn [{:keys [db]} [_ {:keys [file from to direction]}]]
    (let [session-id (db/current-session-id db)
+         expand-size (get-in db [:config :context-expand-size] 15)
          total-lines (- to from -1)
-         ;; Expand 15 lines at a time, from the appropriate end
+         ;; Expand N lines at a time, from the appropriate end
          [fetch-from fetch-to]
-         (if (<= total-lines context-expand-size)
+         (if (<= total-lines expand-size)
            ;; Small gap - fetch all
            [from to]
-           ;; Large gap - fetch 15 lines from the end closest to existing content
+           ;; Large gap - fetch N lines from the end closest to existing content
            (case direction
-             :up   [(- to context-expand-size -1) to]      ;; Bottom 15 (closest to hunk below)
-             :down [from (+ from context-expand-size -1)]  ;; Top 15 (closest to hunk above)
-             :both [(- to context-expand-size -1) to]))]   ;; Default to bottom 15
+             :up   [(- to expand-size -1) to]      ;; Bottom N (closest to hunk below)
+             :down [from (+ from expand-size -1)]  ;; Top N (closest to hunk above)
+             :both [(- to expand-size -1) to]))]   ;; Default to bottom N
      {:http (api/fetch-context-lines session-id file fetch-from fetch-to)})))
 
 ;; Context lines loaded - merge into parsed diff
@@ -465,6 +477,13 @@
 
 (rf/reg-event-fx
  :sse-comment-resolved
+ (fn [{:keys [db]} [_ _comment-id]]
+   (let [session-id (db/current-session-id db)]
+     (when session-id
+       {:dispatch [:load-comments session-id]}))))
+
+(rf/reg-event-fx
+ :sse-comment-unresolved
  (fn [{:keys [db]} [_ _comment-id]]
    (let [session-id (db/current-session-id db)]
      (when session-id

@@ -3,10 +3,13 @@
   (:require [clojure.string :as str]
             [differ.sessions :as sessions]
             [differ.comments :as comments]
+            [differ.diff :as diff]
             [differ.git :as git]
             [differ.db :as db]
             [differ.oauth :as oauth]
-            [differ.util :as util]))
+            [differ.sse :as sse]
+            [differ.util :as util]
+            [differ.config :as config]))
 
 ;; ============================================================================
 ;; HTTP Response Helpers
@@ -81,25 +84,6 @@
 
 ;; Diff endpoints
 
-(defn- get-files-with-size
-  "Get file size info for each file in the list."
-  [repo-path files]
-  (mapv (fn [file-path]
-          (let [info (git/get-file-info repo-path file-path false)]
-            {:path file-path
-             :size (or (:size info) 0)
-             :error (:error info)}))
-        files))
-
-(defn- get-file-content-for-diff
-  "Get file content and convert to diff format. Used for non-git or files without diff."
-  [repo-path file-path max-size]
-  (let [info (git/get-file-info repo-path file-path true)]
-    (if (:error info)
-      nil
-      (when (<= (:size info) max-size)
-        (git/file-to-diff-format file-path (:content info))))))
-
 (defn get-branches-handler
   "GET /api/sessions/:id/branches"
   [^js req res]
@@ -150,59 +134,9 @@
 (defn get-diff-handler
   "GET /api/sessions/:id/diff"
   [^js req res]
-  (let [session-id (.. req -params -id)
-        ;; Max size threshold - files larger than this won't have content loaded initially
-        max-size-threshold 50000]
+  (let [session-id (.. req -params -id)]
     (if-let [session (db/get-session session-id)]
-      (let [repo-path (:repo-path session)
-            is-git-repo (git/git-repo? repo-path)
-            ;; Get changed files from git (needed for compute-file-set)
-            changed-files (when is-git-repo
-                            (git/get-changed-files repo-path (:target-branch session)))
-            files (sessions/compute-file-set session (or changed-files []))
-            ;; Get file sizes for all files
-            files-with-size (get-files-with-size repo-path files)]
-        (if is-git-repo
-          ;; Git repo - use git diff
-          (let [diff (git/get-diff repo-path (:target-branch session))
-                git-parsed (git/parse-diff-hunks diff)
-                ;; Files that have a git diff
-                git-diff-files (set (map :file-b git-parsed))
-                ;; Files in review that don't have a git diff (e.g., untracked files)
-                files-without-diff (remove git-diff-files files)
-                ;; Get content for files without git diff (untracked/manual additions)
-                extra-parsed (reduce
-                              (fn [acc file-path]
-                                (if-let [file-diff (get-file-content-for-diff repo-path file-path max-size-threshold)]
-                                  (conj acc file-diff)
-                                  acc))
-                              []
-                              files-without-diff)
-                ;; Combine git diff with untracked file content
-                parsed (concat git-parsed extra-parsed)
-                ;; Add untracked files to changed-files with :untracked status
-                untracked-in-review (map (fn [f] {:path f :status :untracked}) files-without-diff)
-                all-changed-files (concat changed-files untracked-in-review)]
-            (json-response res {:diff diff
-                                :parsed parsed
-                                :files files
-                                :files-with-size files-with-size
-                                :changed-files all-changed-files
-                                :is-git-repo true}))
-          ;; Non-git - show full file contents (respecting size threshold)
-          (let [parsed (reduce
-                        (fn [acc file-path]
-                          (if-let [file-diff (get-file-content-for-diff repo-path file-path max-size-threshold)]
-                            (conj acc file-diff)
-                            acc))
-                        []
-                        files)]
-            (json-response res {:diff nil
-                                :parsed parsed
-                                :files files
-                                :files-with-size files-with-size
-                                :changed-files []
-                                :is-git-repo false}))))
+      (json-response res (diff/get-diff-data session))
       (error-response res 404 "Session not found"))))
 
 (defn get-file-diff-handler
@@ -211,26 +145,9 @@
   (let [session-id (.. req -params -id)
         file (js/decodeURIComponent (.. req -params -file))]
     (if-let [session (db/get-session session-id)]
-      (let [repo-path (:repo-path session)
-            is-git-repo (git/git-repo? repo-path)]
-        (if is-git-repo
-          ;; Git repo - use git diff
-          (let [diff (git/get-file-diff repo-path (:target-branch session) file)
-                parsed (git/parse-diff-hunks diff)]
-            (json-response res {:file file
-                                :diff diff
-                                :parsed parsed
-                                :is-git-repo true}))
-          ;; Non-git - get full file content
-          (let [info (git/get-file-info repo-path file true)]
-            (if (:error info)
-              (error-response res 404 (:error info))
-              (let [parsed (git/file-to-diff-format file (:content info))]
-                (json-response res {:file file
-                                    :diff nil
-                                    :parsed [parsed]
-                                    :size (:size info)
-                                    :is-git-repo false}))))))
+      (if-let [data (diff/get-file-diff-data session file)]
+        (json-response res data)
+        (error-response res 404 "Could not read file"))
       (error-response res 404 "Session not found"))))
 
 (defn get-file-content-handler
@@ -349,6 +266,7 @@
                      (assoc body
                             :session-id session-id
                             :repo-path (:repo-path session)))]
+        (sse/emit-comment-added! session-id comment)
         (json-response res {:comment comment}))
       (error-response res 404 "Session not found"))))
 
@@ -356,16 +274,20 @@
   "PATCH /api/comments/:id/resolve"
   [^js req res]
   (let [comment-id (.. req -params -id)
-        {:keys [author]} (get-body req)]
-    (comments/resolve-comment! comment-id author)
+        {:keys [author]} (get-body req)
+        comment (comments/resolve-comment! comment-id author)]
+    (when-let [session-id (:session-id comment)]
+      (sse/emit-comment-resolved! session-id comment-id))
     (json-response res {:success true})))
 
 (defn unresolve-comment-handler
   "PATCH /api/comments/:id/unresolve"
   [^js req res]
   (let [comment-id (.. req -params -id)
-        {:keys [author]} (get-body req)]
-    (comments/unresolve-comment! comment-id author)
+        {:keys [author]} (get-body req)
+        comment (comments/unresolve-comment! comment-id author)]
+    (when-let [session-id (:session-id comment)]
+      (sse/emit-comment-unresolved! session-id comment-id))
     (json-response res {:success true})))
 
 ;; OAuth endpoints
@@ -450,9 +372,19 @@
                  :token-type-hint (:token-type-hint body)})]
     (json-response res result)))
 
+;; Config endpoint
+
+(defn get-config-handler
+  "GET /api/config"
+  [^js _req res]
+  (json-response res {:config (config/client-config)}))
+
 ;; Route setup
 
 (defn setup-routes [^js app]
+  ;; Config
+  (.get app "/api/config" get-config-handler)
+
   ;; Sessions
   (.get app "/api/sessions" list-sessions-handler)
   (.post app "/api/sessions" create-session-handler)

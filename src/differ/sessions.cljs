@@ -16,12 +16,20 @@
 
 (defn compute-file-set
   "Compute the set of files in review for a session.
-   Pure function: (session, git-changed-files) -> sorted file list"
-  [session git-changed-files]
+   Pure function: (session, git-changed-files, untracked-files) -> sorted file list
+
+   Manual additions are only included if they:
+   - Have changes (in git-changed-files), OR
+   - Are untracked files"
+  [session git-changed-files untracked-files]
   (let [{:keys [registered-files manual-additions manual-removals]} session
         git-files (set (map :path git-changed-files))
+        untracked (set untracked-files)
         registered (set (keys registered-files))
-        all-files (set/union git-files registered (set manual-additions))]
+        ;; Only keep manual additions that still have changes or are untracked
+        relevant-additions (filter #(or (git-files %) (untracked %))
+                                   manual-additions)
+        all-files (set/union git-files registered (set relevant-additions))]
     (-> all-files
         (set/difference (set manual-removals))
         sort
@@ -193,7 +201,10 @@
   [session-id repo-path]
   (when-let [session (get-session session-id)]
     (let [git-files (git/get-changed-files repo-path (:target-branch session))
-          files (compute-file-set session git-files)]
+          untracked (git/get-untracked-files repo-path)
+          files (compute-file-set session git-files untracked)
+          ;; Only count unresolved comments on files currently in review
+          unresolved-count (db/count-unresolved-comments session-id files)]
       {:session-id session-id
        :project (:project session)
        :branch (:branch session)
@@ -202,7 +213,7 @@
        :files files
        :excluded-files (:manual-removals session)
        :comments (db/list-comments session-id)
-       :unresolved-count (:unresolved-count session)})))
+       :unresolved-count unresolved-count})))
 
 (defn archive-session!
   "Archive/delete a session and all its data."

@@ -30,6 +30,12 @@
 
 ;; Convenience functions for common API calls
 
+(defn fetch-config []
+  {:method "GET"
+   :url "/api/config"
+   :on-success [:config-loaded]
+   :on-failure [:api-error]})
+
 (defn fetch-sessions []
   {:method "GET"
    :url "/api/sessions"
