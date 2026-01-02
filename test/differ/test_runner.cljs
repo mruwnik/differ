@@ -11,7 +11,8 @@
             [differ.api-test]
             [differ.mcp-test]
             [differ.client.db-test]
-            [differ.client.subs-test]))
+            [differ.client.subs-test]
+            [differ.client.highlight-test]))
 
 (defn main []
   (run-tests 'differ.util-test
@@ -23,4 +24,5 @@
              'differ.api-test
              'differ.mcp-test
              'differ.client.db-test
-             'differ.client.subs-test))
+             'differ.client.subs-test
+             'differ.client.highlight-test))

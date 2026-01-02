@@ -3,9 +3,11 @@
 
    State structure:
    {session-id {:watcher FSWatcher
+                :git-watcher FSWatcher  ; watches .git/refs/heads for commits
                 :repo-path string
                 :debounce-timeout timeout-id}}"
   (:require ["fs" :as fs]
+            ["path" :as path]
             [clojure.string :as str]
             [differ.config :as config]))
 
@@ -56,24 +58,57 @@
   (when-not (should-ignore? filename)
     (emit-debounced! session-id)))
 
-(defn watch-session!
-  "Start watching a repo directory for changes."
+(defn- start-git-watcher!
+  "Watch .git/refs/heads for commit changes."
   [session-id repo-path]
-  (when-not (get @state session-id)
-    (try
-      (let [watcher (fs/watch repo-path
-                              #js {:recursive true}
-                              #(on-file-change session-id %1 %2))]
-        (swap! state assoc session-id {:watcher watcher :repo-path repo-path})
-        (js/console.log (str "[watcher] Started: " repo-path)))
-      (catch :default e
-        (js/console.error (str "[watcher] Failed: " repo-path " - " (.-message e)))))))
+  (let [git-refs-path (path/join repo-path ".git" "refs" "heads")]
+    (when (fs/existsSync git-refs-path)
+      (try
+        (let [watcher (fs/watch git-refs-path
+                                #js {:recursive true}
+                                (fn [_event _filename]
+                                  ;; Any change in refs/heads means a commit or branch change
+                                  (emit-debounced! session-id)))]
+          (js/console.log (str "[watcher] Git refs: " git-refs-path))
+          watcher)
+        (catch :default e
+          (js/console.warn (str "[watcher] Git refs failed: " (.-message e)))
+          nil)))))
+
+(defn watch-session!
+  "Start watching a repo directory for changes.
+   Uses atomic check-and-set to prevent duplicate watchers."
+  [session-id repo-path]
+  ;; Atomically check and claim the slot with a placeholder
+  (let [claimed? (atom false)
+        _ (swap! state
+                 (fn [s]
+                   (if (get s session-id)
+                     s  ; Already exists, no change
+                     (do (reset! claimed? true)
+                         (assoc s session-id {:pending true})))))]
+    ;; Only proceed if we claimed the slot
+    (when @claimed?
+      (try
+        (let [watcher (fs/watch repo-path
+                                #js {:recursive true}
+                                #(on-file-change session-id %1 %2))
+              git-watcher (start-git-watcher! session-id repo-path)]
+          (swap! state assoc session-id {:watcher watcher
+                                         :git-watcher git-watcher
+                                         :repo-path repo-path})
+          (js/console.log (str "[watcher] Started: " repo-path)))
+        (catch :default e
+          ;; Clean up the placeholder on failure
+          (swap! state dissoc session-id)
+          (js/console.error (str "[watcher] Failed: " repo-path " - " (.-message e))))))))
 
 (defn unwatch-session!
   "Stop watching a session's repo directory."
   [session-id]
-  (when-let [{:keys [watcher repo-path]} (get @state session-id)]
+  (when-let [{:keys [watcher git-watcher repo-path]} (get @state session-id)]
     (.close watcher)
+    (when git-watcher (.close git-watcher))
     (clear-debounce! session-id)
     (swap! state dissoc session-id)
     (js/console.log (str "[watcher] Stopped: " repo-path))))

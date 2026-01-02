@@ -6,12 +6,14 @@
             [clojure.string :as str]))
 
 (defn- exec-sync
-  "Execute command synchronously, return stdout or nil on error."
+  "Execute command synchronously, return stdout or nil on error.
+   Logs errors to console for debugging."
   [cmd opts]
   (try
     (let [result (cp/execSync cmd (clj->js (merge {:encoding "utf8"} opts)))]
       (str/trim result))
-    (catch :default _e
+    (catch :default e
+      (js/console.warn "[git] Command failed:" cmd (.-message e))
       nil)))
 
 (defn- exec-git
@@ -183,6 +185,26 @@
       (catch :default _
         false))))
 
+(defn- parse-diff-header
+  "Parse diff --git header to extract file paths.
+   Handles edge cases like filenames containing ' b/' by trying multiple strategies:
+   1. Backreference pattern (file-a == file-b, most common)
+   2. Split-based approach for renames (handles ' b/' in filenames)"
+  [diff-line]
+  (or
+   ;; Most common case: same filename on both sides (use backreference)
+   ;; This correctly handles filenames with ' b/' in them
+   (when-let [[_ file] (re-find #"diff --git a/(.+) b/\1$" diff-line)]
+     [file file])
+   ;; Rename case: split on ' b/' and take last segment as file-b
+   ;; Handles filenames containing ' b/' correctly
+   (when-let [[_ rest] (re-find #"diff --git a/(.+)$" diff-line)]
+     (let [parts (str/split rest #" b/")]
+       (when (>= (count parts) 2)
+         (let [file-b (last parts)
+               file-a (str/join " b/" (butlast parts))]
+           [file-a file-b]))))))
+
 (defn parse-diff-hunks
   "Parse unified diff into structured format.
    Returns vector of file diffs, each containing:
@@ -204,7 +226,7 @@
        (fn [section]
          (let [;; Parse file header
                diff-line (first section)
-               [_ file-a file-b] (re-find #"diff --git a/(.+) b/(.+)" diff-line)
+               [file-a file-b] (parse-diff-header diff-line)
                 ;; Find hunks
                hunk-lines (drop-while #(not (str/starts-with? % "@@")) section)
                 ;; Parse hunks

@@ -241,19 +241,23 @@
 
 (defn- comment-matches-line?
   "Check if a comment matches a specific line.
-   New-style comments (with line-content) match by line number + content + side.
-   Old-style comments (without line-content) match by line number only."
-  [comment line-num line-side content prev-content next-content]
+   Only matches top-level comments (replies are shown nested under their parent).
+   Always requires line number + side match.
+   New-style comments (with line-content) also require content match."
+  [comment line-num line-side line-type content prev-content next-content]
   (let [{c-line :line c-side :side c-content :line-content
-         c-before :context-before c-after :context-after} comment]
-    (if c-content
-      ;; New style: require line number match AND content match to avoid duplicates
-      ;; when same content appears on multiple lines
-      (and (= c-line line-num)
+         c-parent :parent-id} comment]
+    (and (nil? c-parent)  ;; Only top-level comments, replies shown via :replies
+         (= c-line line-num)
+         (= c-side line-side)
+         ;; Content matching
+         (if c-content
+           ;; New style: exact content match
            (= c-content content)
-           (= c-side line-side))
-      ;; Old style: match by line number only
-      (= c-line line-num))))
+           ;; Old style (no content stored): only show on non-context lines
+           ;; to avoid duplicates when same line number appears as both
+           ;; context and addition/deletion
+           (not= line-type :context)))))
 
 (defn diff-line-split
   "Render a diff line in split (side-by-side) mode with separate old/new columns."
@@ -266,7 +270,7 @@
         ;; Determine side for comment anchoring
         side (if is-deletion "old" "new")
         ;; Show comments for all line types
-        comments-for-line (filterv #(comment-matches-line? % line-num side content prev-content next-content)
+        comments-for-line (filterv #(comment-matches-line? % line-num side type content prev-content next-content)
                                    (or file-comments []))
         is-highlighted (and (= (:file highlighted-line) file)
                             (= (:line highlighted-line) line-num))
@@ -357,7 +361,7 @@
         ;; Determine side for comment anchoring
         side (if is-deletion "old" "new")
         ;; Show comments for all line types
-        comments-for-line (filterv #(comment-matches-line? % line-num side content prev-content next-content)
+        comments-for-line (filterv #(comment-matches-line? % line-num side type content prev-content next-content)
                                    (or file-comments []))
         prefix (case type
                  :addition "+"

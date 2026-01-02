@@ -325,9 +325,9 @@
 
 (rf/reg-event-fx
  :comment-added
- (fn [{:keys [db]} [_ response]]
-   (let [session-id (db/current-session-id db)]
-     {:dispatch [:load-comments session-id]})))
+ (fn [_ _]
+   ;; SSE handles the refresh, no need to reload here
+   {}))
 
 ;; Resolve comment
 (rf/reg-event-fx
@@ -338,9 +338,9 @@
 
 (rf/reg-event-fx
  :comment-resolved
- (fn [{:keys [db]} [_ comment-id _response]]
-   (let [session-id (db/current-session-id db)]
-     {:dispatch [:load-comments session-id]})))
+ (fn [_ _]
+   ;; SSE handles the refresh
+   {}))
 
 ;; Unresolve comment
 (rf/reg-event-fx
@@ -351,9 +351,9 @@
 
 (rf/reg-event-fx
  :comment-unresolved
- (fn [{:keys [db]} [_ comment-id _response]]
-   (let [session-id (db/current-session-id db)]
-     {:dispatch [:load-comments session-id]})))
+ (fn [_ _]
+   ;; SSE handles the refresh
+   {}))
 
 ;; Delete session
 (rf/reg-event-fx

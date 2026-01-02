@@ -332,8 +332,10 @@
                        WHERE session_id = ? AND resolved = 0 AND parent_id IS NULL
                        AND file IN (" (in-clause (count files)) ")")
            ^js stmt (.prepare (db) query)
-           params (into-array (cons session-id files))]
-       (.-count (.apply (.-get stmt) stmt params))))))
+           params (into-array (cons session-id files))
+           ;; Use .bind to safely bind parameters, then .get
+           ^js bound (.apply (.-bind stmt) stmt params)]
+       (.-count (.get bound))))))
 
 (defn create-comment!
   "Create a new comment."

@@ -53,16 +53,6 @@
 (defn- session-repo-path [state session-id]
   (get-in state [:sessions session-id :repo-path]))
 
-(defn- sessions-needing-unwatch
-  "Returns session-ids that now have zero subscribers."
-  [old-state new-state]
-  (->> (get-in old-state [:clients])
-       keys
-       (mapcat #(get-in old-state [:clients % :subscriptions]))
-       (filter #(and (pos? (subscriber-count old-state %))
-                     (zero? (subscriber-count new-state %))))
-       set))
-
 ;; Stateful operations
 
 (defn add-connection!
@@ -73,34 +63,61 @@
     client-id))
 
 (defn remove-connection!
-  "Remove a connection. Stops watchers for sessions with no remaining subscribers."
+  "Remove a connection. Stops watchers for sessions with no remaining subscribers.
+   Atomically computes which sessions need unwatching."
   [client-id]
-  (let [old-state @state
-        new-state (swap! state remove-client client-id)]
-    ;; Stop watchers for sessions that lost their last subscriber
-    (doseq [session-id (sessions-needing-unwatch old-state new-state)]
+  (let [sessions-to-unwatch (atom #{})]
+    (swap! state
+           (fn [s]
+             (let [subscriptions (get-in s [:clients client-id :subscriptions] #{})
+                   new-s (remove-client s client-id)]
+               ;; Find sessions that went from >0 to 0 subscribers
+               (doseq [session-id subscriptions]
+                 (when (and (pos? (subscriber-count s session-id))
+                            (zero? (subscriber-count new-s session-id)))
+                   (swap! sessions-to-unwatch conj session-id)))
+               new-s)))
+    ;; Stop watchers outside swap
+    (doseq [session-id @sessions-to-unwatch]
       (watcher/unwatch-session! session-id))))
 
 (defn subscribe!
-  "Subscribe a client to events for a session."
+  "Subscribe a client to events for a session.
+   Atomically updates state and starts watcher if first subscriber."
   ([client-id session-id]
    (subscribe! client-id session-id nil))
   ([client-id session-id repo-path]
-   (let [old-state @state
-         new-state (swap! state subscribe-client client-id session-id repo-path)]
-     ;; Start watcher if this is the first subscriber
-     (when (and (zero? (subscriber-count old-state session-id))
-                (pos? (subscriber-count new-state session-id)))
-       (when-let [path (session-repo-path new-state session-id)]
-         (watcher/watch-session! session-id path))))))
+   ;; Track whether we need to start watcher (determined atomically during swap)
+   (let [start-watcher? (atom false)
+         watcher-path (atom nil)]
+     (swap! state
+            (fn [s]
+              (let [old-count (subscriber-count s session-id)
+                    new-s (subscribe-client s client-id session-id repo-path)
+                    new-count (subscriber-count new-s session-id)]
+                ;; Check if we're the first subscriber
+                (when (and (zero? old-count) (pos? new-count))
+                  (reset! start-watcher? true)
+                  (reset! watcher-path (session-repo-path new-s session-id)))
+                new-s)))
+     ;; Start watcher outside swap (has side effects)
+     (when (and @start-watcher? @watcher-path)
+       (watcher/watch-session! session-id @watcher-path)))))
 
 (defn unsubscribe!
-  "Unsubscribe a client from a session."
+  "Unsubscribe a client from a session.
+   Atomically updates state and stops watcher if last subscriber."
   [client-id session-id]
-  (let [old-state @state
-        new-state (swap! state unsubscribe-client client-id session-id)]
-    (when (and (pos? (subscriber-count old-state session-id))
-               (zero? (subscriber-count new-state session-id)))
+  (let [stop-watcher? (atom false)]
+    (swap! state
+           (fn [s]
+             (let [old-count (subscriber-count s session-id)
+                   new-s (unsubscribe-client s client-id session-id)
+                   new-count (subscriber-count new-s session-id)]
+               (when (and (pos? old-count) (zero? new-count))
+                 (reset! stop-watcher? true))
+               new-s)))
+    (when @stop-watcher?
       (watcher/unwatch-session! session-id))))
 
 ;; Event sending

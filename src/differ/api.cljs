@@ -177,16 +177,28 @@
         file (js/decodeURIComponent (.. req -params -file))
         from-line (js/parseInt (or (.. req -query -from) "1") 10)
         to-line (js/parseInt (or (.. req -query -to) "1") 10)]
-    (if-let [session (db/get-session session-id)]
-      (let [repo-path (:repo-path session)
-            lines (git/get-lines-range repo-path file from-line to-line)]
-        (if lines
-          (json-response res {:file file
-                              :from from-line
-                              :to to-line
-                              :lines lines})
-          (error-response res 404 "Could not read file")))
-      (error-response res 404 "Session not found"))))
+    ;; Validate line numbers
+    (cond
+      (or (js/isNaN from-line) (js/isNaN to-line))
+      (error-response res 400 "Invalid line numbers: must be integers")
+
+      (or (< from-line 1) (< to-line 1))
+      (error-response res 400 "Invalid line numbers: must be positive")
+
+      (> from-line to-line)
+      (error-response res 400 "Invalid range: from must be <= to")
+
+      :else
+      (if-let [session (db/get-session session-id)]
+        (let [repo-path (:repo-path session)
+              lines (git/get-lines-range repo-path file from-line to-line)]
+          (if lines
+            (json-response res {:file file
+                                :from from-line
+                                :to to-line
+                                :lines lines})
+            (error-response res 404 "Could not read file")))
+        (error-response res 404 "Session not found")))))
 
 ;; File management endpoints
 

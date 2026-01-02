@@ -102,12 +102,42 @@ The endpoint accepts standard MCP JSON-RPC over HTTP POST. Any agent that suppor
 | `resolve_comment` | Mark a comment as resolved |
 | `unresolve_comment` | Reopen a resolved comment |
 
-## Configuration
+## Slash Commands
 
-Create `resources/config.edn` to customize settings:
+Differ includes Claude Code slash commands for reviewing and fixing code:
 
-```edn
-{:port 8576}
+- `/review` - Review current uncommitted changes, add comments via differ
+- `/fix-review` - Fix all unresolved review comments
+
+These are available automatically when working in the differ project.
+
+### Using globally (all projects)
+
+To use these commands in any project, copy them to your global commands directory:
+
+```bash
+cp .claude/commands/*.md ~/.claude/commands/
 ```
 
-Or use the `PORT` environment variable.
+Then `/review` and `/fix-review` will work in any repo where the differ MCP server is configured.
+
+## Configuration
+
+Edit `resources/config.edn` to customize settings:
+
+```edn
+{:port 8576
+
+ ;; File display thresholds (client)
+ :large-file-threshold 50000      ;; Characters - files larger require explicit load
+ :line-count-threshold 400        ;; Diff lines - more than this requires explicit expand
+ :context-expand-size 15          ;; Lines to expand at a time
+
+ ;; Watcher settings (server)
+ :watcher-debounce-ms 300}        ;; Debounce file change events
+```
+
+Environment variables:
+
+- `PORT` - Server port (default 8576)
+- `DIFFER_URL` - Base URL for OAuth callbacks (e.g., `http://localhost:8576`)
