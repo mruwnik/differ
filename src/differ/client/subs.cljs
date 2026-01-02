@@ -204,3 +204,50 @@
  :highlighted-line
  (fn [db _]
    (:highlighted-line db)))
+
+;; Session settings modal visibility
+(rf/reg-sub
+ :session-settings-visible?
+ (fn [db _]
+   (:session-settings-visible db)))
+
+;; Available branches for autocomplete
+(rf/reg-sub
+ :branches
+ (fn [db _]
+   (:branches db)))
+
+;; Expanded context lines for files
+(rf/reg-sub
+ :expanded-context
+ (fn [db _]
+   (or (:expanded-context db) {})))
+
+(rf/reg-sub
+ :expanded-context-for-file
+ :<- [:expanded-context]
+ (fn [expanded [_ file-path]]
+   (get expanded file-path {})))
+
+;; Staged files for git add
+(rf/reg-sub
+ :staged-files
+ (fn [db _]
+   (or (:staged-files db) #{})))
+
+(rf/reg-sub
+ :unstaged-files
+ (fn [db _]
+   (or (:unstaged-files db) #{})))
+
+;; List of untracked files in repo
+(rf/reg-sub
+ :untracked-files-list
+ (fn [db _]
+   (or (:untracked-files-list db) [])))
+
+;; Excluded files (manually removed from review)
+(rf/reg-sub
+ :excluded-files
+ (fn [db _]
+   (or (:excluded-files db) #{})))

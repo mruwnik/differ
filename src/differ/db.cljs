@@ -214,12 +214,18 @@
         new-data (merge session updates {:updated-at now})
         ^js stmt (.prepare (db)
                            "UPDATE sessions SET
+                project = ?,
+                target_branch = ?,
+                repo_path = ?,
                 registered_files = ?,
                 manual_additions = ?,
                 manual_removals = ?,
                 updated_at = ?
                 WHERE id = ?")]
     (.run stmt
+          (:project new-data)
+          (:target-branch new-data)
+          (:repo-path new-data)
           (js/JSON.stringify (clj->js (:registered-files new-data)))
           (js/JSON.stringify (clj->js (:manual-additions new-data)))
           (js/JSON.stringify (clj->js (:manual-removals new-data)))

@@ -1,6 +1,7 @@
 (ns differ.client.views.diff
   "Diff viewer component."
-  (:require [re-frame.core :as rf]
+  (:require [reagent.core :as r]
+            [re-frame.core :as rf]
             [clojure.string :as str]
             [differ.client.views.comments :as comments]))
 
@@ -14,106 +15,6 @@
 (defn- file-status [file changed-files]
   (let [info (first (filter #(= (:path %) file) changed-files))]
     (or (:status info) :modified)))
-
-;; File System Access API helpers
-(defn- fs-api-supported? []
-  (and (exists? js/window.showOpenFilePicker)
-       (exists? js/window.showDirectoryPicker)))
-
-(defn- resolve-path
-  "Resolve a file/folder handle to a path relative to the root directory."
-  [root-handle handle]
-  (-> (.resolve root-handle handle)
-      (.then (fn [parts]
-               (when parts (str/join "/" (js->clj parts)))))
-      (.catch (fn [_] nil))))
-
-(defn- pick-files! []
-  (let [root-handle @(rf/subscribe [:dir-handle])]
-    (if-not root-handle
-      ;; No root yet - ask user to set it first
-      (js/alert "Please set the project folder first")
-      ;; Pick files relative to root
-      (-> (js/window.showOpenFilePicker
-           #js {:multiple true
-                :startIn root-handle})
-          (.then (fn [handles]
-                   (js/Promise.all
-                    (clj->js (map #(resolve-path root-handle %) handles)))))
-          (.then (fn [paths]
-                   (doseq [path (filter some? (js->clj paths))]
-                     (rf/dispatch [:add-manual-file path]))))
-          (.catch (fn [e]
-                    (when-not (= (.-name e) "AbortError")
-                      (js/console.error "File picker error:" e))))))))
-
-(defn- pick-folder! []
-  (let [root-handle @(rf/subscribe [:dir-handle])]
-    (if-not root-handle
-      (js/alert "Please set the project folder first")
-      (-> (js/window.showDirectoryPicker
-           #js {:startIn root-handle})
-          (.then (fn [handle]
-                   (resolve-path root-handle handle)))
-          (.then (fn [path]
-                   (when path
-                     (rf/dispatch [:add-manual-file path]))))
-          (.catch (fn [e]
-                    (when-not (= (.-name e) "AbortError")
-                      (js/console.error "Directory picker error:" e))))))))
-
-(defn- set-project-folder! []
-  (-> (js/window.showDirectoryPicker #js {:mode "read"})
-      (.then (fn [handle]
-               (rf/dispatch [:set-dir-handle handle])))
-      (.catch (fn [e]
-                (when-not (= (.-name e) "AbortError")
-                  (js/console.error "Directory picker error:" e))))))
-
-(defn add-file-form []
-  (let [dir-handle @(rf/subscribe [:dir-handle])]
-    (if (fs-api-supported?)
-      [:div.add-file-form {:style {:margin-bottom "8px"}}
-       (if dir-handle
-         ;; Have project folder - show file/folder buttons
-         [:div {:style {:display "flex" :gap "4px"}}
-          [:button.btn.btn-secondary
-           {:on-click pick-files!
-            :style {:flex 1 :font-size "12px"}}
-           "+ Files"]
-          [:button.btn.btn-secondary
-           {:on-click pick-folder!
-            :style {:flex 1 :font-size "12px"}}
-           "+ Folder"]]
-         ;; No project folder yet
-         [:button.btn.btn-secondary
-          {:on-click set-project-folder!
-           :style {:width "100%" :font-size "12px"}}
-          "Set project folder"])]
-      ;; Fallback for browsers without File System Access API
-      (let [input-value (atom "")]
-        (fn []
-          [:div.add-file-form
-           [:div {:style {:display "flex" :gap "4px" :margin-bottom "8px"}}
-            [:input {:type "text"
-                     :placeholder "path/to/file or folder"
-                     :value @input-value
-                     :on-change #(reset! input-value (.. % -target -value))
-                     :on-key-down #(when (= (.-key %) "Enter")
-                                     (when (seq @input-value)
-                                       (rf/dispatch [:add-manual-file @input-value])
-                                       (reset! input-value "")))
-                     :style {:flex 1
-                             :padding "6px 8px"
-                             :border "1px solid #d1d5da"
-                             :border-radius "4px"
-                             :font-size "12px"}}]
-            [:button.btn.btn-primary
-             {:on-click #(when (seq @input-value)
-                           (rf/dispatch [:add-manual-file @input-value])
-                           (reset! input-value ""))
-              :style {:padding "6px 12px" :font-size "12px"}}
-             "Add"]]])))))
 
 (defn- scroll-to-file! [file-path]
   (when-let [element (.getElementById js/document (file-id file-path))]
@@ -162,8 +63,7 @@
 (defn tree-folder
   "Render a folder node with collapsible children."
   [node depth selected-file changed-files expanded-folders]
-  (let [folder-path (str/join "/" (take (inc depth) (iterate identity (:name node))))
-        expanded? (get expanded-folders (:name node) true)
+  (let [expanded? (get expanded-folders (:name node) true)
         children (sort-tree-children (:children node))]
     [:div.tree-folder
      [:div.tree-folder-header
@@ -191,7 +91,13 @@
       :title (:path node)}
      [:span.tree-indent {:style {:width (str (* depth 12) "px")}}]
      [:span.tree-file-icon "📄"]
-     [:span.tree-file-name (:name node)]]))
+     [:span.tree-file-name (:name node)]
+     [:button.tree-file-remove
+      {:on-click (fn [e]
+                   (.stopPropagation e)
+                   (rf/dispatch [:remove-manual-file (:path node)]))
+       :title "Remove from review"}
+      "×"]]))
 
 (defn tree-node
   "Render a tree node (either folder or file)."
@@ -210,18 +116,96 @@
        ^{:key (or (:path child) (:name child))}
        [tree-node child 0 selected-file changed-files expanded-folders])]))
 
+(defn- untracked-tree-file
+  "Render an untracked file node - clicking adds it to review."
+  [node depth]
+  [:div.tree-file.untracked
+   {:on-click #(rf/dispatch [:add-manual-file (:path node)])
+    :title (str "Add " (:path node) " to review")
+    :style {:color "#6a737d"}}
+   [:span.tree-indent {:style {:width (str (* depth 12) "px")}}]
+   [:span.tree-file-icon "📄"]
+   [:span.tree-file-name {:style {:font-style "italic"}} (:name node)]])
+
+(declare untracked-tree-node)
+
+(defn- untracked-tree-folder
+  "Render an untracked folder node."
+  [node depth expanded-folders]
+  (let [expanded? (get expanded-folders (str "untracked-" (:name node)) true)
+        children (sort-tree-children (:children node))]
+    [:div.tree-folder
+     [:div.tree-folder-header
+      {:on-click #(rf/dispatch [:toggle-folder-expanded (str "untracked-" (:name node))])
+       :style {:color "#6a737d"}}
+      [:span.tree-indent {:style {:width (str (* depth 12) "px")}}]
+      [:span.tree-chevron (if expanded? "▼" "▶")]
+      [:span.tree-folder-icon "📁"]
+      [:span.tree-folder-name {:style {:font-style "italic"}} (:name node)]]
+     (when expanded?
+       [:div.tree-folder-children
+        (for [child children]
+          ^{:key (or (:path child) (:name child))}
+          [untracked-tree-node child (inc depth) expanded-folders])])]))
+
+(defn- untracked-tree-node
+  "Render an untracked tree node."
+  [node depth expanded-folders]
+  (if (= (:type node) :folder)
+    [untracked-tree-folder node depth expanded-folders]
+    [untracked-tree-file node depth]))
+
+(defn- untracked-file-tree
+  "Render the untracked files tree."
+  [untracked-files expanded-folders]
+  (let [tree (build-tree untracked-files)
+        children (sort-tree-children (:children tree))]
+    [:div.file-tree
+     (for [child children]
+       ^{:key (or (:path child) (:name child))}
+       [untracked-tree-node child 0 expanded-folders])]))
+
+(defn- excluded-file-item
+  "Render an excluded file - clicking restores it to review."
+  [file-path]
+  [:div.tree-file.excluded
+   {:on-click #(rf/dispatch [:restore-file file-path])
+    :title (str "Restore " file-path " to review")
+    :style {:color "#cf222e" :text-decoration "line-through" :opacity 0.7}}
+   [:span.tree-file-icon "📄"]
+   [:span.tree-file-name (last (str/split file-path #"/"))]])
+
 (defn file-list []
   (let [files @(rf/subscribe [:files])
+        files-set (set files)
         changed-files @(rf/subscribe [:changed-files])
         selected @(rf/subscribe [:selected-file])
-        expanded-folders @(rf/subscribe [:expanded-folders])]
+        expanded-folders @(rf/subscribe [:expanded-folders])
+        untracked-files @(rf/subscribe [:untracked-files-list])
+        excluded-files @(rf/subscribe [:excluded-files])
+        ;; Filter out files that are already in review or excluded
+        available-untracked (remove #(or (files-set %) (excluded-files %)) untracked-files)]
     [:div.file-list
-     [:h3 "Files"]
-     [add-file-form]
+     [:h3 "Files in Review"]
      (if (empty? files)
        [:p {:style {:color "#6a737d" :font-size "13px"}}
         "No files in review"]
-       [file-tree files selected changed-files expanded-folders])]))
+       [file-tree files selected changed-files expanded-folders])
+     (when (seq excluded-files)
+       [:<>
+        [:h3 {:style {:margin-top "16px"}} "Excluded"]
+        [:p {:style {:color "#6a737d" :font-size "11px" :margin "0 0 8px 0"}}
+         "Click to restore"]
+        [:div.file-tree
+         (for [file (sort excluded-files)]
+           ^{:key file}
+           [excluded-file-item file])]])
+     (when (seq available-untracked)
+       [:<>
+        [:h3 {:style {:margin-top "16px"}} "Untracked Files"]
+        [:p {:style {:color "#6a737d" :font-size "11px" :margin "0 0 8px 0"}}
+         "Click to add to review"]
+        [untracked-file-tree available-untracked expanded-folders]])]))
 
 (defn- parse-line-type [line]
   (cond
@@ -363,10 +347,29 @@
     [diff-line-unified line-data file-comments comment-form highlighted-line]
     [diff-line-split line-data file-comments comment-form highlighted-line]))
 
-(defn- expand-context-row
-  "Renders a clickable row to expand context lines."
+(defn- expanded-context-lines
+  "Render already-expanded context lines."
+  [context-lines file-comments view-mode comment-form highlighted-line]
+  (into [:<>]
+        (map (fn [{:keys [old-num new-num file] :as line-data}]
+               ^{:key (str file "-ctx-" (or new-num old-num))}
+               [diff-line line-data file-comments view-mode comment-form highlighted-line])
+             context-lines)))
+
+(defn- find-expanded-in-range
+  "Find all expanded ranges that fall within [from-line, to-line].
+   Returns sorted list of [from to lines] tuples."
+  [from-line to-line expanded-context]
+  (->> expanded-context
+       (filter (fn [[[f t] _]]
+                 (and (>= f from-line) (<= t to-line))))
+       (sort-by (comp first first))
+       (map (fn [[[f t] lines]] [f t lines]))))
+
+(defn- expand-button
+  "Render an expand button for a gap."
   [file from-line to-line direction view-mode]
-  (let [lines-hidden (- to-line from-line)
+  (let [lines-hidden (inc (- to-line from-line))
         col-span (if (= view-mode :unified) 2 4)]
     (when (pos? lines-hidden)
       [:tr.diff-expand-row
@@ -385,7 +388,43 @@
          [:span.diff-expand-text
           (str " Expand " lines-hidden " hidden lines")]]]])))
 
-(defn diff-hunk [{:keys [header lines file old-start new-start]} start-old start-new file-comments show-expand-above? view-mode comment-form highlighted-line]
+(defn- expand-context-row
+  "Renders expanded context lines and/or expand buttons for remaining gaps."
+  [file from-line to-line direction view-mode expanded-context file-comments comment-form highlighted-line]
+  (let [total-hidden (inc (- to-line from-line))
+        expanded-ranges (find-expanded-in-range from-line to-line expanded-context)]
+    (when (pos? total-hidden)
+      (if (empty? expanded-ranges)
+        ;; Nothing expanded yet - show single expand button
+        [expand-button file from-line to-line direction view-mode]
+        ;; Some ranges expanded - show gaps and expanded content
+        (let [items (loop [pos from-line
+                           ranges expanded-ranges
+                           result []]
+                      (if (empty? ranges)
+                        ;; Add trailing gap if any
+                        (if (< pos to-line)
+                          (conj result {:type :gap :from pos :to to-line :dir :down})
+                          result)
+                        (let [[f t lines] (first ranges)
+                              ;; Gap before this expanded range?
+                              with-gap (if (< pos f)
+                                         (conj result {:type :gap :from pos :to (dec f) :dir :up})
+                                         result)]
+                          (recur (inc t)
+                                 (rest ranges)
+                                 (conj with-gap {:type :expanded :from f :to t :lines lines})))))]
+          (into [:<>]
+                (map-indexed
+                 (fn [idx {:keys [type from to lines dir]}]
+                   (with-meta
+                     (if (= type :gap)
+                       [expand-button file from to dir view-mode]
+                       [expanded-context-lines lines file-comments view-mode comment-form highlighted-line])
+                     {:key (str file "-" type "-" from "-" to "-" idx)}))
+                 items)))))))
+
+(defn diff-hunk [{:keys [header lines file old-start new-start]} start-old start-new file-comments show-expand-above? view-mode comment-form highlighted-line expanded-context]
   (let [line-data (loop [remaining lines
                          old-num start-old
                          new-num start-new
@@ -415,7 +454,7 @@
     [:<>
      ;; Expand button above hunk if there's a gap from line 1 or previous hunk
      (when show-expand-above?
-       [expand-context-row file 1 (dec start-new) :up view-mode])
+       [expand-context-row file 1 (dec start-new) :up view-mode expanded-context file-comments comment-form highlighted-line])
      [:tr.diff-hunk-header
       [:td {:col-span col-span} header]]
      (for [[idx line] (map-indexed vector line-data)]
@@ -447,11 +486,17 @@
         content-expanded @(rf/subscribe [:content-expanded-files])
         highlighted-line @(rf/subscribe [:highlighted-line])
         view-mode @(rf/subscribe [:diff-view-mode])
+        expanded-context @(rf/subscribe [:expanded-context-for-file file-path])
+        staged-files @(rf/subscribe [:staged-files])
+        unstaged-files @(rf/subscribe [:unstaged-files])
         file-info (first (filter #(= (:path %) file-path) files-with-size))
         file-size (or (:size file-info) 0)
         is-large-file (> file-size large-file-threshold)
         is-loaded (get loaded-files file-path false)
         is-loading (get loading-files file-path false)
+        ;; File is fully staged if it's staged AND has no unstaged modifications
+        is-fully-staged (and (contains? staged-files file-path)
+                             (not (contains? unstaged-files file-path)))
         ;; Show content if: has diff, or is loaded, or is small file
         show-content (or file-diff is-loaded (not is-large-file))
         hunks (:hunks file-diff)
@@ -467,7 +512,24 @@
       [:span.diff-file-path file-path]
       (when (pos? file-size)
         [:span.diff-file-size {:style {:margin-left "8px" :color "#6a737d" :font-weight "normal"}}
-         (format-file-size file-size)])]
+         (format-file-size file-size)])
+      [:button.btn-stage
+       {:on-click (fn [e]
+                    (.stopPropagation e)
+                    (when-not is-fully-staged
+                      (rf/dispatch [:stage-file file-path])))
+        :disabled is-fully-staged
+        :title (if is-fully-staged "Already staged" "Stage file for commit")
+        :style {:margin-left "auto"
+                :padding "2px 8px"
+                :font-size "11px"
+                :background (if is-fully-staged "#e1e4e8" "#2ea44f")
+                :color (if is-fully-staged "#6a737d" "white")
+                :border "none"
+                :border-radius "4px"
+                :cursor (if is-fully-staged "default" "pointer")
+                :opacity (if is-fully-staged 0.6 1)}}
+       (if is-fully-staged "Staged" "Stage")]]
      (when-not collapsed?
        [:<>
         (cond
@@ -515,7 +577,11 @@
                     (or prev-end-line 1)
                     (dec current-start)
                     (if prev-hunk :both :up)
-                    view-mode])
+                    view-mode
+                    expanded-context
+                    file-comments
+                    comment-form
+                    highlighted-line])
                  [diff-hunk (assoc hunk :file file-path)
                   (:new-start hunk)
                   (:old-start hunk)
@@ -523,7 +589,8 @@
                   false
                   view-mode
                   comment-form
-                  highlighted-line]]))]]
+                  highlighted-line
+                  expanded-context]]))]]
 
           ;; No diff available
           :else
@@ -547,6 +614,132 @@
            ^{:key file}
            [diff-file-section file file-diff all-comments collapsed?]))])))
 
+(defn session-settings-modal []
+  (let [form-state (r/atom {:initialized false
+                            :show-branches false})]
+    (fn []
+      (let [session @(rf/subscribe [:current-session])
+            visible? @(rf/subscribe [:session-settings-visible?])
+            branches @(rf/subscribe [:branches])
+            {:keys [project repo-path target-branch initialized show-branches]} @form-state
+            ;; Filter branches based on current input
+            filtered-branches (when (and branches show-branches)
+                                (if (str/blank? target-branch)
+                                  branches
+                                  (filterv #(str/includes? (str/lower-case %)
+                                                           (str/lower-case target-branch))
+                                           branches)))]
+        ;; Initialize form when modal becomes visible
+        (when (and visible? (not initialized) session)
+          (reset! form-state {:project (or (:project session) "")
+                              :repo-path (or (:repo-path session) "")
+                              :target-branch (or (:target-branch session) "")
+                              :initialized true
+                              :show-branches false}))
+        ;; Reset when closing
+        (when (and (not visible?) initialized)
+          (reset! form-state {:initialized false :show-branches false}))
+        (when visible?
+          [:div {:style {:position "fixed"
+                         :top 0 :left 0 :right 0 :bottom 0
+                         :background "rgba(0,0,0,0.5)"
+                         :display "flex"
+                         :align-items "center"
+                         :justify-content "center"
+                         :z-index 1000}
+                 :on-click #(rf/dispatch [:hide-session-settings])}
+           [:div {:style {:background "white"
+                          :border-radius "8px"
+                          :padding "24px"
+                          :min-width "400px"
+                          :max-width "500px"}
+                  :on-click #(.stopPropagation %)}
+            [:h3 {:style {:margin "0 0 16px 0"}} "Session Settings"]
+            ;; Project name
+            [:div {:style {:margin-bottom "16px"}}
+             [:label {:style {:display "block" :margin-bottom "4px" :font-weight 500}}
+              "Project Name"]
+             [:input {:type "text"
+                      :value (or project "")
+                      :on-change #(swap! form-state assoc :project (.. % -target -value))
+                      :placeholder "e.g., my-project"
+                      :style {:width "100%"
+                              :padding "8px 12px"
+                              :border "1px solid #d0d7de"
+                              :border-radius "6px"
+                              :font-size "14px"}}]]
+            ;; Repo path
+            [:div {:style {:margin-bottom "16px"}}
+             [:label {:style {:display "block" :margin-bottom "4px" :font-weight 500}}
+              "Repository Path"]
+             [:input {:type "text"
+                      :value (or repo-path "")
+                      :on-change #(swap! form-state assoc :repo-path (.. % -target -value))
+                      :placeholder "e.g., /path/to/repo"
+                      :style {:width "100%"
+                              :padding "8px 12px"
+                              :border "1px solid #d0d7de"
+                              :border-radius "6px"
+                              :font-size "14px"}}]
+             [:p {:style {:margin "4px 0 0 0" :font-size "12px" :color "#6a737d"}}
+              "Absolute path to the project directory"]]
+            ;; Target branch with autocomplete
+            [:div {:style {:margin-bottom "16px" :position "relative"}}
+             [:label {:style {:display "block" :margin-bottom "4px" :font-weight 500}}
+              "Target Branch"]
+             [:input {:type "text"
+                      :value (or target-branch "")
+                      :on-change #(swap! form-state assoc :target-branch (.. % -target -value))
+                      :on-focus #(swap! form-state assoc :show-branches true)
+                      :on-blur #(js/setTimeout
+                                 (fn [] (swap! form-state assoc :show-branches false))
+                                 150)
+                      :placeholder "e.g., main, master, develop"
+                      :style {:width "100%"
+                              :padding "8px 12px"
+                              :border "1px solid #d0d7de"
+                              :border-radius "6px"
+                              :font-size "14px"}}]
+             ;; Branch suggestions dropdown
+             (when (and show-branches (seq filtered-branches))
+               [:div {:style {:position "absolute"
+                              :top "100%"
+                              :left 0
+                              :right 0
+                              :max-height "200px"
+                              :overflow-y "auto"
+                              :background "white"
+                              :border "1px solid #d0d7de"
+                              :border-radius "6px"
+                              :box-shadow "0 4px 12px rgba(0,0,0,0.15)"
+                              :z-index 10
+                              :margin-top "4px"}}
+                (for [branch filtered-branches]
+                  ^{:key branch}
+                  [:div {:on-mouse-down #(do
+                                           (.preventDefault %)
+                                           (swap! form-state assoc
+                                                  :target-branch branch
+                                                  :show-branches false))
+                         :style {:padding "8px 12px"
+                                 :cursor "pointer"
+                                 :font-size "14px"
+                                 :border-bottom "1px solid #f0f0f0"}
+                         :on-mouse-over #(set! (.. % -target -style -background) "#f6f8fa")
+                         :on-mouse-out #(set! (.. % -target -style -background) "white")}
+                   branch])])
+             [:p {:style {:margin "4px 0 0 0" :font-size "12px" :color "#6a737d"}}
+              "The branch to compare against"]]
+            [:div {:style {:display "flex" :gap "8px" :justify-content "flex-end"}}
+             [:button.btn.btn-secondary
+              {:on-click #(rf/dispatch [:hide-session-settings])}
+              "Cancel"]
+             [:button.btn.btn-primary
+              {:on-click #(rf/dispatch [:update-session {:target_branch target-branch
+                                                         :project project
+                                                         :repo_path repo-path}])}
+              "Save"]]]])))))
+
 (defn session-header []
   (let [session @(rf/subscribe [:current-session])
         view-mode @(rf/subscribe [:diff-view-mode])]
@@ -558,12 +751,22 @@
                      :display "flex"
                      :justify-content "space-between"
                      :align-items "center"}}
-       [:div
-        [:strong (:project session)]
-        [:span {:style {:margin "0 8px" :color "#6a737d"}} "/"]
-        [:span (:branch session)]
-        [:span {:style {:margin "0 8px" :color "#6a737d"}} "→"]
-        [:span {:style {:color "#6a737d"}} (:target-branch session)]]
+       [:div {:style {:display "flex" :align-items "center" :gap "8px"}}
+        [:div
+         [:strong (:project session)]
+         [:span {:style {:margin "0 8px" :color "#6a737d"}} "/"]
+         [:span (:branch session)]
+         [:span {:style {:margin "0 8px" :color "#6a737d"}} "→"]
+         [:span {:style {:color "#6a737d"}} (:target-branch session)]]
+        [:button {:on-click #(rf/dispatch [:show-session-settings])
+                  :title "Session settings"
+                  :style {:background "none"
+                          :border "none"
+                          :cursor "pointer"
+                          :padding "4px"
+                          :color "#6a737d"
+                          :font-size "14px"}}
+         "⚙️"]]
        [:div {:style {:display "flex" :gap "8px" :align-items "center"}}
         ;; Diff view mode toggle
         [:div.diff-view-toggle
@@ -593,6 +796,7 @@
 
 (defn diff-view []
   [:div
+   [session-settings-modal]
    [session-header]
    [:div.diff-container
     [file-list]

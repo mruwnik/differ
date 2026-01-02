@@ -57,6 +57,19 @@
     (sessions/archive-session! session-id)
     (json-response res {:success true})))
 
+(defn update-session-handler
+  "PATCH /api/sessions/:id"
+  [^js req res]
+  (let [session-id (.. req -params -id)
+        body (js->clj (.-body req) :keywordize-keys true)
+        updates (cond-> {}
+                  (:target_branch body) (assoc :target-branch (:target_branch body))
+                  (:project body) (assoc :project (:project body))
+                  (:repo_path body) (assoc :repo-path (:repo_path body)))]
+    (if-let [session (db/update-session! session-id updates)]
+      (json-response res {:session session})
+      (error-response res 404 "Session not found"))))
+
 ;; Diff endpoints
 
 (defn- get-files-with-size
@@ -77,6 +90,54 @@
       nil
       (when (<= (:size info) max-size)
         (git/file-to-diff-format file-path (:content info))))))
+
+(defn get-branches-handler
+  "GET /api/sessions/:id/branches"
+  [^js req res]
+  (let [session-id (.. req -params -id)]
+    (if-let [session (db/get-session session-id)]
+      (let [repo-path (:repo-path session)
+            branches (git/list-branches repo-path)]
+        (json-response res {:branches branches}))
+      (error-response res 404 "Session not found"))))
+
+(defn get-staged-files-handler
+  "GET /api/sessions/:id/staged"
+  [^js req res]
+  (let [session-id (.. req -params -id)]
+    (if-let [session (db/get-session session-id)]
+      (let [repo-path (:repo-path session)
+            staged (git/get-staged-files repo-path)
+            unstaged (git/get-unstaged-files repo-path)]
+        (json-response res {:staged (vec staged)
+                            :unstaged (vec unstaged)}))
+      (error-response res 404 "Session not found"))))
+
+(defn get-untracked-files-handler
+  "GET /api/sessions/:id/untracked"
+  [^js req res]
+  (let [session-id (.. req -params -id)]
+    (if-let [session (db/get-session session-id)]
+      (let [repo-path (:repo-path session)
+            untracked (git/get-untracked-files repo-path)]
+        (json-response res {:untracked (vec untracked)}))
+      (error-response res 404 "Session not found"))))
+
+(defn stage-file-handler
+  "POST /api/sessions/:id/stage"
+  [^js req res]
+  (let [session-id (.. req -params -id)
+        body (js->clj (.-body req) :keywordize-keys true)
+        file-path (:path body)]
+    (if-let [session (db/get-session session-id)]
+      (let [repo-path (:repo-path session)]
+        (git/stage-file! repo-path file-path)
+        (let [staged (git/get-staged-files repo-path)
+              unstaged (git/get-unstaged-files repo-path)]
+          (json-response res {:success true
+                              :staged (vec staged)
+                              :unstaged (vec unstaged)})))
+      (error-response res 404 "Session not found"))))
 
 (defn get-diff-handler
   "GET /api/sessions/:id/diff"
@@ -163,6 +224,26 @@
                                 :parsed parsed}))))
       (error-response res 404 "Session not found"))))
 
+(defn get-context-lines-handler
+  "GET /api/sessions/:id/context/:file
+   Get context lines for expanding diff view.
+   Query params: from (line number), to (line number)"
+  [^js req res]
+  (let [session-id (.. req -params -id)
+        file (js/decodeURIComponent (.. req -params -file))
+        from-line (js/parseInt (or (.. req -query -from) "1") 10)
+        to-line (js/parseInt (or (.. req -query -to) "1") 10)]
+    (if-let [session (db/get-session session-id)]
+      (let [repo-path (:repo-path session)
+            lines (git/get-lines-range repo-path file from-line to-line)]
+        (if lines
+          (json-response res {:file file
+                              :from from-line
+                              :to to-line
+                              :lines lines})
+          (error-response res 404 "Could not read file")))
+      (error-response res 404 "Session not found"))))
+
 ;; File management endpoints
 
 (defn register-files-handler
@@ -201,6 +282,15 @@
         body (js->clj (.-body req) :keywordize-keys true)
         path (:path body)]
     (sessions/remove-manual-file! session-id path)
+    (json-response res {:success true :path path})))
+
+(defn restore-file-handler
+  "POST /api/sessions/:id/restore-file"
+  [^js req res]
+  (let [session-id (.. req -params -id)
+        body (js->clj (.-body req) :keywordize-keys true)
+        path (:path body)]
+    (sessions/restore-file! session-id path)
     (json-response res {:success true :path path})))
 
 ;; Comment endpoints
@@ -353,18 +443,29 @@
   (.get app "/api/sessions" list-sessions-handler)
   (.post app "/api/sessions" create-session-handler)
   (.get app "/api/sessions/:id" get-session-handler)
+  (.patch app "/api/sessions/:id" update-session-handler)
   (.delete app "/api/sessions/:id" delete-session-handler)
+
+  ;; Branches
+  (.get app "/api/sessions/:id/branches" get-branches-handler)
+
+  ;; Git staging
+  (.get app "/api/sessions/:id/staged" get-staged-files-handler)
+  (.post app "/api/sessions/:id/stage" stage-file-handler)
+  (.get app "/api/sessions/:id/untracked" get-untracked-files-handler)
 
   ;; Diff
   (.get app "/api/sessions/:id/diff" get-diff-handler)
   (.get app "/api/sessions/:id/diff/:file" get-file-diff-handler)
   (.get app "/api/sessions/:id/file-content/:file" get-file-content-handler)
+  (.get app "/api/sessions/:id/context/:file" get-context-lines-handler)
 
   ;; Files
   (.post app "/api/sessions/:id/files" register-files-handler)
   (.delete app "/api/sessions/:id/files" unregister-files-handler)
   (.post app "/api/sessions/:id/manual-files" add-manual-file-handler)
   (.delete app "/api/sessions/:id/manual-files" remove-manual-file-handler)
+  (.post app "/api/sessions/:id/restore-file" restore-file-handler)
 
   ;; Comments
   (.get app "/api/sessions/:id/comments" list-comments-handler)

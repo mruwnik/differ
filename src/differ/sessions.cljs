@@ -140,9 +140,20 @@
        :project (:project session)
        :branch (:branch session)
        :target-branch (:target-branch session)
+       :repo-path (:repo-path session)
        :files files
+       :excluded-files (vec (:manual-removals session))
        :comments comments
        :unresolved-count (:unresolved-count session)})))
+
+(defn restore-file!
+  "Restore an excluded file back to the review set."
+  [session-id path]
+  (when-let [session (db/get-session session-id)]
+    (let [current (set (:manual-removals session))
+          updated (disj current path)]
+      (db/update-session! session-id {:manual-removals (vec updated)})
+      path)))
 
 (defn archive-session!
   "Archive/delete a session and all its data."

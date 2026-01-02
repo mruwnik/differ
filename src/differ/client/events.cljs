@@ -5,12 +5,26 @@
             [differ.client.db :as db]
             [differ.client.api :as api]))
 
+;; LocalStorage helpers
+(defn- load-preference [key]
+  (try
+    (when-let [value (.getItem js/localStorage key)]
+      (keyword value))
+    (catch :default _ nil)))
+
+(defn- save-preference! [key value]
+  (try
+    (.setItem js/localStorage key (name value))
+    (catch :default _ nil)))
+
 ;; Initialize
 (rf/reg-event-fx
  :initialize
  (fn [_ _]
-   {:db db/default-db
-    :dispatch [:load-sessions]}))
+   (let [saved-view-mode (load-preference "differ-view-mode")]
+     {:db (cond-> db/default-db
+            saved-view-mode (assoc :diff-view-mode saved-view-mode))
+      :dispatch [:load-sessions]})))
 
 ;; Navigation
 (rf/reg-event-fx
@@ -35,7 +49,9 @@
       :push-url {:path (str "/session/" session-id) :replace? replace?}
       :dispatch-n [[:load-session session-id]
                    [:load-diff session-id]
-                   [:load-comments session-id]]})))
+                   [:load-comments session-id]
+                   [:load-staged-files session-id]
+                   [:load-untracked-files session-id]]})))
 
 ;; Parse URL hash for line highlighting
 (rf/reg-event-fx
@@ -125,6 +141,7 @@
  (fn [db [_ response]]
    (-> db
        (assoc :current-session response)
+       (assoc :excluded-files (set (:excluded-files response)))
        (assoc-in [:loading :session] false))))
 
 ;; Diff
@@ -177,7 +194,9 @@
 (rf/reg-event-db
  :toggle-diff-view-mode
  (fn [db _]
-   (update db :diff-view-mode #(if (= % :unified) :split :unified))))
+   (let [new-mode (if (= (:diff-view-mode db) :unified) :split :unified)]
+     (save-preference! "differ-view-mode" new-mode)
+     (assoc db :diff-view-mode new-mode))))
 
 ;; Toggle file collapsed state
 (rf/reg-event-db
@@ -211,14 +230,44 @@
  (fn [db _]
    (dissoc db :highlighted-line)))
 
-;; Expand context (placeholder - needs backend support)
+(def context-expand-size 15) ;; Lines to expand at a time
+
+;; Expand context - fetch additional lines from server (15 at a time)
 (rf/reg-event-fx
  :expand-context
  (fn [{:keys [db]} [_ {:keys [file from to direction]}]]
-   ;; TODO: Implement backend API call to fetch additional context lines
-   ;; For now, just log the request
-   (js/console.log "Expand context requested:" file "lines" from "-" to direction)
-   {:db db}))
+   (let [session-id (db/current-session-id db)
+         total-lines (- to from -1)
+         ;; Expand 15 lines at a time, from the appropriate end
+         [fetch-from fetch-to]
+         (if (<= total-lines context-expand-size)
+           ;; Small gap - fetch all
+           [from to]
+           ;; Large gap - fetch 15 lines from the end closest to existing content
+           (case direction
+             :up   [(- to context-expand-size -1) to]      ;; Bottom 15 (closest to hunk below)
+             :down [from (+ from context-expand-size -1)]  ;; Top 15 (closest to hunk above)
+             :both [(- to context-expand-size -1) to]))]   ;; Default to bottom 15
+     {:http (api/fetch-context-lines session-id file fetch-from fetch-to)})))
+
+;; Context lines loaded - merge into parsed diff
+(rf/reg-event-db
+ :context-lines-loaded
+ (fn [db [_ file-path from-line to-line response]]
+   (let [lines (:lines response)
+         ;; Convert to diff line format (context lines with space prefix)
+         context-lines (mapv (fn [{:keys [line content]}]
+                               {:type :context
+                                :content content
+                                :old-num line
+                                :new-num line
+                                :file file-path})
+                             lines)]
+     ;; Store expanded context in db
+     (update-in db [:expanded-context file-path]
+                (fn [existing]
+                  (merge (or existing {})
+                         {[from-line to-line] context-lines}))))))
 
 ;; Comment form
 (rf/reg-event-db
@@ -297,6 +346,87 @@
  (fn [_ [_ _session-id _response]]
    {:dispatch [:load-sessions]}))
 
+;; Update session settings
+(rf/reg-event-fx
+ :update-session
+ (fn [{:keys [db]} [_ updates]]
+   (let [session-id (get-in db [:current-session :session-id])]
+     {:http (api/update-session session-id updates)})))
+
+(rf/reg-event-fx
+ :session-updated
+ (fn [{:keys [db]} [_ response]]
+   (let [session-id (get-in db [:current-session :session-id])]
+     {:db (assoc db :current-session (:session response))
+      :dispatch-n [[:load-diff session-id]
+                   [:hide-session-settings]]})))
+
+;; Session settings modal
+(rf/reg-event-fx
+ :show-session-settings
+ (fn [{:keys [db]} _]
+   (let [session-id (db/current-session-id db)]
+     {:db (assoc db :session-settings-visible true)
+      :dispatch [:load-branches session-id]})))
+
+(rf/reg-event-db
+ :hide-session-settings
+ (fn [db _]
+   (-> db
+       (assoc :session-settings-visible false)
+       (dissoc :branches))))
+
+;; Load branches for autocomplete
+(rf/reg-event-fx
+ :load-branches
+ (fn [{:keys [db]} [_ session-id]]
+   {:db (assoc-in db [:loading :branches] true)
+    :http (api/fetch-branches session-id)}))
+
+(rf/reg-event-db
+ :branches-loaded
+ (fn [db [_ response]]
+   (-> db
+       (assoc :branches (:branches response))
+       (assoc-in [:loading :branches] false))))
+
+;; Git staging
+(rf/reg-event-fx
+ :load-staged-files
+ (fn [{:keys [db]} [_ session-id]]
+   {:http (api/fetch-staged-files session-id)}))
+
+(rf/reg-event-db
+ :staged-files-loaded
+ (fn [db [_ response]]
+   (-> db
+       (assoc :staged-files (set (:staged response)))
+       (assoc :unstaged-files (set (:unstaged response))))))
+
+(rf/reg-event-fx
+ :stage-file
+ (fn [{:keys [db]} [_ file-path]]
+   (let [session-id (db/current-session-id db)]
+     {:http (api/stage-file session-id file-path)})))
+
+(rf/reg-event-db
+ :file-staged
+ (fn [db [_ response]]
+   (-> db
+       (assoc :staged-files (set (:staged response)))
+       (assoc :unstaged-files (set (:unstaged response))))))
+
+;; Untracked files
+(rf/reg-event-fx
+ :load-untracked-files
+ (fn [{:keys [db]} [_ session-id]]
+   {:http (api/fetch-untracked-files session-id)}))
+
+(rf/reg-event-db
+ :untracked-files-loaded
+ (fn [db [_ response]]
+   (assoc db :untracked-files-list (vec (:untracked response)))))
+
 ;; SSE events
 (rf/reg-event-db
  :sse-connected
@@ -363,7 +493,9 @@
  :manual-file-added
  (fn [{:keys [db]} [_ _response]]
    (let [session-id (db/current-session-id db)]
-     {:dispatch [:load-diff session-id]})))
+     {:dispatch-n [[:load-session session-id]
+                   [:load-diff session-id]
+                   [:load-untracked-files session-id]]})))
 
 (rf/reg-event-fx
  :remove-manual-file
@@ -375,7 +507,23 @@
  :manual-file-removed
  (fn [{:keys [db]} [_ _response]]
    (let [session-id (db/current-session-id db)]
-     {:dispatch [:load-diff session-id]})))
+     {:dispatch-n [[:load-session session-id]
+                   [:load-diff session-id]
+                   [:load-untracked-files session-id]]})))
+
+(rf/reg-event-fx
+ :restore-file
+ (fn [{:keys [db]} [_ path]]
+   (let [session-id (db/current-session-id db)]
+     {:http (api/restore-file session-id path)})))
+
+(rf/reg-event-fx
+ :file-restored
+ (fn [{:keys [db]} [_ _response]]
+   (let [session-id (db/current-session-id db)]
+     {:dispatch-n [[:load-session session-id]
+                   [:load-diff session-id]
+                   [:load-untracked-files session-id]]})))
 
 ;; Load file content on demand (for large files)
 (rf/reg-event-fx

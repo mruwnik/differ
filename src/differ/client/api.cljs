@@ -92,6 +92,38 @@
    :on-success [:session-deleted session-id]
    :on-failure [:api-error]})
 
+(defn update-session [session-id updates]
+  {:method "PATCH"
+   :url (str "/api/sessions/" session-id)
+   :body updates
+   :on-success [:session-updated]
+   :on-failure [:api-error]})
+
+(defn fetch-branches [session-id]
+  {:method "GET"
+   :url (str "/api/sessions/" session-id "/branches")
+   :on-success [:branches-loaded]
+   :on-failure [:api-error]})
+
+(defn fetch-staged-files [session-id]
+  {:method "GET"
+   :url (str "/api/sessions/" session-id "/staged")
+   :on-success [:staged-files-loaded]
+   :on-failure [:api-error]})
+
+(defn stage-file [session-id file-path]
+  {:method "POST"
+   :url (str "/api/sessions/" session-id "/stage")
+   :body {:path file-path}
+   :on-success [:file-staged]
+   :on-failure [:api-error]})
+
+(defn fetch-untracked-files [session-id]
+  {:method "GET"
+   :url (str "/api/sessions/" session-id "/untracked")
+   :on-success [:untracked-files-loaded]
+   :on-failure [:api-error]})
+
 (defn add-manual-file [session-id path]
   {:method "POST"
    :url (str "/api/sessions/" session-id "/manual-files")
@@ -106,8 +138,22 @@
    :on-success [:manual-file-removed]
    :on-failure [:api-error]})
 
+(defn restore-file [session-id path]
+  {:method "POST"
+   :url (str "/api/sessions/" session-id "/restore-file")
+   :body {:path path}
+   :on-success [:file-restored]
+   :on-failure [:api-error]})
+
 (defn fetch-file-content [session-id file-path]
   {:method "GET"
    :url (str "/api/sessions/" session-id "/file-content/" (js/encodeURIComponent file-path))
    :on-success [:file-content-loaded file-path]
+   :on-failure [:api-error]})
+
+(defn fetch-context-lines [session-id file-path from-line to-line]
+  {:method "GET"
+   :url (str "/api/sessions/" session-id "/context/" (js/encodeURIComponent file-path)
+             "?from=" from-line "&to=" to-line)
+   :on-success [:context-lines-loaded file-path from-line to-line]
    :on-failure [:api-error]})

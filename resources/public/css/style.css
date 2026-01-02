@@ -244,6 +244,28 @@ a:hover {
   font-weight: bold;
 }
 
+.tree-file-remove {
+  margin-left: auto;
+  background: none;
+  border: none;
+  color: #6a737d;
+  cursor: pointer;
+  padding: 0 4px;
+  font-size: 14px;
+  font-weight: bold;
+  opacity: 0;
+  transition: opacity 0.15s;
+  flex-shrink: 0;
+}
+
+.tree-file:hover .tree-file-remove {
+  opacity: 1;
+}
+
+.tree-file-remove:hover {
+  color: #cf222e;
+}
+
 .file-list ul {
   list-style: none;
   padding: 0;
@@ -462,10 +484,10 @@ a:hover {
   white-space: pre;
 }
 
-/* Hide empty cells in split view */
+/* Style empty cells in split view - keep visible for proper layout */
 .diff-line.split .diff-line-content.empty,
 .diff-line.split .diff-line-num.empty {
-  display: none;
+  background: #f6f8fa;
 }
 
 .diff-line.split .diff-line-content.deletion {

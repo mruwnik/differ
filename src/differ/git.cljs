@@ -58,6 +58,36 @@
         ;; Fall back to main
         "main")))
 
+(defn list-branches
+  "List all local branches."
+  [repo-path]
+  (if-let [output (exec-git repo-path "branch" "--format" "'%(refname:short)'")]
+    (->> (str/split-lines output)
+         (map #(str/replace % #"^'|'$" ""))  ;; Remove surrounding quotes
+         (filter seq)
+         sort
+         vec)
+    []))
+
+(defn get-staged-files
+  "Get list of files that are staged for commit."
+  [repo-path]
+  (if-let [output (exec-git repo-path "diff" "--cached" "--name-only")]
+    (set (filter seq (str/split-lines output)))
+    #{}))
+
+(defn get-unstaged-files
+  "Get list of files with unstaged modifications."
+  [repo-path]
+  (if-let [output (exec-git repo-path "diff" "--name-only")]
+    (set (filter seq (str/split-lines output)))
+    #{}))
+
+(defn stage-file!
+  "Stage a file for commit (git add)."
+  [repo-path file-path]
+  (exec-git repo-path "add" (str "\"" file-path "\"")))
+
 (defn branch-exists?
   "Check if a branch exists."
   [repo-path branch]
@@ -121,6 +151,20 @@
       (when content
         (let [lines (str/split-lines content)]
           (get lines (dec line)))))))
+
+(defn get-lines-range
+  "Get a range of lines from working tree.
+   Lines are 1-indexed, inclusive on both ends.
+   Returns vector of {:line <num> :content <string>}."
+  [repo-path file-path from-line to-line]
+  (when (and (pos? from-line) (pos? to-line) (<= from-line to-line))
+    (let [content (get-file-content repo-path nil file-path)]
+      (when content
+        (let [lines (str/split-lines content)]
+          (->> (range (dec from-line) (min to-line (count lines)))
+               (mapv (fn [idx]
+                       {:line (inc idx)
+                        :content (get lines idx)}))))))))
 
 (defn get-untracked-files
   "Get list of untracked files."
