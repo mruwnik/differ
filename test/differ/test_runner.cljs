@@ -10,6 +10,9 @@
             [differ.comments-test]
             [differ.api-test]
             [differ.mcp-test]
+            [differ.config-test]
+            [differ.diff-test]
+            [differ.watcher-test]
             [differ.client.db-test]
             [differ.client.subs-test]
             [differ.client.highlight-test]))
@@ -23,6 +26,9 @@
              'differ.comments-test
              'differ.api-test
              'differ.mcp-test
+             'differ.config-test
+             'differ.diff-test
+             'differ.watcher-test
              'differ.client.db-test
              'differ.client.subs-test
              'differ.client.highlight-test))
