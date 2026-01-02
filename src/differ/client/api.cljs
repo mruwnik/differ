@@ -61,14 +61,18 @@
    :on-success [:comments-loaded]
    :on-failure [:api-error]})
 
-(defn add-comment [session-id {:keys [file line text author parent-id]}]
+(defn add-comment [session-id {:keys [file line text author parent-id side line-content context-before context-after]}]
   {:method "POST"
    :url (str "/api/sessions/" session-id "/comments")
    :body {:file file
           :line line
           :text text
           :author author
-          :parent-id parent-id}
+          :parent-id parent-id
+          :side side
+          :line-content line-content
+          :context-before context-before
+          :context-after context-after}
    :on-success [:comment-added]
    :on-failure [:api-error]})
 

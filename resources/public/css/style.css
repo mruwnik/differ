@@ -244,6 +244,12 @@ a:hover {
   font-weight: bold;
 }
 
+.tree-file.untracked .tree-file-name::after {
+  content: " ?";
+  color: #6a737d;
+  font-weight: bold;
+}
+
 .tree-file-remove {
   margin-left: auto;
   background: none;
@@ -309,6 +315,13 @@ a:hover {
 .file-list li.deleted::before {
   content: "-";
   color: #d73a49;
+  margin-right: 8px;
+  font-weight: bold;
+}
+
+.file-list li.untracked::before {
+  content: "?";
+  color: #6a737d;
   margin-right: 8px;
   font-weight: bold;
 }

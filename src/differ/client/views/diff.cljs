@@ -179,10 +179,14 @@
   (let [files @(rf/subscribe [:files])
         files-set (set files)
         changed-files @(rf/subscribe [:changed-files])
+        changed-paths (set (map :path changed-files))
         selected @(rf/subscribe [:selected-file])
         expanded-folders @(rf/subscribe [:expanded-folders])
         untracked-files @(rf/subscribe [:untracked-files-list])
+        untracked-set (set untracked-files)
         excluded-files @(rf/subscribe [:excluded-files])
+        ;; Only show excluded files that still have changes or are untracked
+        relevant-excluded (filter #(or (changed-paths %) (untracked-set %)) excluded-files)
         ;; Filter out files that are already in review or excluded
         available-untracked (remove #(or (files-set %) (excluded-files %)) untracked-files)]
     [:div.file-list
@@ -191,13 +195,13 @@
        [:p {:style {:color "#6a737d" :font-size "13px"}}
         "No files in review"]
        [file-tree files selected changed-files expanded-folders])
-     (when (seq excluded-files)
+     (when (seq relevant-excluded)
        [:<>
         [:h3 {:style {:margin-top "16px"}} "Excluded"]
         [:p {:style {:color "#6a737d" :font-size "11px" :margin "0 0 8px 0"}}
          "Click to restore"]
         [:div.file-tree
-         (for [file (sort excluded-files)]
+         (for [file (sort relevant-excluded)]
            ^{:key file}
            [excluded-file-item file])]])
      (when (seq available-untracked)
@@ -232,18 +236,43 @@
     (.replaceState js/history nil "" hash)
     (rf/dispatch [:set-highlighted-line file-path line-num])))
 
+(defn- comment-matches-line?
+  "Check if a comment matches a specific line.
+   New-style comments (with line-content) match by content+context+side.
+   Old-style comments (without line-content) match by line number only."
+  [comment line-num line-side content prev-content next-content]
+  (let [{c-line :line c-side :side c-content :line-content
+         c-before :context-before c-after :context-after} comment]
+    (if c-content
+      ;; New style: match by content + context + side
+      (and (= c-content content)
+           (= c-side line-side)
+           ;; Context matching: only require match if comment has context stored
+           (or (nil? c-before) (= c-before prev-content))
+           (or (nil? c-after) (= c-after next-content)))
+      ;; Old style: match by line number only
+      (= c-line line-num))))
+
 (defn diff-line-split
   "Render a diff line in split (side-by-side) mode with separate old/new columns."
-  [{:keys [type content old-num new-num file]} file-comments comment-form highlighted-line]
+  [{:keys [type content old-num new-num file]} file-comments comment-form highlighted-line
+   {:keys [prev-content next-content]}]
   (let [line-num (or new-num old-num)
-        comments-for-line (filterv #(= (:line %) line-num) (or file-comments []))
         is-addition (= type :addition)
         is-deletion (= type :deletion)
         is-context (= type :context)
+        ;; Determine side for comment anchoring
+        side (if is-deletion "old" "new")
+        ;; Only show comments on additions and context lines, not deletions
+        ;; Match by content+context for new comments, line number for old comments
+        comments-for-line (when-not is-deletion
+                            (filterv #(comment-matches-line? % line-num side content prev-content next-content)
+                                     (or file-comments [])))
         is-highlighted (and (= (:file highlighted-line) file)
                             (= (:line highlighted-line) line-num))
-        ;; Check if comment form should appear after this line
-        show-form-here? (and (:visible comment-form)
+        ;; Check if comment form should appear after this line (not on deletions)
+        show-form-here? (and (not is-deletion)
+                             (:visible comment-form)
                              (= (:file comment-form) file)
                              (= (:line comment-form) line-num)
                              (not (:parent-id comment-form)))]
@@ -268,7 +297,12 @@
        (when-not is-deletion
          [:<>
           [:button.add-comment-btn
-           {:on-click #(rf/dispatch [:show-comment-form {:file file :line new-num}])
+           {:on-click #(rf/dispatch [:show-comment-form {:file file
+                                                         :line new-num
+                                                         :side side
+                                                         :line-content content
+                                                         :context-before prev-content
+                                                         :context-after next-content}])
             :title "Add comment"}
            "+"]
           [:a.line-num-link
@@ -284,12 +318,12 @@
           is-addition content
           is-context content
           :else "")]]]
-     ;; Inline comments for this line
+     ;; Inline comments for this line (not on deletions)
      (when (seq comments-for-line)
        [:tr
         [:td {:col-span 4 :style {:padding 0}}
          [comments/comment-threads comments-for-line file line-num]]])
-     ;; Inline comment form after this line
+     ;; Inline comment form after this line (not on deletions)
      (when show-form-here?
        [:tr.comment-form-row
         [:td {:col-span 4 :style {:padding 0}}
@@ -297,17 +331,27 @@
 
 (defn diff-line-unified
   "Render a diff line in unified (stacked) mode with +/- prefix."
-  [{:keys [type content old-num new-num file]} file-comments comment-form highlighted-line]
+  [{:keys [type content old-num new-num file]} file-comments comment-form highlighted-line
+   {:keys [prev-content next-content]}]
   (let [line-num (or new-num old-num)
-        comments-for-line (filterv #(= (:line %) line-num) (or file-comments []))
+        ;; Only show comments on additions and context lines, not deletions
+        ;; This prevents duplicate comments when a line is modified (deleted + added with same line num)
+        is-deletion (= type :deletion)
+        ;; Determine side for comment anchoring
+        side (if is-deletion "old" "new")
+        ;; Match by content+context for new comments, line number for old comments
+        comments-for-line (when-not is-deletion
+                            (filterv #(comment-matches-line? % line-num side content prev-content next-content)
+                                     (or file-comments [])))
         prefix (case type
                  :addition "+"
                  :deletion "-"
                  " ")
         is-highlighted (and (= (:file highlighted-line) file)
                             (= (:line highlighted-line) line-num))
-        ;; Check if comment form should appear after this line
-        show-form-here? (and (:visible comment-form)
+        ;; Check if comment form should appear after this line (not on deletions)
+        show-form-here? (and (not is-deletion)
+                             (:visible comment-form)
                              (= (:file comment-form) file)
                              (= (:line comment-form) line-num)
                              (not (:parent-id comment-form)))]
@@ -316,10 +360,16 @@
       {:id (line-id file line-num)
        :class (str (name type) (when is-highlighted " highlighted"))}
       [:td.diff-line-num.unified.line-num-with-button
-       [:button.add-comment-btn
-        {:on-click #(rf/dispatch [:show-comment-form {:file file :line line-num}])
-         :title "Add comment"}
-        "+"]
+       (when-not is-deletion
+         [:button.add-comment-btn
+          {:on-click #(rf/dispatch [:show-comment-form {:file file
+                                                        :line line-num
+                                                        :side side
+                                                        :line-content content
+                                                        :context-before prev-content
+                                                        :context-after next-content}])
+           :title "Add comment"}
+          "+"])
        [:a.line-num-link
         {:href (str "#" (js/encodeURIComponent file) ":" line-num)
          :on-click (fn [e]
@@ -329,12 +379,12 @@
       [:td.diff-line-content.unified
        [:pre {:style {:margin 0 :font-family "inherit"}}
         (str prefix " " content)]]]
-     ;; Inline comments for this line
+     ;; Inline comments for this line (not on deletions)
      (when (seq comments-for-line)
        [:tr
         [:td {:col-span 2 :style {:padding 0}}
          [comments/comment-threads comments-for-line file line-num]]])
-     ;; Inline comment form after this line
+     ;; Inline comment form after this line (not on deletions)
      (when show-form-here?
        [:tr.comment-form-row
         [:td {:col-span 2 :style {:padding 0}}
@@ -342,19 +392,24 @@
 
 (defn diff-line
   "Render a diff line in the current view mode."
-  [line-data file-comments view-mode comment-form highlighted-line]
+  [line-data file-comments view-mode comment-form highlighted-line line-context]
   (if (= view-mode :unified)
-    [diff-line-unified line-data file-comments comment-form highlighted-line]
-    [diff-line-split line-data file-comments comment-form highlighted-line]))
+    [diff-line-unified line-data file-comments comment-form highlighted-line line-context]
+    [diff-line-split line-data file-comments comment-form highlighted-line line-context]))
 
 (defn- expanded-context-lines
   "Render already-expanded context lines."
   [context-lines file-comments view-mode comment-form highlighted-line]
   (into [:<>]
-        (map (fn [{:keys [old-num new-num file] :as line-data}]
-               ^{:key (str file "-ctx-" (or new-num old-num))}
-               [diff-line line-data file-comments view-mode comment-form highlighted-line])
-             context-lines)))
+        (map-indexed
+         (fn [idx {:keys [old-num new-num file] :as line-data}]
+           (let [prev-line (when (pos? idx) (nth context-lines (dec idx)))
+                 next-line (when (< idx (dec (count context-lines))) (nth context-lines (inc idx)))
+                 line-context {:prev-content (:content prev-line)
+                               :next-content (:content next-line)}]
+             ^{:key (str file "-ctx-" (or new-num old-num))}
+             [diff-line line-data file-comments view-mode comment-form highlighted-line line-context]))
+         context-lines)))
 
 (defn- find-expanded-in-range
   "Find all expanded ranges that fall within [from-line, to-line].
@@ -367,26 +422,48 @@
        (map (fn [[[f t] lines]] [f t lines]))))
 
 (defn- expand-button
-  "Render an expand button for a gap."
+  "Render an expand button for a gap.
+   When direction is :both, shows two buttons for up/down expansion."
   [file from-line to-line direction view-mode]
   (let [lines-hidden (inc (- to-line from-line))
         col-span (if (= view-mode :unified) 2 4)]
     (when (pos? lines-hidden)
       [:tr.diff-expand-row
        [:td {:col-span col-span}
-        [:button.diff-expand-btn
-         {:on-click #(rf/dispatch [:expand-context {:file file
-                                                    :from from-line
-                                                    :to to-line
-                                                    :direction direction}])
-          :title (str "Load " lines-hidden " more lines")}
-         [:span.diff-expand-icon
-          (case direction
-            :up "↑"
-            :down "↓"
-            :both "↕")]
-         [:span.diff-expand-text
-          (str " Expand " lines-hidden " hidden lines")]]]])))
+        (if (= direction :both)
+          ;; Show two buttons for bidirectional expansion
+          [:div {:style {:display "flex" :justify-content "center" :gap "16px"}}
+           [:button.diff-expand-btn
+            {:on-click #(rf/dispatch [:expand-context {:file file
+                                                       :from from-line
+                                                       :to to-line
+                                                       :direction :up}])
+             :title "Expand upward"}
+            [:span.diff-expand-icon "↑"]
+            [:span.diff-expand-text " Expand up"]]
+           [:span {:style {:color "#6a737d"}} (str lines-hidden " hidden")]
+           [:button.diff-expand-btn
+            {:on-click #(rf/dispatch [:expand-context {:file file
+                                                       :from from-line
+                                                       :to to-line
+                                                       :direction :down}])
+             :title "Expand downward"}
+            [:span.diff-expand-icon "↓"]
+            [:span.diff-expand-text " Expand down"]]]
+          ;; Single button for unidirectional expansion
+          [:button.diff-expand-btn
+           {:on-click #(rf/dispatch [:expand-context {:file file
+                                                      :from from-line
+                                                      :to to-line
+                                                      :direction direction}])
+            :title (str "Load " lines-hidden " more lines")}
+           [:span.diff-expand-icon
+            (case direction
+              :up "↑"
+              :down "↓"
+              "↕")]
+           [:span.diff-expand-text
+            (str " Expand " lines-hidden " hidden lines")]])]])))
 
 (defn- expand-context-row
   "Renders expanded context lines and/or expand buttons for remaining gaps."
@@ -398,18 +475,20 @@
         ;; Nothing expanded yet - show single expand button
         [expand-button file from-line to-line direction view-mode]
         ;; Some ranges expanded - show gaps and expanded content
-        (let [items (loop [pos from-line
+        ;; Preserve original direction for sub-gaps (if :both, all sub-gaps are :both)
+        (let [sub-gap-dir (if (= direction :both) :both nil)
+              items (loop [pos from-line
                            ranges expanded-ranges
                            result []]
                       (if (empty? ranges)
                         ;; Add trailing gap if any
                         (if (< pos to-line)
-                          (conj result {:type :gap :from pos :to to-line :dir :down})
+                          (conj result {:type :gap :from pos :to to-line :dir (or sub-gap-dir :down)})
                           result)
                         (let [[f t lines] (first ranges)
                               ;; Gap before this expanded range?
                               with-gap (if (< pos f)
-                                         (conj result {:type :gap :from pos :to (dec f) :dir :up})
+                                         (conj result {:type :gap :from pos :to (dec f) :dir (or sub-gap-dir :up)})
                                          result)]
                           (recur (inc t)
                                  (rest ranges)
@@ -458,8 +537,12 @@
      [:tr.diff-hunk-header
       [:td {:col-span col-span} header]]
      (for [[idx line] (map-indexed vector line-data)]
-       ^{:key idx}
-       [diff-line line file-comments view-mode comment-form highlighted-line])]))
+       (let [prev-line (when (pos? idx) (nth line-data (dec idx)))
+             next-line (when (< idx (dec (count line-data))) (nth line-data (inc idx)))
+             line-context {:prev-content (:content prev-line)
+                           :next-content (:content next-line)}]
+         ^{:key idx}
+         [diff-line line file-comments view-mode comment-form highlighted-line line-context]))]))
 
 (def large-file-threshold 50000) ;; Characters - files larger than this require explicit load
 (def line-count-threshold 100) ;; Files with more lines require explicit expansion

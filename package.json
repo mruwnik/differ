@@ -10,7 +10,9 @@
     "build:server": "shadow-cljs release server",
     "build:ui": "shadow-cljs release ui",
     "build": "shadow-cljs release server ui",
-    "start": "node target/server.js"
+    "start": "node target/server.js",
+    "test": "shadow-cljs compile test && node target/test.js",
+    "test:watch": "shadow-cljs watch test"
   },
   "dependencies": {
     "better-sqlite3": "^11.6.0",

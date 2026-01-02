@@ -24,6 +24,20 @@
     (ensure-dir dir)
     (path/join dir "review.db")))
 
+(defn- migrate-comments-table [db]
+  "Add new columns for better comment anchoring."
+  ;; Check if columns exist by trying to select them
+  (try
+    (.exec db "SELECT side FROM comments LIMIT 1")
+    (catch :default _
+      ;; Columns don't exist, add them
+      (.exec db "
+        ALTER TABLE comments ADD COLUMN side TEXT DEFAULT 'new';
+        ALTER TABLE comments ADD COLUMN line_content TEXT;
+        ALTER TABLE comments ADD COLUMN context_before TEXT;
+        ALTER TABLE comments ADD COLUMN context_after TEXT;
+      "))))
+
 (defn- create-tables [db]
   (.exec db "
     CREATE TABLE IF NOT EXISTS sessions (
@@ -46,9 +60,9 @@
       id TEXT PRIMARY KEY,
       session_id TEXT NOT NULL,
       parent_id TEXT,
-      file TEXT NOT NULL,
-      line INTEGER NOT NULL,
-      line_content_hash TEXT NOT NULL,
+      file TEXT,
+      line INTEGER,
+      line_content_hash TEXT,
       text TEXT NOT NULL,
       author TEXT NOT NULL,
       resolved INTEGER DEFAULT 0,
@@ -144,6 +158,7 @@
     (let [db (Database (db-path))]
       (.pragma db "journal_mode = WAL")
       (create-tables db)
+      (migrate-comments-table db)
       (reset! db-instance db)))
   @db-instance)
 
@@ -249,6 +264,10 @@
      :file (.-file row)
      :line (.-line row)
      :line-content-hash (.-line_content_hash row)
+     :side (or (.-side row) "new")
+     :line-content (.-line_content row)
+     :context-before (.-context_before row)
+     :context-after (.-context_after row)
      :text (.-text row)
      :author (.-author row)
      :resolved (= 1 (.-resolved row))
@@ -301,13 +320,13 @@
 
 (defn create-comment!
   "Create a new comment."
-  [{:keys [session-id parent-id file line line-content-hash text author]}]
+  [{:keys [session-id parent-id file line line-content-hash side line-content context-before context-after text author]}]
   (let [id (util/gen-uuid)
         now (util/now-iso)
         ^js stmt (.prepare (db)
-                           "INSERT INTO comments (id, session_id, parent_id, file, line, line_content_hash, text, author, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")]
-    (.run stmt id session-id parent-id file line line-content-hash text author now now)
+                           "INSERT INTO comments (id, session_id, parent_id, file, line, line_content_hash, side, line_content, context_before, context_after, text, author, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")]
+    (.run stmt id session-id parent-id file line line-content-hash (or side "new") line-content context-before context-after text author now now)
     ;; Update session timestamp
     (let [^js update-stmt (.prepare (db) "UPDATE sessions SET updated_at = ? WHERE id = ?")]
       (.run update-stmt now session-id))

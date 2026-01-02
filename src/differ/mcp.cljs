@@ -3,8 +3,9 @@
   (:require [differ.sessions :as sessions]
             [differ.comments :as comments]
             [differ.db :as db]
+            [differ.git :as git]
             [differ.sse :as sse]
-            [clojure.walk :as walk]))
+            [differ.util :as util]))
 
 ;; MCP Protocol version
 (def protocol-version "2024-11-05")
@@ -93,7 +94,23 @@
                   :properties {:session_id {:type "string"}
                                :comment_id {:type "string"}
                                :author {:type "string"}}
-                  :required ["session_id" "comment_id" "author"]}}])
+                  :required ["session_id" "comment_id" "author"]}}
+
+   {:name "get_session_diff"
+    :description "Get the diff content for a session. Returns parsed hunks with file paths, line numbers, and changes."
+    :inputSchema {:type "object"
+                  :properties {:session_id {:type "string"}
+                               :file {:type "string"
+                                      :description "Optional - get diff for specific file only"}}
+                  :required ["session_id"]}}
+
+   {:name "get_file_versions"
+    :description "Get the original and modified versions of a file for side-by-side comparison."
+    :inputSchema {:type "object"
+                  :properties {:session_id {:type "string"}
+                               :file {:type "string"
+                                      :description "Path to the file relative to repo root"}}
+                  :required ["session_id" "file"]}}])
 
 ;; JSON-RPC helpers
 
@@ -122,86 +139,102 @@
 (defmethod handle-tool "list_sessions" [_ params]
   (let [sessions (sessions/list-sessions (:project params))]
     {:sessions (mapv (fn [s]
-                       {:session_id (:id s)
+                       {:session-id (:id s)
                         :project (:project s)
                         :branch (:branch s)
-                        :target_branch (:target-branch s)
-                        :unresolved_count (:unresolved-count s)
-                        :updated_at (:updated-at s)})
+                        :target-branch (:target-branch s)
+                        :unresolved-count (:unresolved-count s)
+                        :updated-at (:updated-at s)})
                      sessions)}))
 
 (defmethod handle-tool "get_or_create_session" [_ params]
-  (let [result (sessions/get-or-create-session
-                {:repo-path (:repo_path params)
-                 :project (:project params)
-                 :branch (:branch params)
-                 :target-branch (:target_branch params)})]
+  (let [result (sessions/get-or-create-session params)]
     (if-let [error (:error result)]
       (throw (ex-info error {:code invalid-params}))
       (let [session (:session result)]
-        {:session_id (:id session)
-         :target_branch (:target-branch session)
-         :repo_path (:repo-path session)
-         :is_new (:is-new result)}))))
+        {:session-id (:id session)
+         :target-branch (:target-branch session)
+         :repo-path (:repo-path session)
+         :is-new (:is-new result)}))))
 
-(defmethod handle-tool "register_files" [_ params]
-  (let [registered (sessions/register-files!
-                    (:session_id params)
-                    (:paths params)
-                    (:agent_id params))]
-    (sse/emit-files-changed! (:session_id params) registered)
+(defmethod handle-tool "register_files" [_ {:keys [session-id paths agent-id]}]
+  (let [registered (sessions/register-files! session-id paths agent-id)]
+    (sse/emit-files-changed! session-id registered)
     {:registered registered}))
 
-(defmethod handle-tool "unregister_files" [_ params]
-  (let [unregistered (sessions/unregister-files!
-                      (:session_id params)
-                      (:paths params)
-                      (:agent_id params))]
-    (sse/emit-files-changed! (:session_id params) unregistered)
+(defmethod handle-tool "unregister_files" [_ {:keys [session-id paths agent-id]}]
+  (let [unregistered (sessions/unregister-files! session-id paths agent-id)]
+    (sse/emit-files-changed! session-id unregistered)
     {:unregistered unregistered}))
 
-(defmethod handle-tool "get_review_state" [_ params]
-  (if-let [session (db/get-session (:session_id params))]
-    (let [state (sessions/get-review-state (:session_id params) (:repo-path session))]
+(defmethod handle-tool "get_review_state" [_ {:keys [session-id]}]
+  (if-let [session (db/get-session session-id)]
+    (let [state (sessions/get-review-state session-id (:repo-path session))]
       (when state
-        {:session_id (:session-id state)
+        {:session-id (:session-id state)
          :project (:project state)
          :branch (:branch state)
-         :target_branch (:target-branch state)
-         :repo_path (:repo-path session)
+         :target-branch (:target-branch state)
+         :repo-path (:repo-path session)
          :files (:files state)
-         :comments (mapv #(walk/stringify-keys %) (:comments state))}))
+         :comments (:comments state)}))
     (throw (ex-info "Session not found" {:code invalid-params}))))
 
-(defmethod handle-tool "get_pending_feedback" [_ params]
-  (let [pending (comments/get-pending-feedback
-                 (:session_id params)
-                 (:since params))]
-    {:comments (mapv #(walk/stringify-keys %) pending)}))
+(defmethod handle-tool "get_pending_feedback" [_ {:keys [session-id since]}]
+  (let [pending (comments/get-pending-feedback session-id since)]
+    {:comments pending}))
 
-(defmethod handle-tool "add_comment" [_ params]
-  (if-let [session (db/get-session (:session_id params))]
+(defmethod handle-tool "add_comment" [_ {:keys [session-id] :as params}]
+  (if-let [session (db/get-session session-id)]
     (let [comment (comments/add-comment!
-                   {:session-id (:session_id params)
-                    :parent-id (:parent_id params)
-                    :file (:file params)
-                    :line (:line params)
-                    :text (:text params)
-                    :author (:author params)
-                    :repo-path (:repo-path session)})]
-      (sse/emit-comment-added! (:session_id params) comment)
-      {:comment_id (:id comment)})
+                   (assoc params :repo-path (:repo-path session)))]
+      (sse/emit-comment-added! session-id comment)
+      {:comment-id (:id comment)})
     (throw (ex-info "Session not found" {:code invalid-params}))))
 
-(defmethod handle-tool "resolve_comment" [_ params]
-  (comments/resolve-comment! (:comment_id params) (:author params))
-  (sse/emit-comment-resolved! (:session_id params) (:comment_id params))
+(defmethod handle-tool "resolve_comment" [_ {:keys [session-id comment-id author]}]
+  (comments/resolve-comment! comment-id author)
+  (sse/emit-comment-resolved! session-id comment-id)
   {:success true})
 
-(defmethod handle-tool "unresolve_comment" [_ params]
-  (comments/unresolve-comment! (:comment_id params) (:author params))
-  (sse/emit-comment-resolved! (:session_id params) (:comment_id params))
+(defmethod handle-tool "unresolve_comment" [_ {:keys [session-id comment-id author]}]
+  (comments/unresolve-comment! comment-id author)
+  (sse/emit-comment-resolved! session-id comment-id)
   {:success true})
+
+(defmethod handle-tool "get_session_diff" [_ {:keys [session-id file]}]
+  (if-let [session (db/get-session session-id)]
+    (let [repo-path (:repo-path session)
+          target-branch (:target-branch session)
+          ;; Get diff - either for specific file or all
+          raw-diff (if file
+                     (git/get-file-diff repo-path target-branch file)
+                     (git/get-diff repo-path target-branch))
+          ;; Parse into structured format
+          parsed (git/parse-diff-hunks raw-diff)]
+      {:session-id session-id
+       :target-branch target-branch
+       :files (if file
+                (when parsed [file])
+                (mapv :file-b parsed))
+       :diff parsed})
+    (throw (ex-info "Session not found" {:code invalid-params}))))
+
+(defmethod handle-tool "get_file_versions" [_ {:keys [session-id file]}]
+  (if-let [session (db/get-session session-id)]
+    (let [repo-path (:repo-path session)
+          target-branch (:target-branch session)
+          ;; Get original content from target branch
+          original (git/get-file-content repo-path target-branch file)
+          ;; Get modified content from working tree
+          modified (git/get-file-content repo-path nil file)]
+      {:session-id session-id
+       :file file
+       :original original
+       :modified modified
+       :is-new (nil? original)
+       :is-deleted (nil? modified)})
+    (throw (ex-info "Session not found" {:code invalid-params}))))
 
 (defmethod handle-tool :default [tool-name _]
   (throw (ex-info "Unknown tool" {:tool tool-name})))
@@ -220,11 +253,14 @@
 
 (defmethod handle-method "tools/call" [_ params]
   (let [tool-name (:name params)
-        arguments (or (:arguments params) {})]
+        ;; Normalize incoming args: snake_case -> kebab-case
+        arguments (util/keys->kebab (or (:arguments params) {}))]
     (try
-      (let [result (handle-tool tool-name arguments)]
+      (let [result (handle-tool tool-name arguments)
+            ;; Normalize outgoing result: kebab-case -> snake_case
+            normalized (util/keys->snake result)]
         {:content [{:type "text"
-                    :text (js/JSON.stringify (clj->js result) nil 2)}]})
+                    :text (js/JSON.stringify (clj->js normalized) nil 2)}]})
       (catch :default e
         {:content [{:type "text"
                     :text (str "Error: " (.-message e))}]

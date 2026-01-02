@@ -13,20 +13,31 @@
 
 (defn add-comment!
   "Add a new comment or reply.
+   If file/line are nil, creates a session-level comment.
    Returns the created comment."
-  [{:keys [session-id parent-id file line text author repo-path]}]
-  (let [;; For replies, inherit file/line from parent
+  [{:keys [session-id parent-id file line side line-content context-before context-after text author repo-path]}]
+  (let [;; For replies, inherit file/line/side from parent
         parent (when parent-id (db/get-comment parent-id))
         file (or file (:file parent))
         line (or line (:line parent))
-        ;; Compute line hash
-        line-hash (compute-line-hash repo-path file line)]
+        side (or side (:side parent) "new")
+        ;; For replies, inherit content context from parent if not provided
+        line-content (or line-content (:line-content parent))
+        context-before (or context-before (:context-before parent))
+        context-after (or context-after (:context-after parent))
+        ;; Only compute line hash if we have file and line
+        line-hash (when (and file line)
+                    (compute-line-hash repo-path file line))]
     (db/create-comment!
      {:session-id session-id
       :parent-id parent-id
       :file file
       :line line
       :line-content-hash line-hash
+      :side side
+      :line-content line-content
+      :context-before context-before
+      :context-after context-after
       :text text
       :author author})))
 
@@ -75,15 +86,17 @@
 
 (defn check-staleness
   "Check if a comment's line has changed since it was created.
-   Returns :fresh, :shifted, or :changed."
+   Returns :fresh, :shifted, :changed, or nil for session-level comments."
   [comment repo-path]
-  (let [{:keys [file line line-content-hash]} comment
-        current-hash (compute-line-hash repo-path file line)]
-    (cond
-      (= current-hash line-content-hash) :fresh
-      ;; TODO: Implement line shift detection by searching for content
-      ;; For now, if hash doesn't match, assume changed
-      :else :changed)))
+  (let [{:keys [file line line-content-hash]} comment]
+    (if-not (and file line)
+      nil  ; Session-level comments don't have staleness
+      (let [current-hash (compute-line-hash repo-path file line)]
+        (cond
+          (= current-hash line-content-hash) :fresh
+          ;; TODO: Implement line shift detection by searching for content
+          ;; For now, if hash doesn't match, assume changed
+          :else :changed)))))
 
 (defn annotate-comments-with-staleness
   "Add :staleness key to each comment based on current file state."

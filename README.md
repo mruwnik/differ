@@ -64,7 +64,7 @@ node target/server.js
 
 Differ exposes an MCP endpoint at `http://localhost:8576/mcp` for AI agent integration.
 
-**Note:** The MCP server implements the OAuth flow for clients that require it, but accepts all requests without actually verifying credentials. This is intentional—local services are assumed to be secure. Don't expose it to the internet.
+**Note:** The MCP server implements the OAuth flow for clients that require it, but accepts all requests without actually verifying credentials. This is intentional as local services are assumed to be secure. Don't expose it to the internet.
 
 ### Claude Code
 

@@ -1,11 +1,83 @@
 (ns differ.sessions
-  "Session management logic."
+  "Session management logic.
+
+   Pure functions operate on session data.
+   Impure functions (ending in !) persist to database."
   (:require [differ.db :as db]
             [differ.git :as git]
             [differ.util :as util]
             [clojure.set :as set]
             ["fs" :as fs]
             ["path" :as path]))
+
+;; ============================================================================
+;; Pure Functions - operate on data, no side effects
+;; ============================================================================
+
+(defn compute-file-set
+  "Compute the set of files in review for a session.
+   Pure function: (session, git-changed-files) -> sorted file list"
+  [session git-changed-files]
+  (let [{:keys [registered-files manual-additions manual-removals]} session
+        git-files (set (map :path git-changed-files))
+        registered (set (keys registered-files))
+        all-files (set/union git-files registered (set manual-additions))]
+    (-> all-files
+        (set/difference (set manual-removals))
+        sort
+        vec)))
+
+(defn compute-registrations
+  "Compute new registration map after adding paths.
+   Pure function: (current-registrations, paths, agent-id) -> new-registrations"
+  [current paths agent-id]
+  (reduce (fn [acc path]
+            (if (contains? acc path)
+              acc  ; Don't overwrite existing
+              (assoc acc path agent-id)))
+          current
+          paths))
+
+(defn compute-unregistrations
+  "Compute new registration map after removing paths.
+   Only removes paths registered by the given agent.
+   Pure function: (current-registrations, paths, agent-id) -> new-registrations"
+  [current paths agent-id]
+  (let [removable (filter #(= agent-id (get current %)) paths)]
+    (apply dissoc current removable)))
+
+(defn compute-file-addition
+  "Compute new session state after manually adding a file.
+   Pure function: session -> updated-session"
+  [session path]
+  (update session :manual-additions
+          (fn [additions] (vec (conj (set additions) path)))))
+
+(defn compute-file-removal
+  "Compute new session state after removing a file.
+   Returns [updated-session action] where action is :removed-from-additions or :added-to-removals"
+  [session path]
+  (let [additions (set (:manual-additions session))]
+    (if (contains? additions path)
+      ;; Was manually added - remove from additions
+      [(update session :manual-additions
+               (fn [a] (vec (disj (set a) path))))
+       :removed-from-additions]
+      ;; Tracked file - add to removals
+      [(update session :manual-removals
+               (fn [r] (vec (conj (set r) path))))
+       :added-to-removals])))
+
+(defn compute-file-restoration
+  "Compute new session state after restoring an excluded file.
+   Pure function: session -> updated-session"
+  [session path]
+  (update session :manual-removals
+          (fn [removals] (vec (disj (set removals) path)))))
+
+;; ============================================================================
+;; Validation
+;; ============================================================================
 
 (defn validate-repo-path
   "Validate that repo-path exists and is a directory.
@@ -24,9 +96,13 @@
         :else
         {:valid true :path resolved}))))
 
+;; ============================================================================
+;; Impure Functions - interact with database
+;; ============================================================================
+
 (defn get-or-create-session
   "Get existing session or create new one.
-   Returns {:session ... :is-new bool} or {:error ...} if repo-path is invalid."
+   Returns {:session ... :is-new bool} or {:error ...}"
   [{:keys [repo-path project branch target-branch]}]
   (let [validation (validate-repo-path repo-path)]
     (if-not (:valid validation)
@@ -38,122 +114,95 @@
             session-id (util/session-id project branch)]
         (if-let [existing (db/get-session session-id)]
           {:session existing :is-new false}
-          (let [session (db/create-session!
-                         {:id session-id
-                          :project project
-                          :branch branch
-                          :target-branch target-branch
-                          :repo-path resolved-path})]
-            {:session session :is-new true}))))))
+          {:session (db/create-session!
+                     {:id session-id
+                      :project project
+                      :branch branch
+                      :target-branch target-branch
+                      :repo-path resolved-path})
+           :is-new true})))))
+
+(defn- with-unresolved-count
+  "Add unresolved comment count to session."
+  [session]
+  (when session
+    (assoc session :unresolved-count
+           (db/count-unresolved-comments (:id session)))))
 
 (defn list-sessions
-  "List all sessions, optionally filtered by project.
-   Includes unresolved comment count."
+  "List all sessions with unresolved counts."
   ([] (list-sessions nil))
   ([project]
-   (->> (db/list-sessions project)
-        (mapv (fn [session]
-                (assoc session
-                       :unresolved-count
-                       (db/count-unresolved-comments (:id session))))))))
+   (mapv with-unresolved-count (db/list-sessions project))))
 
 (defn get-session
   "Get session by ID with unresolved count."
   [session-id]
-  (when-let [session (db/get-session session-id)]
-    (assoc session
-           :unresolved-count
-           (db/count-unresolved-comments session-id))))
-
-(defn compute-file-set
-  "Compute the set of files in review for a session.
-   Union of: git diff files + registered files + manual additions - manual removals"
-  [session repo-path]
-  (let [{:keys [target-branch registered-files manual-additions manual-removals]} session
-        ;; Get files from git diff
-        git-files (->> (git/get-changed-files repo-path target-branch)
-                       (map :path)
-                       set)
-        ;; Get registered file paths (keys of the map)
-        registered (set (keys registered-files))
-        ;; Compute union
-        all-files (set/union git-files registered (set manual-additions))
-        ;; Remove manual removals
-        final-files (set/difference all-files (set manual-removals))]
-    (sort final-files)))
+  (with-unresolved-count (db/get-session session-id)))
 
 (defn register-files!
-  "Register files with a session. Returns list of newly registered paths."
+  "Register files with a session. Returns newly registered paths."
   [session-id paths agent-id]
   (when-let [session (db/get-session session-id)]
     (let [current (:registered-files session)
-          ;; Add new registrations (don't overwrite existing)
-          new-registrations (reduce
-                             (fn [acc path]
-                               (if (contains? acc path)
-                                 acc
-                                 (assoc acc path agent-id)))
-                             current
-                             paths)
-          newly-added (filter #(not (contains? current %)) paths)]
-      (db/update-session! session-id {:registered-files new-registrations})
-      newly-added)))
+          updated (compute-registrations current paths agent-id)
+          newly-added (remove #(contains? current %) paths)]
+      (db/update-session! session-id {:registered-files updated})
+      (vec newly-added))))
 
 (defn unregister-files!
-  "Unregister files from a session. Returns list of unregistered paths."
+  "Unregister files from a session. Returns unregistered paths."
   [session-id paths agent-id]
   (when-let [session (db/get-session session-id)]
     (let [current (:registered-files session)
-          ;; Only unregister files registered by this agent (or if agent-id matches)
-          to-remove (filter (fn [path]
-                              (= agent-id (get current path)))
-                            paths)
-          new-registrations (apply dissoc current to-remove)]
-      (db/update-session! session-id {:registered-files new-registrations})
-      to-remove)))
+          updated (compute-unregistrations current paths agent-id)
+          removed (filter #(= agent-id (get current %)) paths)]
+      (db/update-session! session-id {:registered-files updated})
+      (vec removed))))
 
 (defn add-manual-file!
   "Manually add a file to the review set."
   [session-id path]
   (when-let [session (db/get-session session-id)]
-    (let [current (set (:manual-additions session))
-          updated (conj current path)]
-      (db/update-session! session-id {:manual-additions (vec updated)})
+    (let [updated (compute-file-addition session path)]
+      (db/update-session! session-id
+                          {:manual-additions (:manual-additions updated)})
       path)))
 
 (defn remove-manual-file!
-  "Manually remove a file from the review set."
+  "Remove a file from the review set.
+   Returns {:action :removed-from-additions|:added-to-removals :path path}"
   [session-id path]
   (when-let [session (db/get-session session-id)]
-    (let [current (set (:manual-removals session))
-          updated (conj current path)]
-      (db/update-session! session-id {:manual-removals (vec updated)})
+    (let [[updated action] (compute-file-removal session path)]
+      (db/update-session! session-id
+                          (select-keys updated [:manual-additions :manual-removals]))
+      {:action action :path path})))
+
+(defn restore-file!
+  "Restore an excluded file back to the review set."
+  [session-id path]
+  (when-let [session (db/get-session session-id)]
+    (let [updated (compute-file-restoration session path)]
+      (db/update-session! session-id
+                          {:manual-removals (:manual-removals updated)})
       path)))
 
 (defn get-review-state
   "Get full review state for a session including files and comments."
   [session-id repo-path]
   (when-let [session (get-session session-id)]
-    (let [files (compute-file-set session repo-path)
-          comments (db/list-comments session-id)]
+    (let [git-files (git/get-changed-files repo-path (:target-branch session))
+          files (compute-file-set session git-files)]
       {:session-id session-id
        :project (:project session)
        :branch (:branch session)
        :target-branch (:target-branch session)
        :repo-path (:repo-path session)
        :files files
-       :excluded-files (vec (:manual-removals session))
-       :comments comments
+       :excluded-files (:manual-removals session)
+       :comments (db/list-comments session-id)
        :unresolved-count (:unresolved-count session)})))
-
-(defn restore-file!
-  "Restore an excluded file back to the review set."
-  [session-id path]
-  (when-let [session (db/get-session session-id)]
-    (let [current (set (:manual-removals session))
-          updated (disj current path)]
-      (db/update-session! session-id {:manual-removals (vec updated)})
-      path)))
 
 (defn archive-session!
   "Archive/delete a session and all its data."

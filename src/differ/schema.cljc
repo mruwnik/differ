@@ -24,18 +24,28 @@
        (string? (:branch m))))
 
 (defn comment?
-  "Returns true if m looks like a valid comment map."
+  "Returns true if m looks like a valid comment map.
+   File and line are optional (nil for session-level comments),
+   but must both be present or both be nil."
   [m]
   (and (map? m)
        (string? (:id m))
        (string? (:session-id m))
-       (string? (:file m))
-       (integer? (:line m))))
+       ;; file and line are optional but must be correct types if present
+       (or (nil? (:file m)) (string? (:file m)))
+       (or (nil? (:line m)) (integer? (:line m)))
+       ;; Both present or both nil (consistency check)
+       (= (some? (:file m)) (some? (:line m)))))
 
 (defn top-level-comment?
   "Returns true if comment has no parent (is a thread root)."
   [comment]
   (nil? (:parent-id comment)))
+
+(defn session-level-comment?
+  "Returns true if comment is a session-level comment (no file/line)."
+  [comment]
+  (nil? (:file comment)))
 
 (defn build-threads
   "Given a flat list of comments, build nested thread structure.

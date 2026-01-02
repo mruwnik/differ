@@ -5,9 +5,16 @@
             [differ.comments :as comments]
             [differ.git :as git]
             [differ.db :as db]
-            [differ.oauth :as oauth]))
+            [differ.oauth :as oauth]
+            [differ.util :as util]))
 
-(defn- json-response [^js res data]
+;; ============================================================================
+;; HTTP Response Helpers
+;; ============================================================================
+
+(defn- json-response
+  "Send JSON response. Keys stay as kebab-case for internal UI client."
+  [^js res data]
   (-> res
       (.status 200)
       (.json (clj->js data))))
@@ -16,6 +23,17 @@
   (-> res
       (.status status)
       (.json #js {:error message})))
+
+;; ============================================================================
+;; Request Body Normalization
+;; ============================================================================
+
+(defn- get-body
+  "Get request body with snake->kebab key conversion."
+  [^js req]
+  (-> (.-body req)
+      (js->clj :keywordize-keys true)
+      util/keys->kebab))
 
 ;; Session endpoints
 
@@ -39,16 +57,11 @@
 (defn create-session-handler
   "POST /api/sessions"
   [^js req res]
-  (let [body (js->clj (.-body req) :keywordize-keys true)
-        result (sessions/get-or-create-session
-                {:repo-path (or (:repo_path body) (:repo-path body))
-                 :project (:project body)
-                 :branch (:branch body)
-                 :target-branch (or (:target_branch body) (:target-branch body))})]
+  (let [body (get-body req)
+        result (sessions/get-or-create-session body)]
     (if-let [error (:error result)]
       (error-response res 400 error)
-      (json-response res {:session (:session result)
-                          :is-new (:is-new result)}))))
+      (json-response res result))))
 
 (defn delete-session-handler
   "DELETE /api/sessions/:id"
@@ -61,12 +74,8 @@
   "PATCH /api/sessions/:id"
   [^js req res]
   (let [session-id (.. req -params -id)
-        body (js->clj (.-body req) :keywordize-keys true)
-        updates (cond-> {}
-                  (:target_branch body) (assoc :target-branch (:target_branch body))
-                  (:project body) (assoc :project (:project body))
-                  (:repo_path body) (assoc :repo-path (:repo_path body)))]
-    (if-let [session (db/update-session! session-id updates)]
+        body (get-body req)]
+    (if-let [session (db/update-session! session-id body)]
       (json-response res {:session session})
       (error-response res 404 "Session not found"))))
 
@@ -127,11 +136,10 @@
   "POST /api/sessions/:id/stage"
   [^js req res]
   (let [session-id (.. req -params -id)
-        body (js->clj (.-body req) :keywordize-keys true)
-        file-path (:path body)]
+        {:keys [path]} (get-body req)]
     (if-let [session (db/get-session session-id)]
       (let [repo-path (:repo-path session)]
-        (git/stage-file! repo-path file-path)
+        (git/stage-file! repo-path path)
         (let [staged (git/get-staged-files repo-path)
               unstaged (git/get-unstaged-files repo-path)]
           (json-response res {:success true
@@ -148,19 +156,38 @@
     (if-let [session (db/get-session session-id)]
       (let [repo-path (:repo-path session)
             is-git-repo (git/git-repo? repo-path)
-            files (sessions/compute-file-set session repo-path)
+            ;; Get changed files from git (needed for compute-file-set)
+            changed-files (when is-git-repo
+                            (git/get-changed-files repo-path (:target-branch session)))
+            files (sessions/compute-file-set session (or changed-files []))
             ;; Get file sizes for all files
             files-with-size (get-files-with-size repo-path files)]
         (if is-git-repo
           ;; Git repo - use git diff
           (let [diff (git/get-diff repo-path (:target-branch session))
-                parsed (git/parse-diff-hunks diff)
-                changed-files (git/get-changed-files repo-path (:target-branch session))]
+                git-parsed (git/parse-diff-hunks diff)
+                ;; Files that have a git diff
+                git-diff-files (set (map :file-b git-parsed))
+                ;; Files in review that don't have a git diff (e.g., untracked files)
+                files-without-diff (remove git-diff-files files)
+                ;; Get content for files without git diff (untracked/manual additions)
+                extra-parsed (reduce
+                              (fn [acc file-path]
+                                (if-let [file-diff (get-file-content-for-diff repo-path file-path max-size-threshold)]
+                                  (conj acc file-diff)
+                                  acc))
+                              []
+                              files-without-diff)
+                ;; Combine git diff with untracked file content
+                parsed (concat git-parsed extra-parsed)
+                ;; Add untracked files to changed-files with :untracked status
+                untracked-in-review (map (fn [f] {:path f :status :untracked}) files-without-diff)
+                all-changed-files (concat changed-files untracked-in-review)]
             (json-response res {:diff diff
                                 :parsed parsed
                                 :files files
                                 :files-with-size files-with-size
-                                :changed-files changed-files
+                                :changed-files all-changed-files
                                 :is-git-repo true}))
           ;; Non-git - show full file contents (respecting size threshold)
           (let [parsed (reduce
@@ -250,28 +277,23 @@
   "POST /api/sessions/:id/files"
   [^js req res]
   (let [session-id (.. req -params -id)
-        body (js->clj (.-body req) :keywordize-keys true)
-        paths (:paths body)
-        agent-id (:agent-id body)]
-    (let [registered (sessions/register-files! session-id paths agent-id)]
-      (json-response res {:registered registered}))))
+        {:keys [paths agent-id]} (get-body req)
+        registered (sessions/register-files! session-id paths agent-id)]
+    (json-response res {:registered registered})))
 
 (defn unregister-files-handler
   "DELETE /api/sessions/:id/files"
   [^js req res]
   (let [session-id (.. req -params -id)
-        body (js->clj (.-body req) :keywordize-keys true)
-        paths (:paths body)
-        agent-id (:agent-id body)]
-    (let [unregistered (sessions/unregister-files! session-id paths agent-id)]
-      (json-response res {:unregistered unregistered}))))
+        {:keys [paths agent-id]} (get-body req)
+        unregistered (sessions/unregister-files! session-id paths agent-id)]
+    (json-response res {:unregistered unregistered})))
 
 (defn add-manual-file-handler
   "POST /api/sessions/:id/manual-files"
   [^js req res]
   (let [session-id (.. req -params -id)
-        body (js->clj (.-body req) :keywordize-keys true)
-        path (:path body)]
+        {:keys [path]} (get-body req)]
     (sessions/add-manual-file! session-id path)
     (json-response res {:success true :path path})))
 
@@ -279,8 +301,7 @@
   "DELETE /api/sessions/:id/manual-files"
   [^js req res]
   (let [session-id (.. req -params -id)
-        body (js->clj (.-body req) :keywordize-keys true)
-        path (:path body)]
+        {:keys [path]} (get-body req)]
     (sessions/remove-manual-file! session-id path)
     (json-response res {:success true :path path})))
 
@@ -288,8 +309,7 @@
   "POST /api/sessions/:id/restore-file"
   [^js req res]
   (let [session-id (.. req -params -id)
-        body (js->clj (.-body req) :keywordize-keys true)
-        path (:path body)]
+        {:keys [path]} (get-body req)]
     (sessions/restore-file! session-id path)
     (json-response res {:success true :path path})))
 
@@ -323,16 +343,12 @@
   "POST /api/sessions/:id/comments"
   [^js req res]
   (let [session-id (.. req -params -id)
-        body (js->clj (.-body req) :keywordize-keys true)]
+        body (get-body req)]
     (if-let [session (db/get-session session-id)]
       (let [comment (comments/add-comment!
-                     {:session-id session-id
-                      :parent-id (:parent-id body)
-                      :file (:file body)
-                      :line (:line body)
-                      :text (:text body)
-                      :author (:author body)
-                      :repo-path (:repo-path session)})]
+                     (assoc body
+                            :session-id session-id
+                            :repo-path (:repo-path session)))]
         (json-response res {:comment comment}))
       (error-response res 404 "Session not found"))))
 
@@ -340,8 +356,7 @@
   "PATCH /api/comments/:id/resolve"
   [^js req res]
   (let [comment-id (.. req -params -id)
-        body (js->clj (.-body req) :keywordize-keys true)
-        author (:author body)]
+        {:keys [author]} (get-body req)]
     (comments/resolve-comment! comment-id author)
     (json-response res {:success true})))
 
@@ -349,8 +364,7 @@
   "PATCH /api/comments/:id/unresolve"
   [^js req res]
   (let [comment-id (.. req -params -id)
-        body (js->clj (.-body req) :keywordize-keys true)
-        author (:author body)]
+        {:keys [author]} (get-body req)]
     (comments/unresolve-comment! comment-id author)
     (json-response res {:success true})))
 
@@ -369,34 +383,34 @@
 (defn oauth-register-handler
   "POST /oauth/register"
   [^js req res]
-  (let [body (js->clj (.-body req) :keywordize-keys true)
-        client (oauth/register-client
-                {:client-id (:client_id body)
-                 :client-secret (:client_secret body)
-                 :client-name (:client_name body)
-                 :redirect-uris (:redirect_uris body)
-                 :scope (:scope body)
-                 :client-uri (:client_uri body)
-                 :logo-uri (:logo_uri body)})]
-    (json-response res {:client_id (:client-id client)
-                        :client_name (:client-name client)
-                        :redirect_uris (:redirect-uris client)
+  (let [body (get-body req)
+        client (oauth/register-client body)]
+    (json-response res {:client-id (:client-id client)
+                        :client-name (:client-name client)
+                        :redirect-uris (:redirect-uris client)
                         :scope (:scope client)
-                        :token_endpoint_auth_method "none"
-                        :grant_types ["authorization_code" "refresh_token"]
-                        :response_types ["code"]})))
+                        :token-endpoint-auth-method "none"
+                        :grant-types ["authorization_code" "refresh_token"]
+                        :response-types ["code"]})))
+
+(defn- get-query
+  "Get query params with snake->kebab key conversion."
+  [^js req]
+  (-> (.-query req)
+      (js->clj :keywordize-keys true)
+      util/keys->kebab))
 
 (defn oauth-authorize-handler
   "GET /oauth/authorize"
   [^js req res]
-  (let [query (.-query req)
+  (let [query (get-query req)
         result (oauth/authorize
-                {:client-id (.-client_id query)
-                 :redirect-uri (.-redirect_uri query)
-                 :scopes (when-let [s (.-scope query)]
+                {:client-id (:client-id query)
+                 :redirect-uri (:redirect-uri query)
+                 :scopes (when-let [s (:scope query)]
                            (str/split s #"\s+"))
-                 :state (.-state query)
-                 :code-challenge (.-code_challenge query)})]
+                 :state (:state query)
+                 :code-challenge (:code-challenge query)})]
     (if-let [error (:error result)]
       (error-response res 400 error)
       (.redirect res (:redirect-url result)))))
@@ -404,21 +418,21 @@
 (defn oauth-token-handler
   "POST /oauth/token"
   [^js req res]
-  (let [body (js->clj (.-body req) :keywordize-keys true)
-        grant-type (:grant_type body)]
+  (let [body (get-body req)
+        grant-type (:grant-type body)]
     (case grant-type
       "authorization_code"
       (let [result (oauth/exchange-authorization-code
                     {:code (:code body)
-                     :client-id (:client_id body)})]
+                     :client-id (:client-id body)})]
         (if-let [error (:error result)]
           (error-response res 400 error)
           (json-response res result)))
 
       "refresh_token"
       (let [result (oauth/exchange-refresh-token
-                    {:refresh-token (:refresh_token body)
-                     :client-id (:client_id body)
+                    {:refresh-token (:refresh-token body)
+                     :client-id (:client-id body)
                      :scopes (when-let [s (:scope body)]
                                (str/split s #"\s+"))})]
         (if-let [error (:error result)]
@@ -430,10 +444,10 @@
 (defn oauth-revoke-handler
   "POST /oauth/revoke"
   [^js req res]
-  (let [body (js->clj (.-body req) :keywordize-keys true)
+  (let [body (get-body req)
         result (oauth/revoke-token
                 {:token (:token body)
-                 :token-type-hint (:token_type_hint body)})]
+                 :token-type-hint (:token-type-hint body)})]
     (json-response res result)))
 
 ;; Route setup

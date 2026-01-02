@@ -272,12 +272,16 @@
 ;; Comment form
 (rf/reg-event-db
  :show-comment-form
- (fn [db [_ {:keys [file line parent-id]}]]
+ (fn [db [_ {:keys [file line parent-id side line-content context-before context-after]}]]
    (-> db
        (assoc :comment-form {:visible true
                              :file file
                              :line line
                              :parent-id parent-id
+                             :side side
+                             :line-content line-content
+                             :context-before context-before
+                             :context-after context-after
                              :text ""}))))
 
 (rf/reg-event-db
@@ -293,14 +297,18 @@
 (rf/reg-event-fx
  :submit-comment
  (fn [{:keys [db]} _]
-   (let [{:keys [file line parent-id text]} (:comment-form db)
+   (let [{:keys [file line parent-id text side line-content context-before context-after]} (:comment-form db)
          session-id (db/current-session-id db)
          author (get-in db [:user :author])]
      {:http (api/add-comment session-id {:file file
                                          :line line
                                          :text text
                                          :author author
-                                         :parent-id parent-id})
+                                         :parent-id parent-id
+                                         :side side
+                                         :line-content line-content
+                                         :context-before context-before
+                                         :context-after context-after})
       :db (assoc-in db [:comment-form :visible] false)})))
 
 (rf/reg-event-fx
@@ -472,6 +480,13 @@
 (rf/reg-event-fx
  :sse-files-changed
  (fn [{:keys [db]} [_ _files]]
+   (let [session-id (db/current-session-id db)]
+     (when session-id
+       {:dispatch [:load-diff session-id]}))))
+
+(rf/reg-event-fx
+ :sse-diff-changed
+ (fn [{:keys [db]} [_ _session-id]]
    (let [session-id (db/current-session-id db)]
      (when session-id
        {:dispatch [:load-diff session-id]}))))

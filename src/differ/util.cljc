@@ -64,3 +64,44 @@
   [iso-timestamp]
   #?(:clj (.isAfter (Instant/now) (Instant/parse iso-timestamp))
      :cljs (> (.now js/Date) (.getTime (js/Date. iso-timestamp)))))
+
+;; ============================================================================
+;; Key transformation for HTTP boundary normalization
+;; ============================================================================
+
+(defn transform-keys
+  "Recursively transform all keys in a nested data structure.
+   Pure function: (transform-fn, data) -> transformed-data"
+  [f data]
+  (cond
+    (map? data)
+    (into {} (map (fn [[k v]] [(f k) (transform-keys f v)]) data))
+
+    (sequential? data)
+    (mapv #(transform-keys f %) data)
+
+    :else data))
+
+(defn keys->kebab
+  "Convert all keys in nested structure from snake_case to kebab-case.
+   For normalizing incoming HTTP requests."
+  [data]
+  (transform-keys (fn [k]
+                    (if (string? k)
+                      (snake->kebab k)
+                      (if (keyword? k)
+                        (-> k name snake->kebab keyword)
+                        k)))
+                  data))
+
+(defn keys->snake
+  "Convert all keys in nested structure from kebab-case to snake_case.
+   For normalizing outgoing HTTP responses."
+  [data]
+  (transform-keys (fn [k]
+                    (if (keyword? k)
+                      (kebab->snake k)
+                      (if (string? k)
+                        (str/replace k "-" "_")
+                        k)))
+                  data))

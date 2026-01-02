@@ -1,5 +1,5 @@
 {:deps true
- :source-paths ["src"]
+ :source-paths ["src" "test"]
 
  :builds
  {:server
@@ -18,4 +18,9 @@
    ;; If you change the port, update both places
    :devtools {:http-root "resources/public"
               :http-port 8081
-              :proxy-url "http://localhost:8576"}}}}
+              :proxy-url "http://localhost:8576"}}
+
+  :test
+  {:target :node-script
+   :output-to "target/test.js"
+   :main differ.test-runner/main}}}
