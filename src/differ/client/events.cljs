@@ -329,6 +329,16 @@
    ;; SSE handles the refresh, no need to reload here
    {}))
 
+;; Reply to resolved comment (from resolved comments panel)
+(rf/reg-event-fx
+ :submit-resolved-reply
+ (fn [{:keys [db]} [_ {:keys [parent-id text]}]]
+   (let [session-id (db/current-session-id db)
+         author (get-in db [:user :author])]
+     {:http (api/add-comment session-id {:text text
+                                         :author author
+                                         :parent-id parent-id})})))
+
 ;; Resolve comment
 (rf/reg-event-fx
  :resolve-comment

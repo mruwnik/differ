@@ -184,10 +184,16 @@
   (let [pending (comments/get-pending-feedback session-id since)]
     {:comments pending}))
 
-(defmethod handle-tool "add_comment" [_ {:keys [session-id] :as params}]
+(defmethod handle-tool "add_comment" [_ {:keys [session-id parent-id] :as params}]
   (if-let [session (db/get-session session-id)]
-    (let [comment (comments/add-comment!
+    (let [;; Check if parent was resolved before adding comment
+          parent-was-resolved (when parent-id
+                                (:resolved (db/get-comment parent-id)))
+          comment (comments/add-comment!
                    (assoc params :repo-path (:repo-path session)))]
+      ;; If parent was resolved and now is unresolved, emit unresolve event
+      (when parent-was-resolved
+        (sse/emit-comment-unresolved! session-id parent-id))
       (sse/emit-comment-added! session-id comment)
       {:comment-id (:id comment)})
     (throw (ex-info "Session not found" {:code invalid-params}))))
@@ -251,25 +257,47 @@
 (defmethod handle-method "tools/list" [_ _]
   {:tools tools})
 
+(defn- format-tool-result [result]
+  (let [normalized (util/keys->snake result)]
+    {:content [{:type "text"
+                :text (js/JSON.stringify (clj->js normalized) nil 2)}]}))
+
+(defn- format-tool-error [e]
+  {:content [{:type "text"
+              :text (str "Error: " (.-message e))}]
+   :isError true})
+
 (defmethod handle-method "tools/call" [_ params]
   (let [tool-name (:name params)
         ;; Normalize incoming args: snake_case -> kebab-case
         arguments (util/keys->kebab (or (:arguments params) {}))]
     (try
-      (let [result (handle-tool tool-name arguments)
-            ;; Normalize outgoing result: kebab-case -> snake_case
-            normalized (util/keys->snake result)]
-        {:content [{:type "text"
-                    :text (js/JSON.stringify (clj->js normalized) nil 2)}]})
+      (let [result (handle-tool tool-name arguments)]
+        ;; Check if result is a Promise
+        (if (instance? js/Promise result)
+          ;; Return Promise that resolves to formatted result
+          (.then result format-tool-result format-tool-error)
+          ;; Synchronous result
+          (format-tool-result result)))
       (catch :default e
-        {:content [{:type "text"
-                    :text (str "Error: " (.-message e))}]
-         :isError true}))))
+        (format-tool-error e)))))
 
 (defmethod handle-method :default [method _]
   (throw (ex-info "Method not found" {:method method :code method-not-found})))
 
 ;; HTTP handler
+
+(defn- send-response! [^js res id result]
+  (let [response (json-rpc-response id result)]
+    (-> res
+        (.status 200)
+        (.json (clj->js response)))))
+
+(defn- send-error! [^js res id code message]
+  (let [response (json-rpc-error id code message)]
+    (-> res
+        (.status 200)
+        (.json (clj->js response)))))
 
 (defn mcp-handler
   "POST /mcp - MCP JSON-RPC endpoint"
@@ -281,22 +309,23 @@
             method (:method request)
             params (:params request)]
         (try
-          (let [result (handle-method method params)
-                response (json-rpc-response id result)]
-            (-> res
-                (.status 200)
-                (.json (clj->js response))))
+          (let [result (handle-method method params)]
+            ;; Handle Promise results (for future async tools)
+            (if (instance? js/Promise result)
+              (-> result
+                  (.then (fn [r] (send-response! res id r)))
+                  (.catch (fn [e]
+                            (let [data (ex-data e)
+                                  code (or (:code data) internal-error)]
+                              (send-error! res id code (.-message e))))))
+              ;; Synchronous result
+              (send-response! res id result)))
           (catch :default e
             (let [data (ex-data e)
-                  code (or (:code data) internal-error)
-                  response (json-rpc-error id code (.-message e))]
-              (-> res
-                  (.status 200)
-                  (.json (clj->js response)))))))
+                  code (or (:code data) internal-error)]
+              (send-error! res id code (.-message e))))))
       (catch :default _
-        (-> res
-            (.status 200)
-            (.json (clj->js (json-rpc-error nil parse-error "Parse error"))))))))
+        (send-error! res nil parse-error "Parse error")))))
 
 (defn setup-routes [^js app]
   (.post app "/mcp" mcp-handler))

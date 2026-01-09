@@ -176,6 +176,88 @@
    [:span.tree-file-icon "📄"]
    [:span.tree-file-name (last (str/split file-path #"/"))]])
 
+(defn- resolved-comment-item
+  "Render a single resolved comment with its replies and reply form."
+  [cmt]
+  (let [reply-text (r/atom "")
+        replies (or (:replies cmt) [])]
+    (fn [cmt]
+      (let [replies (or (:replies cmt) [])]
+        [:div.resolved-comment-item
+         {:style {:padding "8px 12px"
+                  :border-bottom "1px solid #e1e4e8"
+                  :font-size "12px"}}
+         ;; Comment header and text
+         [:div {:style {:color "#6a737d" :font-size "11px" :margin-bottom "4px"}}
+          (-> (:file cmt) (str/split #"/") last)
+          (when (:line cmt) (str ":" (:line cmt)))]
+         [:div {:style {:margin-bottom "4px"}} (:text cmt)]
+         [:div {:style {:color "#6a737d" :font-size "11px"}}
+          "— " (:author cmt)]
+         ;; Show replies if any
+         (when (seq replies)
+           [:div {:style {:margin-top "8px" :padding-left "12px" :border-left "2px solid #e1e4e8"}}
+            (for [reply replies]
+              ^{:key (:id reply)}
+              [:div {:style {:margin-bottom "6px"}}
+               [:div {:style {:font-size "12px"}} (:text reply)]
+               [:div {:style {:color "#6a737d" :font-size "11px"}}
+                "— " (:author reply)]])])
+         ;; Inline reply form
+         [:div {:style {:margin-top "8px" :display "flex" :gap "6px"}}
+          [:input {:type "text"
+                   :placeholder "Reply..."
+                   :value @reply-text
+                   :on-change #(reset! reply-text (.. % -target -value))
+                   :on-key-down (fn [e]
+                                  (when (and (= (.-key e) "Enter") (seq @reply-text))
+                                    (rf/dispatch [:submit-resolved-reply {:parent-id (:id cmt)
+                                                                          :text @reply-text}])
+                                    (reset! reply-text "")))
+                   :style {:flex 1
+                           :padding "4px 8px"
+                           :font-size "11px"
+                           :border "1px solid #d0d7de"
+                           :border-radius "4px"}}]
+          [:button {:on-click (fn []
+                                (when (seq @reply-text)
+                                  (rf/dispatch [:submit-resolved-reply {:parent-id (:id cmt)
+                                                                        :text @reply-text}])
+                                  (reset! reply-text "")))
+                    :disabled (empty? @reply-text)
+                    :style {:padding "4px 8px"
+                            :font-size "11px"
+                            :background (if (empty? @reply-text) "#f6f8fa" "#2ea44f")
+                            :color (if (empty? @reply-text) "#6a737d" "white")
+                            :border "1px solid #d0d7de"
+                            :border-radius "4px"
+                            :cursor (if (empty? @reply-text) "default" "pointer")}}
+           "Reply"]]]))))
+
+(defn resolved-comments-list []
+  (let [expanded? (r/atom false)]
+    (fn []
+      (let [resolved @(rf/subscribe [:resolved-comments])]
+        (when (seq resolved)
+          [:div.resolved-comments
+           {:style {:margin-top "16px"}}
+           [:h3 {:style {:display "flex" :align-items "center" :gap "8px" :cursor "pointer"}
+                 :on-click #(swap! expanded? not)}
+            [:span {:style {:font-size "10px"}} (if @expanded? "▼" "▶")]
+            "Resolved"
+            [:span {:style {:font-weight "normal"
+                            :font-size "12px"
+                            :color "#6a737d"}}
+             (str "(" (count resolved) ")")]]
+           (when @expanded?
+             [:div {:style {:background "#f6f8fa"
+                            :border-radius "6px"
+                            :max-height "400px"
+                            :overflow-y "auto"}}
+              (for [cmt resolved]
+                ^{:key (:id cmt)}
+                [resolved-comment-item cmt])])])))))
+
 (defn file-list []
   (let [files @(rf/subscribe [:files])
         changed-files @(rf/subscribe [:changed-files])
@@ -212,7 +294,9 @@
         [:h3 {:style {:margin-top "16px"}} "Untracked Files"]
         [:p {:style {:color "#6a737d" :font-size "11px" :margin "0 0 8px 0"}}
          "Click to add to review"]
-        [untracked-file-tree available-untracked expanded-folders]])]))
+        [untracked-file-tree available-untracked expanded-folders]])
+     ;; Resolved comments section
+     [resolved-comments-list]]))
 
 (defn- parse-line-type [line]
   (cond

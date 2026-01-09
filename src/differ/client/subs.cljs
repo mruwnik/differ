@@ -134,6 +134,26 @@
             (sort-by :created-at)
             vec)))))
 
+(rf/reg-sub
+ :resolved-comments
+ :<- [:comments]
+ :<- [:files]
+ (fn [[comments files] _]
+   ;; Get all resolved root comments from files currently in review
+   (let [files-set (set (or files []))]
+     (if (empty? files-set)
+       []
+       (->> comments
+            (filter (fn [[file _]] (files-set file)))
+            (mapcat (fn [[file threads]]
+                      (->> threads
+                           (filter #(and (:resolved %)
+                                         (nil? (:parent-id %))))
+                           (map #(assoc % :file file)))))
+            (sort-by :created-at)
+            reverse
+            vec)))))
+
 ;; Loading states
 (rf/reg-sub
  :loading
