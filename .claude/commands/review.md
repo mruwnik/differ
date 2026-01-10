@@ -29,6 +29,15 @@ Additional context from user: $ARGUMENTS
 6. Add review comments using `mcp__differ-review__add_comment` for specific issues found
    - Use whatever you feel like as the author, as long as you'll know it was you
    - Include file path and line number for specific comments
+7. Submit the review using `mcp__differ-review__submit_review`
+   - The body should be **3-4 lines max**: verdict, critical issue count, one-sentence summary
+   - Example: "**Request Changes** - 2 critical, 4 major issues. Pagination not implemented (data loss) and open redirect in OAuth need fixing before merge."
+   - All detail goes in line comments, not the summary
+
+## Reporting
+
+- **To user (terminal)**: Be detailed. List all issues by severity, include file references, explain the "why"
+- **To GitHub (submit_review body)**: Be terse. Verdict + issue counts + one-liner. That's it.
 
 ## Review Style
 
