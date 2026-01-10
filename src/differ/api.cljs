@@ -7,6 +7,7 @@
             [differ.git :as git]
             [differ.db :as db]
             [differ.oauth :as oauth]
+            [differ.github-oauth :as github-oauth]
             [differ.sse :as sse]
             [differ.util :as util]
             [differ.config :as config]))
@@ -315,17 +316,20 @@
   (json-response res (oauth/get-protected-resource-metadata)))
 
 (defn oauth-register-handler
-  "POST /oauth/register"
+  "POST /oauth/register - RFC 7591 Dynamic Client Registration"
   [^js req res]
   (let [body (get-body req)
         client (oauth/register-client body)]
-    (json-response res {:client-id (:client-id client)
-                        :client-name (:client-name client)
-                        :redirect-uris (:redirect-uris client)
-                        :scope (:scope client)
-                        :token-endpoint-auth-method "none"
-                        :grant-types ["authorization_code" "refresh_token"]
-                        :response-types ["code"]})))
+    ;; OAuth spec requires snake_case - use JS object directly
+    (-> res
+        (.status 200)
+        (.json #js {:client_id (:client-id client)
+                    :client_name (:client-name client)
+                    :redirect_uris (clj->js (:redirect-uris client))
+                    :scope (:scope client)
+                    :token_endpoint_auth_method "none"
+                    :grant_types #js ["authorization_code" "refresh_token"]
+                    :response_types #js ["code"]}))))
 
 (defn- get-query
   "Get query params with snake->kebab key conversion."
@@ -391,6 +395,81 @@
   [^js _req res]
   (json-response res {:config (config/client-config)}))
 
+;; GitHub OAuth endpoints
+
+(defn github-oauth-start-handler
+  "GET /oauth/github - Start GitHub OAuth flow"
+  [^js req res]
+  (if-not (github-oauth/configured?)
+    (error-response res 400 "GitHub OAuth not configured. Set GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET env vars.")
+    (let [return-to (or (.. req -query -return_to) "/")
+          state (util/gen-token "gh_")
+          port (config/get-value :port)
+          redirect-uri (str "http://localhost:" port "/oauth/github/callback")]
+      ;; Store state for CSRF verification
+      (db/create-github-oauth-state! {:state state
+                                      :return-to return-to
+                                      :expires-at (util/expires-at 600)})
+      (.redirect res (github-oauth/authorization-url redirect-uri state)))))
+
+(defn github-oauth-callback-handler
+  "GET /oauth/github/callback - GitHub OAuth callback"
+  [^js req res]
+  (let [code (.. req -query -code)
+        state (.. req -query -state)
+        error (.. req -query -error)]
+    (cond
+      error
+      (error-response res 400 (str "GitHub OAuth error: " error))
+
+      (not state)
+      (error-response res 400 "Missing state parameter")
+
+      :else
+      (let [oauth-state (db/get-github-oauth-state state)]
+        (cond
+          (not oauth-state)
+          (error-response res 400 "Invalid or expired state parameter")
+
+          (util/expired? (:expires-at oauth-state))
+          (do
+            (db/delete-github-oauth-state! state)
+            (error-response res 400 "OAuth state expired, please try again"))
+
+          :else
+          (-> (github-oauth/complete-oauth-flow code)
+              (.then (fn [_result]
+                       ;; Delete used state
+                       (db/delete-github-oauth-state! state)
+                       ;; Redirect to return URL or home
+                       (let [return-to (or (:return-to oauth-state) "/")]
+                         (.redirect res (str return-to "?github_connected=true")))))
+              (.catch (fn [err]
+                        (js/console.error "GitHub OAuth error:" err)
+                        (db/delete-github-oauth-state! state)
+                        (error-response res 400 (str "GitHub OAuth failed: " (.-message err)))))))))))
+
+(defn list-github-tokens-handler
+  "GET /api/github/tokens - List stored GitHub tokens"
+  [^js _req res]
+  (json-response res {:tokens (db/list-github-tokens)}))
+
+(defn delete-github-token-handler
+  "DELETE /api/github/tokens/:id - Revoke a GitHub token"
+  [^js req res]
+  (let [token-id (.. req -params -id)]
+    (db/delete-github-token! token-id)
+    (json-response res {:success true})))
+
+(defn github-status-handler
+  "GET /api/github/status - Check GitHub OAuth configuration and token status"
+  [^js _req res]
+  (let [configured (github-oauth/configured?)
+        token (when configured (github-oauth/get-any-token))]
+    (json-response res {:configured configured
+                        :connected (some? token)
+                        :username (when token (:github-username token))})))
+
 ;; Route setup
 
 (defn setup-routes [^js app]
@@ -438,4 +517,11 @@
   (.post app "/oauth/register" oauth-register-handler)
   (.get app "/oauth/authorize" oauth-authorize-handler)
   (.post app "/oauth/token" oauth-token-handler)
-  (.post app "/oauth/revoke" oauth-revoke-handler))
+  (.post app "/oauth/revoke" oauth-revoke-handler)
+
+  ;; GitHub OAuth
+  (.get app "/oauth/github" github-oauth-start-handler)
+  (.get app "/oauth/github/callback" github-oauth-callback-handler)
+  (.get app "/api/github/status" github-status-handler)
+  (.get app "/api/github/tokens" list-github-tokens-handler)
+  (.delete app "/api/github/tokens/:id" delete-github-token-handler))

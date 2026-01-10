@@ -45,6 +45,21 @@
         ALTER TABLE comments ADD COLUMN context_after TEXT;
       "))))
 
+(defn- migrate-sessions-table
+  "Add columns for GitHub PR session support."
+  [db]
+  ;; Check if columns exist by trying to select them
+  (try
+    (.exec db "SELECT session_type FROM sessions LIMIT 1")
+    (catch :default _
+      ;; Columns don't exist, add them
+      (.exec db "
+        ALTER TABLE sessions ADD COLUMN session_type TEXT DEFAULT 'local';
+        ALTER TABLE sessions ADD COLUMN github_owner TEXT;
+        ALTER TABLE sessions ADD COLUMN github_repo TEXT;
+        ALTER TABLE sessions ADD COLUMN github_pr_number INTEGER;
+      "))))
+
 (defn- create-tables [db]
   (.exec db "
     CREATE TABLE IF NOT EXISTS sessions (
@@ -156,6 +171,30 @@
 
     CREATE INDEX IF NOT EXISTS idx_oauth_refresh_tokens_token ON oauth_refresh_tokens(token);
     CREATE INDEX IF NOT EXISTS idx_oauth_refresh_tokens_client ON oauth_refresh_tokens(client_id);
+
+    -- GitHub tokens for PR review
+    CREATE TABLE IF NOT EXISTS github_tokens (
+      id TEXT PRIMARY KEY,
+      github_user_id TEXT NOT NULL,
+      github_username TEXT NOT NULL,
+      access_token TEXT NOT NULL,
+      refresh_token TEXT,
+      scope TEXT,
+      expires_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_github_tokens_user ON github_tokens(github_user_id);
+    CREATE INDEX IF NOT EXISTS idx_github_tokens_username ON github_tokens(github_username);
+
+    -- Temporary state for GitHub OAuth flow (CSRF protection)
+    CREATE TABLE IF NOT EXISTS github_oauth_states (
+      state TEXT PRIMARY KEY,
+      return_to TEXT,
+      expires_at TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
   "))
 
 (defn init!
@@ -166,6 +205,7 @@
       (.pragma db "journal_mode = WAL")
       (create-tables db)
       (migrate-comments-table db)
+      (migrate-sessions-table db)
       (reset! db-instance db)))
   @db-instance)
 
@@ -185,16 +225,21 @@
 
 (defn- row->session [^js row]
   (when row
-    {:id (.-id row)
-     :project (.-project row)
-     :branch (.-branch row)
-     :target-branch (.-target_branch row)
-     :repo-path (.-repo_path row)
-     :registered-files (js->clj (js/JSON.parse (.-registered_files row)))
-     :manual-additions (js->clj (js/JSON.parse (.-manual_additions row)))
-     :manual-removals (js->clj (js/JSON.parse (.-manual_removals row)))
-     :created-at (.-created_at row)
-     :updated-at (.-updated_at row)}))
+    (cond-> {:id (.-id row)
+             :project (.-project row)
+             :branch (.-branch row)
+             :target-branch (.-target_branch row)
+             :repo-path (.-repo_path row)
+             :session-type (or (.-session_type row) "local")
+             :registered-files (js->clj (js/JSON.parse (.-registered_files row)))
+             :manual-additions (js->clj (js/JSON.parse (.-manual_additions row)))
+             :manual-removals (js->clj (js/JSON.parse (.-manual_removals row)))
+             :created-at (.-created_at row)
+             :updated-at (.-updated_at row)}
+      ;; GitHub-specific fields (only when present)
+      (.-github_owner row) (assoc :github-owner (.-github_owner row))
+      (.-github_repo row) (assoc :github-repo (.-github_repo row))
+      (.-github_pr_number row) (assoc :github-pr-number (.-github_pr_number row)))))
 
 (defn get-session
   "Get session by ID."
@@ -220,12 +265,18 @@
 
 (defn create-session!
   "Create a new session."
-  [{:keys [id project branch target-branch repo-path]}]
+  [{:keys [id project branch target-branch repo-path session-type
+           github-owner github-repo github-pr-number]}]
   (let [now (util/now-iso)
+        session-type (or session-type "local")
         ^js stmt (.prepare (db)
-                           "INSERT INTO sessions (id, project, branch, target_branch, repo_path, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)")]
-    (.run stmt id project branch target-branch repo-path now now)
+                           "INSERT INTO sessions (id, project, branch, target_branch, repo_path,
+                            session_type, github_owner, github_repo, github_pr_number,
+                            created_at, updated_at)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")]
+    (.run stmt id project branch target-branch repo-path
+          session-type github-owner github-repo github-pr-number
+          now now)
     (get-session id)))
 
 (defn update-session!
@@ -578,3 +629,109 @@
 (defn revoke-refresh-token! [token]
   (let [^js stmt (.prepare (db) "UPDATE oauth_refresh_tokens SET revoked = 1 WHERE token = ?")]
     (.run stmt token)))
+
+;; GitHub Token operations
+
+(defn- row->github-token [^js row]
+  (when row
+    {:id (.-id row)
+     :github-user-id (.-github_user_id row)
+     :github-username (.-github_username row)
+     :access-token (.-access_token row)
+     :refresh-token (.-refresh_token row)
+     :scope (.-scope row)
+     :expires-at (.-expires_at row)
+     :created-at (.-created_at row)
+     :updated-at (.-updated_at row)}))
+
+(defn get-github-token
+  "Get GitHub token by github user ID."
+  [github-user-id]
+  (let [^js stmt (.prepare (db) "SELECT * FROM github_tokens WHERE github_user_id = ?")]
+    (row->github-token (.get stmt github-user-id))))
+
+(defn get-any-github-token
+  "Get any stored GitHub token (for single-user scenarios)."
+  []
+  (let [^js stmt (.prepare (db) "SELECT * FROM github_tokens ORDER BY updated_at DESC LIMIT 1")]
+    (row->github-token (.get stmt))))
+
+(defn list-github-tokens
+  "List all stored GitHub tokens (without actual token values for security)."
+  []
+  (let [^js stmt (.prepare (db)
+                           "SELECT id, github_user_id, github_username, scope, expires_at, created_at, updated_at
+                            FROM github_tokens ORDER BY updated_at DESC")]
+    (->> (.all stmt)
+         (mapv (fn [^js row]
+                 {:id (.-id row)
+                  :github-user-id (.-github_user_id row)
+                  :github-username (.-github_username row)
+                  :scope (.-scope row)
+                  :expires-at (.-expires_at row)
+                  :created-at (.-created_at row)
+                  :updated-at (.-updated_at row)})))))
+
+(defn create-github-token!
+  "Create or update a GitHub token."
+  [{:keys [github-user-id github-username access-token refresh-token scope expires-at]}]
+  (let [id (util/gen-uuid)
+        now (util/now-iso)
+        ;; Check if token exists for this user
+        existing (get-github-token github-user-id)]
+    (if existing
+      ;; Update existing
+      (let [^js stmt (.prepare (db)
+                               "UPDATE github_tokens SET
+                                access_token = ?, refresh_token = ?, scope = ?, expires_at = ?, updated_at = ?
+                                WHERE github_user_id = ?")]
+        (.run stmt access-token refresh-token scope expires-at now github-user-id)
+        (get-github-token github-user-id))
+      ;; Insert new
+      (let [^js stmt (.prepare (db)
+                               "INSERT INTO github_tokens
+                                (id, github_user_id, github_username, access_token, refresh_token, scope, expires_at, created_at, updated_at)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")]
+        (.run stmt id github-user-id github-username access-token refresh-token scope expires-at now now)
+        (get-github-token github-user-id)))))
+
+(defn delete-github-token!
+  "Delete a GitHub token by ID."
+  [token-id]
+  (let [^js stmt (.prepare (db) "DELETE FROM github_tokens WHERE id = ?")]
+    (.run stmt token-id)))
+
+;; GitHub OAuth State (temporary, for CSRF protection during OAuth flow)
+
+(defn create-github-oauth-state!
+  "Create a temporary OAuth state for GitHub auth flow."
+  [{:keys [state return-to expires-at]}]
+  (let [now (util/now-iso)
+        ^js stmt (.prepare (db)
+                           "INSERT INTO github_oauth_states (state, return_to, expires_at, created_at)
+                            VALUES (?, ?, ?, ?)")]
+    (.run stmt state return-to expires-at now)
+    {:state state :return-to return-to}))
+
+(defn get-github-oauth-state
+  "Get GitHub OAuth state by state token."
+  [state]
+  (let [^js stmt (.prepare (db) "SELECT * FROM github_oauth_states WHERE state = ?")]
+    (when-let [^js row (.get stmt state)]
+      {:state (.-state row)
+       :return-to (.-return_to row)
+       :expires-at (.-expires_at row)
+       :created-at (.-created_at row)})))
+
+(defn delete-github-oauth-state!
+  "Delete a GitHub OAuth state (after use or expiry)."
+  [state]
+  (let [^js stmt (.prepare (db) "DELETE FROM github_oauth_states WHERE state = ?")]
+    (.run stmt state)))
+
+(defn cleanup-expired-github-oauth-states!
+  "Remove expired GitHub OAuth states."
+  []
+  (let [now (util/now-iso)
+        ^js stmt (.prepare (db) "DELETE FROM github_oauth_states WHERE expires_at < ?")]
+    (.run stmt now)))

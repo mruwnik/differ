@@ -67,10 +67,13 @@
       (is (contains? tool-names "unresolve_comment")))))
 
 (deftest tool-schema-test
-  (testing "get_or_create_session has required repo_path"
+  (testing "get_or_create_session has repo_path and github_pr options"
     (let [tool (first (filter #(= "get_or_create_session" (:name %)) mcp/tools))
-          schema (:inputSchema tool)]
-      (is (= ["repo_path"] (:required schema)))))
+          schema (:inputSchema tool)
+          props (:properties schema)]
+      ;; Either repo_path (local) or github_pr (GitHub) can be used
+      (is (contains? props :repo_path))
+      (is (contains? props :github_pr))))
 
   (testing "register_files has required fields"
     (let [tool (first (filter #(= "register_files" (:name %)) mcp/tools))
