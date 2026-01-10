@@ -208,35 +208,37 @@
 ;; ============================================================================
 
 (defn- get-or-create-local-session
-  "Get or create a local repository session."
+  "Get or create a local repository session.
+   Always returns a Promise for consistency with GitHub sessions."
   [{:keys [repo-path project branch target-branch]}]
-  (let [validation (validate-repo-path repo-path)]
-    (if-not (:valid validation)
-      {:error (:error validation)}
-      (let [resolved-path (:path validation)
-            project (or project (git/get-project-id resolved-path))
-            branch (or branch (git/get-current-branch resolved-path))
-            target-branch (or target-branch (git/detect-default-branch resolved-path))
-            session-id (local-session-id project branch)]
-        (if-let [existing (db/get-session session-id)]
-          {:session existing :is-new false}
-          {:session (db/create-session!
-                     {:id session-id
-                      :session-type "local"
-                      :project project
-                      :branch branch
-                      :target-branch target-branch
-                      :repo-path resolved-path})
-           :is-new true})))))
+  (js/Promise.resolve
+   (let [validation (validate-repo-path repo-path)]
+     (if-not (:valid validation)
+       {:error (:error validation)}
+       (let [resolved-path (:path validation)
+             project (or project (git/get-project-id resolved-path))
+             branch (or branch (git/get-current-branch resolved-path))
+             target-branch (or target-branch (git/detect-default-branch resolved-path))
+             session-id (local-session-id project branch)]
+         (if-let [existing (db/get-session session-id)]
+           {:session existing :is-new false}
+           {:session (db/create-session!
+                      {:id session-id
+                       :session-type "local"
+                       :project project
+                       :branch branch
+                       :target-branch target-branch
+                       :repo-path resolved-path})
+            :is-new true}))))))
 
 (defn- get-or-create-github-session
   "Get or create a GitHub PR session.
-   Returns {:session :is-new} or {:requires-auth :auth-url} or {:error}."
+   Always returns a Promise for consistency with local sessions."
   [{:keys [owner repo pr-number]}]
   (let [session-id (github-session-id owner repo pr-number)]
     ;; Check if session exists
     (if-let [existing (db/get-session session-id)]
-      {:session existing :is-new false}
+      (js/Promise.resolve {:session existing :is-new false})
       ;; Need to create - check for auth first
       (if-let [token-record (github-oauth/get-any-token)]
         ;; Have token, fetch PR info and create session
@@ -259,8 +261,9 @@
               (.catch (fn [err]
                         {:error (str "Failed to fetch PR: " (.-message err))}))))
         ;; No token - require auth
-        {:requires-auth true
-         :auth-url (str "/oauth/github?return_to=/session/" session-id)}))))
+        (js/Promise.resolve
+         {:requires-auth true
+          :auth-url (str "/oauth/github?return_to=/session/" session-id)})))))
 
 (defn get-or-create-session
   "Get existing session or create new one.

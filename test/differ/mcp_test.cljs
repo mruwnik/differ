@@ -56,15 +56,23 @@
 
   (testing "expected tools are defined"
     (let [tool-names (set (map :name mcp/tools))]
+      ;; Core session tools
       (is (contains? tool-names "list_sessions"))
       (is (contains? tool-names "get_or_create_session"))
       (is (contains? tool-names "register_files"))
       (is (contains? tool-names "unregister_files"))
       (is (contains? tool-names "get_review_state"))
+      ;; Comment tools
       (is (contains? tool-names "get_pending_feedback"))
       (is (contains? tool-names "add_comment"))
       (is (contains? tool-names "resolve_comment"))
-      (is (contains? tool-names "unresolve_comment")))))
+      (is (contains? tool-names "unresolve_comment"))
+      ;; GitHub/backend tools
+      (is (contains? tool-names "submit_review"))
+      (is (contains? tool-names "get_context"))
+      (is (contains? tool-names "list_directory"))
+      (is (contains? tool-names "get_file_content"))
+      (is (contains? tool-names "get_history")))))
 
 (deftest tool-schema-test
   (testing "get_or_create_session has repo_path and github_pr options"

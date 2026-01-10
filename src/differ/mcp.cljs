@@ -459,8 +459,15 @@
 
 (defn- format-tool-error [e]
   {:content [{:type "text"
-              :text (str "Error: " (.-message e))}]
+              :text (str "Error: " (or (.-message e) (ex-message e) (str e)))}]
    :isError true})
+
+(defn- ensure-promise
+  "Wrap value in a Promise if it isn't already one."
+  [x]
+  (if (instance? js/Promise x)
+    x
+    (js/Promise.resolve x)))
 
 (defmethod handle-method "tools/call" [_ params]
   (let [tool-name (:name params)
@@ -468,12 +475,10 @@
         arguments (util/keys->kebab (or (:arguments params) {}))]
     (try
       (let [result (handle-tool tool-name arguments)]
-        ;; Check if result is a Promise
-        (if (instance? js/Promise result)
-          ;; Return Promise that resolves to formatted result
-          (.then result format-tool-result format-tool-error)
-          ;; Synchronous result
-          (format-tool-result result)))
+        ;; Normalize to Promise for consistent handling
+        (-> (ensure-promise result)
+            (.then format-tool-result)
+            (.catch format-tool-error)))
       (catch :default e
         (format-tool-error e)))))
 

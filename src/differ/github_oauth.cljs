@@ -115,17 +115,16 @@
    Exchanges code for token, gets user info, stores token.
    Returns promise of {:token :user}."
   [code]
-  (let [token-data-atom (atom nil)]
-    (-> (exchange-code-for-token code)
-        (.then (fn [token-data]
-                 (if (:error token-data)
-                   (throw (ex-info (or (:error_description token-data) "OAuth error")
-                                   {:error (:error token-data)}))
-                   (do
-                     (reset! token-data-atom token-data)
-                     (get-user-info (:access_token token-data))))))
-        (.then (fn [user-info]
-                 (let [token-data @token-data-atom
-                       stored (store-token! token-data user-info)]
-                   {:token stored
-                    :user user-info}))))))
+  (-> (exchange-code-for-token code)
+      (.then (fn [token-data]
+               (if (:error token-data)
+                 (throw (ex-info (or (:error_description token-data) "OAuth error")
+                                 {:error (:error token-data)}))
+                 ;; Chain user-info fetch and pass token-data through
+                 (-> (get-user-info (:access_token token-data))
+                     (.then (fn [user-info]
+                              {:token-data token-data :user-info user-info}))))))
+      (.then (fn [{:keys [token-data user-info]}]
+               (let [stored (store-token! token-data user-info)]
+                 {:token stored
+                  :user user-info})))))

@@ -412,42 +412,43 @@
                                       :expires-at (util/expires-at 600)})
       (.redirect res (github-oauth/authorization-url redirect-uri state)))))
 
+(defn- validate-oauth-callback
+  "Validate OAuth callback params. Returns {:ok oauth-state} or {:error [status message]}."
+  [state error]
+  (cond
+    error
+    {:error [400 (str "GitHub OAuth error: " error)]}
+
+    (not state)
+    {:error [400 "Missing state parameter"]}
+
+    :else
+    (if-let [oauth-state (db/get-github-oauth-state state)]
+      (if (util/expired? (:expires-at oauth-state))
+        (do (db/delete-github-oauth-state! state)
+            {:error [400 "OAuth state expired, please try again"]})
+        {:ok oauth-state})
+      {:error [400 "Invalid or expired state parameter"]})))
+
 (defn github-oauth-callback-handler
   "GET /oauth/github/callback - GitHub OAuth callback"
   [^js req res]
   (let [code (.. req -query -code)
         state (.. req -query -state)
-        error (.. req -query -error)]
-    (cond
-      error
-      (error-response res 400 (str "GitHub OAuth error: " error))
-
-      (not state)
-      (error-response res 400 "Missing state parameter")
-
-      :else
-      (let [oauth-state (db/get-github-oauth-state state)]
-        (cond
-          (not oauth-state)
-          (error-response res 400 "Invalid or expired state parameter")
-
-          (util/expired? (:expires-at oauth-state))
-          (do
-            (db/delete-github-oauth-state! state)
-            (error-response res 400 "OAuth state expired, please try again"))
-
-          :else
-          (-> (github-oauth/complete-oauth-flow code)
-              (.then (fn [_result]
-                       ;; Delete used state
-                       (db/delete-github-oauth-state! state)
-                       ;; Redirect to return URL or home
-                       (let [return-to (or (:return-to oauth-state) "/")]
-                         (.redirect res (str return-to "?github_connected=true")))))
-              (.catch (fn [err]
-                        (js/console.error "GitHub OAuth error:" err)
-                        (db/delete-github-oauth-state! state)
-                        (error-response res 400 (str "GitHub OAuth failed: " (.-message err)))))))))))
+        error (.. req -query -error)
+        validation (validate-oauth-callback state error)]
+    (if-let [[status msg] (:error validation)]
+      (error-response res status msg)
+      (let [oauth-state (:ok validation)]
+        (-> (github-oauth/complete-oauth-flow code)
+            (.then (fn [_]
+                     (db/delete-github-oauth-state! state)
+                     (.redirect res (str (or (:return-to oauth-state) "/")
+                                         "?github_connected=true"))))
+            (.catch (fn [err]
+                      (js/console.error "GitHub OAuth error:" err)
+                      (db/delete-github-oauth-state! state)
+                      (error-response res 400 (str "GitHub OAuth failed: " (.-message err))))))))))
 
 (defn list-github-tokens-handler
   "GET /api/github/tokens - List stored GitHub tokens"

@@ -19,9 +19,9 @@
 (defn- update-rate-limit!
   "Update rate limit state from response headers."
   [headers]
-  (when headers
-    (let [remaining (js/parseInt (or (.get headers "x-ratelimit-remaining") "5000") 10)
-          reset-at (js/parseInt (or (.get headers "x-ratelimit-reset") "0") 10)]
+  (when-let [h headers]
+    (let [remaining (js/parseInt (or (.get h "x-ratelimit-remaining") "5000") 10)
+          reset-at (js/parseInt (or (.get h "x-ratelimit-reset") "0") 10)]
       (swap! rate-limit-state assoc
              :remaining remaining
              :reset-at (* reset-at 1000)))))
@@ -37,28 +37,81 @@
                        :retry-after (- reset-at (js/Date.now))})))))
 
 (defn- graphql-request
-  "Make GraphQL request to GitHub API."
+  "Make GraphQL request to GitHub API.
+   Always returns a Promise (rejected on error) for consistent async handling."
   [token query variables]
-  (check-rate-limit!)
-  (-> (js/fetch graphql-endpoint
-                #js {:method "POST"
-                     :headers #js {"Authorization" (str "Bearer " token)
-                                   "Content-Type" "application/json"}
-                     :body (js/JSON.stringify
-                            #js {:query query
-                                 :variables (clj->js variables)})})
-      (.then (fn [response]
-               (update-rate-limit! (.-headers response))
-               (if (.-ok response)
-                 (.json response)
-                 (throw (ex-info (str "GitHub API error: " (.-status response))
-                                 {:status (.-status response)})))))
-      (.then (fn [json]
-               (let [data (js->clj json :keywordize-keys true)]
-                 (if-let [errors (:errors data)]
-                   (throw (ex-info (str "GraphQL error: " (-> errors first :message))
-                                   {:errors errors}))
-                   (:data data)))))))
+  (try
+    (check-rate-limit!)
+    (-> (js/fetch graphql-endpoint
+                  #js {:method "POST"
+                       :headers #js {"Authorization" (str "Bearer " token)
+                                     "Content-Type" "application/json"}
+                       :body (js/JSON.stringify
+                              #js {:query query
+                                   :variables (clj->js variables)})})
+        (.then (fn [response]
+                 (update-rate-limit! (.-headers response))
+                 (if (.-ok response)
+                   (.json response)
+                   (throw (ex-info (str "GitHub API error: " (.-status response))
+                                   {:status (.-status response)})))))
+        (.then (fn [json]
+                 (let [data (js->clj json :keywordize-keys true)]
+                   (if-let [errors (:errors data)]
+                     (throw (ex-info (str "GraphQL error: " (-> errors first :message))
+                                     {:errors errors}))
+                     (:data data)))))
+        (.catch (fn [err]
+                  (throw (ex-info (str "GitHub request failed: " (or (.-message err) (ex-message err) (str err)))
+                                  {:original-error err})))))
+    (catch :default e
+      (js/Promise.reject e))))
+
+(defn- format-attribution
+  "Format author/model attribution prefix for GitHub comments."
+  [{:keys [author model]}]
+  (cond
+    (and author model) (str "**" author "** *(" model ")*")
+    author             (str "**" author "**")
+    model              (str "*(" model ")*")
+    :else              nil))
+
+(defn- with-attribution
+  "Prepend attribution to text if available."
+  [text opts]
+  (if-let [attr (format-attribution opts)]
+    (str attr ": " text)
+    text))
+
+(defn- resolve-ref
+  "Resolve symbolic refs (base/head) to actual SHAs."
+  [pr ref]
+  (case ref
+    "base" (:baseRefOid pr)
+    "head" (:headRefOid pr)
+    (nil "") (:headRefOid pr)
+    ref))
+
+(defn- paginate-graphql
+  "Fetch all pages of a paginated GraphQL query.
+   Args:
+     token - GitHub access token
+     query - GraphQL query string with $cursor variable
+     params - Query parameters (without cursor)
+     path-to-connection - Vector path to the connection object (e.g., [:repository :pullRequest :files])
+   Returns a Promise resolving to all accumulated nodes."
+  [token query params path-to-connection]
+  (let [fetch-page (fn fetch-page [cursor accumulated]
+                     (-> (graphql-request token query (assoc params :cursor cursor))
+                         (.then (fn [data]
+                                  (let [connection (get-in data path-to-connection)
+                                        nodes (:nodes connection)
+                                        page-info (:pageInfo connection)
+                                        all-nodes (into accumulated nodes)]
+                                    (if (:hasNextPage page-info)
+                                      (fetch-page (:endCursor page-info) all-nodes)
+                                      all-nodes))))))]
+    (fetch-page nil [])))
 
 ;; GraphQL queries
 
@@ -206,6 +259,18 @@
     }
   }")
 
+(def add-thread-reply-mutation
+  "mutation($input: AddPullRequestReviewThreadReplyInput!) {
+    addPullRequestReviewThreadReply(input: $input) {
+      comment {
+        id
+        body
+        createdAt
+        author { login }
+      }
+    }
+  }")
+
 (def resolve-thread-mutation
   "mutation($input: ResolveReviewThreadInput!) {
     resolveReviewThread(input: $input) {
@@ -260,8 +325,8 @@
                  (throw (ex-info (str "GitHub API error: " (.-status response))
                                  {:status (.-status response)})))))
       (.catch (fn [err]
-                (js/console.error "Failed to fetch PR diff:" err)
-                nil))))
+                (throw (ex-info (str "Failed to fetch PR diff: " (or (.-message err) (ex-message err) (str err)))
+                                {:original-error err}))))))
 
 ;; GitHubBackend record
 
@@ -328,19 +393,20 @@
                        file-section)))))))
 
   (get-changed-files [_]
-    (-> (graphql-request token pr-files-query {:owner owner :repo repo :number pr-number})
-        (.then (fn [data]
-                 (let [files (get-in data [:repository :pullRequest :files :nodes])]
-                   (mapv (fn [f]
-                           {:path (:path f)
-                            :status (case (:changeType f)
-                                      "ADDED" :added
-                                      "DELETED" :deleted
-                                      "RENAMED" :renamed
-                                      :modified)
-                            :additions (:additions f)
-                            :deletions (:deletions f)})
-                         files))))))
+    (-> (paginate-graphql token pr-files-query
+                          {:owner owner :repo repo :number pr-number}
+                          [:repository :pullRequest :files])
+        (.then (fn [files]
+                 (mapv (fn [f]
+                         {:path (:path f)
+                          :status (case (:changeType f)
+                                    "ADDED" :added
+                                    "DELETED" :deleted
+                                    "RENAMED" :renamed
+                                    :modified)
+                          :additions (:additions f)
+                          :deletions (:deletions f)})
+                       files)))))
 
   (get-file-content
     [this ref path] (proto/get-file-content this ref path nil))
@@ -349,12 +415,7 @@
     (-> (graphql-request token pr-query {:owner owner :repo repo :number pr-number})
         (.then (fn [pr-data]
                  (let [pr (get-in pr-data [:repository :pullRequest])
-                       ;; Resolve ref to actual SHA
-                       effective-ref (case ref
-                                       "base" (:baseRefOid pr)
-                                       "head" (:headRefOid pr)
-                                       (nil "") (:headRefOid pr)
-                                       ref)]
+                       effective-ref (resolve-ref pr ref)]
                    (graphql-request token file-content-query
                                     {:owner owner
                                      :repo repo
@@ -369,11 +430,7 @@
     (-> (graphql-request token pr-query {:owner owner :repo repo :number pr-number})
         (.then (fn [pr-data]
                  (let [pr (get-in pr-data [:repository :pullRequest])
-                       effective-ref (case ref
-                                       "base" (:baseRefOid pr)
-                                       "head" (:headRefOid pr)
-                                       (nil "") (:headRefOid pr)
-                                       ref)
+                       effective-ref (resolve-ref pr ref)
                        expression (if (seq dir-path)
                                     (str effective-ref ":" dir-path)
                                     (str effective-ref ":"))]
@@ -394,11 +451,7 @@
     (-> (graphql-request token pr-query {:owner owner :repo repo :number pr-number})
         (.then (fn [pr-data]
                  (let [pr (get-in pr-data [:repository :pullRequest])
-                       effective-ref (case ref
-                                       "base" (:baseRefOid pr)
-                                       "head" (:headRefOid pr)
-                                       (nil "") (:headRefOid pr)
-                                       ref)]
+                       effective-ref (resolve-ref pr ref)]
                    (graphql-request token file-content-query
                                     {:owner owner
                                      :repo repo
@@ -410,17 +463,18 @@
   (get-history [_ opts]
     (let [{:keys [limit]} opts
           limit (or limit 50)]
-      (-> (graphql-request token pr-commits-query {:owner owner :repo repo :number pr-number})
-          (.then (fn [data]
-                   (let [commits (get-in data [:repository :pullRequest :commits :nodes])]
-                     (->> commits
-                          (take limit)
-                          (mapv (fn [n]
-                                  (let [c (:commit n)]
-                                    {:sha (:oid c)
-                                     :message (:message c)
-                                     :author (get-in c [:author :name])
-                                     :date (get-in c [:author :date])}))))))))))
+      (-> (paginate-graphql token pr-commits-query
+                            {:owner owner :repo repo :number pr-number}
+                            [:repository :pullRequest :commits])
+          (.then (fn [commits]
+                   (->> commits
+                        (take limit)
+                        (mapv (fn [n]
+                                (let [c (:commit n)]
+                                  {:sha (:oid c)
+                                   :message (:message c)
+                                   :author (get-in c [:author :name])
+                                   :date (get-in c [:author :date])})))))))))
 
   (get-branches [_]
     (-> (graphql-request token pr-query {:owner owner :repo repo :number pr-number})
@@ -431,26 +485,27 @@
 
   ;; Comments - use GitHub's review threads
   (get-comments [_]
-    (-> (graphql-request token pr-threads-query {:owner owner :repo repo :number pr-number})
-        (.then (fn [data]
-                 (let [threads (get-in data [:repository :pullRequest :reviewThreads :nodes])]
-                   (mapv (fn [thread]
-                           (let [comments (get-in thread [:comments :nodes])
-                                 first-comment (first comments)]
-                             {:id (:id thread)
-                              :file (:path thread)
-                              :line (:line thread)
-                              :resolved (:isResolved thread)
-                              :text (:body first-comment)
-                              :author (get-in first-comment [:author :login])
-                              :created-at (:createdAt first-comment)
-                              :replies (mapv (fn [c]
-                                               {:id (:id c)
-                                                :text (:body c)
-                                                :author (get-in c [:author :login])
-                                                :created-at (:createdAt c)})
-                                             (rest comments))}))
-                         threads))))))
+    (-> (paginate-graphql token pr-threads-query
+                          {:owner owner :repo repo :number pr-number}
+                          [:repository :pullRequest :reviewThreads])
+        (.then (fn [threads]
+                 (mapv (fn [thread]
+                         (let [comments (get-in thread [:comments :nodes])
+                               first-comment (first comments)]
+                           {:id (:id thread)
+                            :file (:path thread)
+                            :line (:line thread)
+                            :resolved (:isResolved thread)
+                            :text (:body first-comment)
+                            :author (get-in first-comment [:author :login])
+                            :created-at (:createdAt first-comment)
+                            :replies (mapv (fn [c]
+                                             {:id (:id c)
+                                              :text (:body c)
+                                              :author (get-in c [:author :login])
+                                              :created-at (:createdAt c)})
+                                           (rest comments))}))
+                       threads)))))
 
   (get-pending-comments [this opts]
     (-> (proto/get-comments this)
@@ -461,27 +516,35 @@
                      since (filter #(> (js/Date. (:created-at %)) (js/Date. since)))))))))
 
   (add-comment! [_ comment]
-    (let [{:keys [file line text author model]} comment
-          ;; Prefix with author/model so it's clear who wrote the comment
-          attribution (cond
-                        (and author model) (str "**" author "** *(" model ")*")
-                        author (str "**" author "**")
-                        model (str "*(" model ")*")
-                        :else nil)
-          body (if attribution
-                 (str attribution ": " text)
-                 text)]
-      (if (and file line)
+    (let [{:keys [file line text parent-id side]} comment
+          body (with-attribution text comment)]
+      (cond
+        ;; Reply to existing review thread
+        parent-id
+        (-> (graphql-request token add-thread-reply-mutation
+                             {:input {:pullRequestReviewThreadId parent-id
+                                      :body body}})
+            (.then (fn [data]
+                     (let [c (get-in data [:addPullRequestReviewThreadReply :comment])]
+                       {:id (:id c)
+                        :text (:body c)
+                        :author (get-in c [:author :login])
+                        :created-at (:createdAt c)}))))
+
         ;; Add review thread on specific line
+        (and file line)
         (-> (graphql-request token pr-query {:owner owner :repo repo :number pr-number})
             (.then (fn [data]
                      (let [pr-node-id (get-in data [:repository :pullRequest :id])]
-                       (graphql-request token add-review-thread-mutation
-                                        {:input {:pullRequestId pr-node-id
-                                                 :body body
-                                                 :path file
-                                                 :line line
-                                                 :side "RIGHT"}}))))
+                       (if pr-node-id
+                         (graphql-request token add-review-thread-mutation
+                                          {:input {:pullRequestId pr-node-id
+                                                   :body body
+                                                   :path file
+                                                   :line line
+                                                   :side (or side "RIGHT")}})
+                         (throw (ex-info "PR not found or inaccessible"
+                                         {:owner owner :repo repo :pr-number pr-number}))))))
             (.then (fn [data]
                      (let [thread (get-in data [:addPullRequestReviewThread :thread])
                            c (first (get-in thread [:comments :nodes]))]
@@ -489,13 +552,18 @@
                         :text (:body c)
                         :author (get-in c [:author :login])
                         :created-at (:createdAt c)}))))
+
         ;; Add general PR comment (issue comment)
+        :else
         (-> (graphql-request token pr-query {:owner owner :repo repo :number pr-number})
             (.then (fn [data]
                      (let [pr-node-id (get-in data [:repository :pullRequest :id])]
-                       (graphql-request token add-issue-comment-mutation
-                                        {:input {:subjectId pr-node-id
-                                                 :body body}}))))
+                       (if pr-node-id
+                         (graphql-request token add-issue-comment-mutation
+                                          {:input {:subjectId pr-node-id
+                                                   :body body}})
+                         (throw (ex-info "PR not found or inaccessible"
+                                         {:owner owner :repo repo :pr-number pr-number}))))))
             (.then (fn [data]
                      (let [c (get-in data [:addComment :commentEdge :node])]
                        {:id (:id c)
@@ -513,17 +581,8 @@
         (.then (fn [_] {:resolved false}))))
 
   (submit-review! [_ opts]
-    (let [{:keys [body author model]} opts
-          ;; Prefix with author/model so it's clear who wrote the review
-          attribution (cond
-                        (and author model) (str "**" author "** *(" model ")*")
-                        author (str "**" author "**")
-                        model (str "*(" model ")*")
-                        :else nil)
-          formatted-body (when body
-                           (if attribution
-                             (str attribution ": " body)
-                             body))
+    (let [{:keys [body]} opts
+          formatted-body (when body (with-attribution body opts))
           ;; Only COMMENT supported - no approve/request-changes via this tool
           gh-event "COMMENT"]
       ;; First, find any pending reviews authored by the current user

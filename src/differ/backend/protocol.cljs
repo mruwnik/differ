@@ -1,5 +1,6 @@
 (ns differ.backend.protocol
-  "ReviewBackend protocol - abstraction for local directories and GitHub PRs.")
+  "ReviewBackend protocol - abstraction for local directories and GitHub PRs."
+  (:require [clojure.string :as str]))
 
 (defprotocol ReviewBackend
   "Abstraction for review operations across local directories and GitHub PRs.
@@ -125,11 +126,18 @@
 (defn extract-lines
   "Extract lines from content string based on opts.
    opts: {:from int :to int} - 1-indexed, inclusive
-   Returns subset of lines or full content if no range specified."
+   Returns subset of lines, nil for nil content, or full content if no range specified."
   [content {:keys [from to]}]
-  (if (or from to)
-    (let [lines (clojure.string/split-lines content)
-          start (max 0 (dec (or from 1)))
-          end (min (count lines) (or to (count lines)))]
-      (clojure.string/join "\n" (subvec (vec lines) start end)))
-    content))
+  (when content
+    (if (or from to)
+      (let [lines (str/split-lines content)
+            line-count (count lines)
+            ;; Normalize and clamp range
+            start (max 0 (dec (or from 1)))
+            end (min line-count (or to line-count))]
+        ;; Return nil for invalid ranges, empty string for out-of-bounds
+        (cond
+          (> start end) nil  ; Invalid range (from > to)
+          (>= start line-count) ""  ; Beyond file end
+          :else (str/join "\n" (subvec (vec lines) start end))))
+      content)))
