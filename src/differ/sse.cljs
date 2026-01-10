@@ -167,6 +167,9 @@
 (defn emit-comment-unresolved! [session-id comment-id]
   (emit! session-id :comment-unresolved {:comment-id comment-id}))
 
+(defn emit-comment-deleted! [session-id comment-id]
+  (emit! session-id :comment-deleted {:comment-id comment-id}))
+
 (defn emit-session-updated! [session-id]
   (emit! session-id :session-updated {}))
 

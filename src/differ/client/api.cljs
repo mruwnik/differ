@@ -96,6 +96,12 @@
    :on-success [:comment-unresolved comment-id]
    :on-failure [:api-error]})
 
+(defn delete-comment [comment-id]
+  {:method "DELETE"
+   :url (str "/api/comments/" comment-id)
+   :on-success [:comment-deleted comment-id]
+   :on-failure [:api-error]})
+
 (defn delete-session [session-id]
   {:method "DELETE"
    :url (str "/api/sessions/" session-id)
@@ -166,4 +172,24 @@
    :url (str "/api/sessions/" session-id "/context/" (js/encodeURIComponent file-path)
              "?from=" from-line "&to=" to-line)
    :on-success [:context-lines-loaded file-path from-line to-line]
+   :on-failure [:api-error]})
+
+;; GitHub tokens
+
+(defn fetch-github-status []
+  {:method "GET"
+   :url "/api/github/status"
+   :on-success [:github-status-loaded]
+   :on-failure [:api-error]})
+
+(defn fetch-github-tokens []
+  {:method "GET"
+   :url "/api/github/tokens"
+   :on-success [:github-tokens-loaded]
+   :on-failure [:api-error]})
+
+(defn delete-github-token [token-id]
+  {:method "DELETE"
+   :url (str "/api/github/tokens/" token-id)
+   :on-success [:github-token-deleted token-id]
    :on-failure [:api-error]})

@@ -4,6 +4,11 @@
             [reagent.core :as r]
             [clojure.string :as str]))
 
+(defn- format-date [iso-string]
+  (when iso-string
+    (let [date (js/Date. iso-string)]
+      (.toLocaleDateString date "en-US" #js {:year "numeric" :month "short" :day "numeric"}))))
+
 (defn- format-time [iso-string]
   (when iso-string
     (let [date (js/Date. iso-string)
@@ -112,6 +117,88 @@
             :style {:margin-bottom "16px"}}
            "+ New Session"])))))
 
+(defn- token-item [& _]
+  (let [confirming? (r/atom false)
+        last-id (r/atom nil)]
+    (fn [{:keys [id github-username scope created-at]}]
+      ;; Reset confirmation state if token ID changed (list reordered via SSE)
+      (when (not= @last-id id)
+        (reset! last-id id)
+        (reset! confirming? false))
+      [:div.token-item
+       [:div.token-info
+        [:span.token-username github-username]
+        [:span.token-meta
+         (str "Added " (format-date created-at))
+         (when scope
+           (str " · " scope))]]
+       (if @confirming?
+         [:div {:style {:display "flex" :gap "8px"}}
+          [:button.btn.btn-danger
+           {:on-click #(do (rf/dispatch [:delete-github-token id])
+                           (reset! confirming? false))}
+           "Confirm"]
+          [:button.btn.btn-secondary
+           {:on-click #(reset! confirming? false)}
+           "Cancel"]]
+         [:button.btn.btn-secondary
+          {:on-click #(reset! confirming? true)}
+          "Revoke"])])))
+
+(defn github-settings []
+  (let [visible? @(rf/subscribe [:github-settings-visible?])
+        status @(rf/subscribe [:github-status])
+        tokens @(rf/subscribe [:github-tokens])
+        loading? @(rf/subscribe [:loading? :github-tokens])
+        just-connected? @(rf/subscribe [:github-just-connected?])]
+    [:div.github-settings
+     [:div.github-settings-header
+      {:on-click #(if visible?
+                    (rf/dispatch [:hide-github-settings])
+                    (rf/dispatch [:show-github-settings]))}
+      [:span {:style {:display "flex" :align-items "center" :gap "8px"}}
+       [:span {:style {:font-size "12px"}}
+        (if visible? "▼" "▶")]
+       "GitHub Integration"]
+      (when (:connected status)
+        [:span.github-connected-badge "Connected"])]
+     (when visible?
+       [:div.github-settings-content
+        (when just-connected?
+          [:div {:style {:background "#dcffe4"
+                         :border "1px solid #28a745"
+                         :padding "8px 12px"
+                         :border-radius "4px"
+                         :margin-bottom "12px"
+                         :color "#22863a"
+                         :font-size "13px"}}
+           "GitHub account connected successfully!"])
+        (cond
+          loading?
+          [:p {:style {:color "#6a737d" :margin "8px 0"}} "Loading..."]
+
+          (not (:configured status))
+          [:p {:style {:color "#6a737d" :margin "8px 0"}}
+           "GitHub OAuth not configured. Set GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET environment variables."]
+
+          :else
+          [:div
+           (when (seq tokens)
+             [:div
+              [:p {:style {:color "#6a737d" :margin "0 0 8px 0" :font-size "12px"}}
+               "Connected accounts have access to all repositories you can access on GitHub."]
+              [:ul.token-list
+               (for [token tokens]
+                 ^{:key (:id token)}
+                 [token-item token])]])
+           [:a.btn.btn-primary
+            {:href "/oauth/github"
+             :style {:display "inline-block" :margin-top "12px"}}
+            (if (empty? tokens) "Connect GitHub Account" "Connect Another Account")]
+           (when (seq tokens)
+             [:p {:style {:color "#6a737d" :margin "8px 0 0 0" :font-size "11px"}}
+              "To add a different account, first log out of GitHub or use a private window."])])])]))
+
 (defn session-list []
   (let [sessions @(rf/subscribe [:sessions])
         loading? @(rf/subscribe [:loading? :sessions])]
@@ -140,4 +227,8 @@
        [:ul.session-list
         (for [session sessions]
           ^{:key (:id session)}
-          [session-item session])])]))
+          [session-item session])])
+
+     ;; GitHub settings at the bottom
+     [:div {:style {:margin-top "32px" :border-top "1px solid #e1e4e8" :padding-top "24px"}}
+      [github-settings]]]))

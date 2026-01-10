@@ -21,11 +21,19 @@
 (rf/reg-event-fx
  :initialize
  (fn [_ _]
-   (let [saved-view-mode (load-preference "differ-view-mode")]
+   (let [saved-view-mode (load-preference "differ-view-mode")
+         ;; Check if returning from GitHub OAuth - explicit check for "true" string
+         search-params (js/URLSearchParams. (.-search js/location))
+         github-connected? (= (.get search-params "github_connected") "true")]
+     ;; Clean up the URL if we have the github_connected param (preserve hash fragment)
+     (when github-connected?
+       (.replaceState js/history nil "" (str (.-pathname js/location) (.-hash js/location))))
      {:db (cond-> db/default-db
-            saved-view-mode (assoc :diff-view-mode saved-view-mode))
-      :dispatch-n [[:load-config]
-                   [:load-sessions]]})))
+            saved-view-mode (assoc :diff-view-mode saved-view-mode)
+            github-connected? (assoc :github-just-connected true))
+      :dispatch-n (cond-> [[:load-config]
+                           [:load-sessions]]
+                    github-connected? (conj [:show-github-settings]))})))
 
 ;; Config
 (rf/reg-event-fx
@@ -365,6 +373,18 @@
    ;; SSE handles the refresh
    {}))
 
+;; Delete comment
+(rf/reg-event-fx
+ :delete-comment
+ (fn [_ [_ comment-id]]
+   {:http (api/delete-comment comment-id)}))
+
+(rf/reg-event-fx
+ :comment-deleted
+ (fn [_ _]
+   ;; SSE handles the refresh
+   {}))
+
 ;; Delete session
 (rf/reg-event-fx
  :delete-session
@@ -482,43 +502,57 @@
  :sse-comment-added
  (fn [{:keys [db]} [_ _comment]]
    (let [session-id (db/current-session-id db)]
-     (when session-id
-       {:dispatch [:load-comments session-id]}))))
+     (if session-id
+       {:dispatch [:load-comments session-id]}
+       {}))))
 
 (rf/reg-event-fx
  :sse-comment-resolved
  (fn [{:keys [db]} [_ _comment-id]]
    (let [session-id (db/current-session-id db)]
-     (when session-id
-       {:dispatch [:load-comments session-id]}))))
+     (if session-id
+       {:dispatch [:load-comments session-id]}
+       {}))))
 
 (rf/reg-event-fx
  :sse-comment-unresolved
  (fn [{:keys [db]} [_ _comment-id]]
    (let [session-id (db/current-session-id db)]
-     (when session-id
-       {:dispatch [:load-comments session-id]}))))
+     (if session-id
+       {:dispatch [:load-comments session-id]}
+       {}))))
+
+(rf/reg-event-fx
+ :sse-comment-deleted
+ (fn [{:keys [db]} [_ _comment-id]]
+   (let [session-id (db/current-session-id db)]
+     (if session-id
+       {:dispatch [:load-comments session-id]}
+       {}))))
 
 (rf/reg-event-fx
  :sse-session-updated
  (fn [{:keys [db]} [_ _session-id]]
    (let [session-id (db/current-session-id db)]
-     (when session-id
-       {:dispatch [:load-session session-id]}))))
+     (if session-id
+       {:dispatch [:load-session session-id]}
+       {}))))
 
 (rf/reg-event-fx
  :sse-files-changed
  (fn [{:keys [db]} [_ _files]]
    (let [session-id (db/current-session-id db)]
-     (when session-id
-       {:dispatch [:load-diff session-id]}))))
+     (if session-id
+       {:dispatch [:load-diff session-id]}
+       {}))))
 
 (rf/reg-event-fx
  :sse-diff-changed
  (fn [{:keys [db]} [_ _session-id]]
    (let [session-id (db/current-session-id db)]
-     (when session-id
-       {:dispatch [:load-diff session-id]}))))
+     (if session-id
+       {:dispatch [:load-diff session-id]}
+       {}))))
 
 ;; File picker directory handle
 (rf/reg-event-db
@@ -594,6 +628,56 @@
          (assoc-in [:diff :parsed] updated-parsed)
          (assoc-in [:loaded-files file-path] true)
          (assoc-in [:loading-files file-path] false)))))
+
+;; GitHub tokens
+(rf/reg-event-fx
+ :load-github-status
+ (fn [_ _]
+   {:http (api/fetch-github-status)}))
+
+(rf/reg-event-db
+ :github-status-loaded
+ (fn [db [_ response]]
+   (assoc db :github-status response)))
+
+(rf/reg-event-fx
+ :load-github-tokens
+ (fn [{:keys [db]} _]
+   {:db (assoc-in db [:loading :github-tokens] true)
+    :http (api/fetch-github-tokens)}))
+
+(rf/reg-event-db
+ :github-tokens-loaded
+ (fn [db [_ response]]
+   (-> db
+       (assoc :github-tokens (:tokens response))
+       (assoc-in [:loading :github-tokens] false))))
+
+(rf/reg-event-fx
+ :delete-github-token
+ (fn [_ [_ token-id]]
+   {:http (api/delete-github-token token-id)}))
+
+(rf/reg-event-fx
+ :github-token-deleted
+ (fn [_ [_ _token-id _response]]
+   {:dispatch-n [[:load-github-tokens]
+                 [:load-github-status]]}))
+
+;; GitHub settings panel
+(rf/reg-event-fx
+ :show-github-settings
+ (fn [{:keys [db]} _]
+   {:db (assoc db :github-settings-visible true)
+    :dispatch-n [[:load-github-status]
+                 [:load-github-tokens]]}))
+
+(rf/reg-event-db
+ :hide-github-settings
+ (fn [db _]
+   (-> db
+       (assoc :github-settings-visible false)
+       (dissoc :github-just-connected))))
 
 ;; Error handling
 (rf/reg-event-db

@@ -303,6 +303,19 @@
       (sse/emit-comment-unresolved! session-id comment-id))
     (json-response res {:success true})))
 
+(defn delete-comment-handler
+  "DELETE /api/comments/:id"
+  [^js req res]
+  (let [comment-id (.. req -params -id)
+        comment (db/get-comment comment-id)]
+    (if comment
+      (do
+        (db/delete-comment! comment-id)
+        (when-let [session-id (:session-id comment)]
+          (sse/emit-comment-deleted! session-id comment-id))
+        (json-response res {:success true}))
+      (error-response res 404 "Comment not found"))))
+
 ;; OAuth endpoints
 
 (defn oauth-metadata-handler
@@ -511,6 +524,7 @@
   (.post app "/api/sessions/:id/comments" add-comment-handler)
   (.patch app "/api/comments/:id/resolve" resolve-comment-handler)
   (.patch app "/api/comments/:id/unresolve" unresolve-comment-handler)
+  (.delete app "/api/comments/:id" delete-comment-handler)
 
   ;; OAuth
   (.get app "/.well-known/oauth-authorization-server" oauth-metadata-handler)

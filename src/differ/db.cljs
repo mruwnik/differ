@@ -203,6 +203,9 @@
   (when-not @db-instance
     (let [db (Database (db-path))]
       (.pragma db "journal_mode = WAL")
+      ;; Enable foreign key enforcement - must be set per-connection (not persisted).
+      ;; This enables ON DELETE CASCADE for comments.parent_id and comments.session_id.
+      (.pragma db "foreign_keys = ON")
       (create-tables db)
       (migrate-comments-table db)
       (migrate-sessions-table db)
@@ -430,7 +433,9 @@
   (update-comment! comment-id {:resolved false}))
 
 (defn delete-comment!
-  "Delete a comment and all its replies."
+  "Delete a comment and all its replies.
+   Replies are automatically deleted via ON DELETE CASCADE on parent_id foreign key
+   (requires foreign_keys = ON pragma, which is set in init!)."
   [comment-id]
   (let [comment (get-comment comment-id)
         ^js stmt (.prepare (db) "DELETE FROM comments WHERE id = ?")]

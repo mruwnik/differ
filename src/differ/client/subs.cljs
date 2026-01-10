@@ -314,3 +314,49 @@
  :<- [:config]
  (fn [config _]
    (get config :context-expand-size 15)))
+
+;; GitHub tokens
+(rf/reg-sub
+ :github-status
+ (fn [db _]
+   (:github-status db)))
+
+(rf/reg-sub
+ :github-configured?
+ :<- [:github-status]
+ (fn [status _]
+   (:configured status)))
+
+(rf/reg-sub
+ :github-connected?
+ :<- [:github-status]
+ (fn [status _]
+   (:connected status)))
+
+(rf/reg-sub
+ :github-tokens
+ (fn [db _]
+   (or (:github-tokens db) [])))
+
+(rf/reg-sub
+ :github-settings-visible?
+ (fn [db _]
+   (:github-settings-visible db)))
+
+(rf/reg-sub
+ :github-just-connected?
+ (fn [db _]
+   (:github-just-connected db)))
+
+;; Review summaries (comments with no file - added when finishing a review)
+(rf/reg-sub
+ :review-summaries
+ :<- [:comments]
+ (fn [comments _]
+   ;; Comments with nil file are review summaries
+   (let [summaries (get comments nil [])]
+     (->> summaries
+          (filter #(nil? (:parent-id %)))  ;; Only root comments
+          (sort-by :created-at)
+          reverse
+          vec))))

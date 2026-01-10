@@ -4,7 +4,9 @@
             [re-frame.core :as rf]
             [clojure.string :as str]
             [differ.client.views.comments :as comments]
-            [differ.client.highlight :as highlight]))
+            [differ.client.highlight :as highlight]
+            ["marked" :refer [marked]]
+            ["dompurify" :as DOMPurify]))
 
 (defn- file-id
   "Generate a DOM id for a file section."
@@ -258,6 +260,100 @@
                 ^{:key (:id cmt)}
                 [resolved-comment-item cmt])])])))))
 
+(defn- format-summary-time [iso-string]
+  (when iso-string
+    (let [date (js/Date. iso-string)]
+      (.toLocaleString date "en-US" #js {:month "short"
+                                         :day "numeric"
+                                         :hour "numeric"
+                                         :minute "2-digit"}))))
+
+(def ^:private dompurify-config
+  "Restrictive DOMPurify config for markdown content."
+  #js {:ALLOWED_TAGS #js ["p" "br" "strong" "em" "b" "i" "code" "pre" "ul" "ol" "li"
+                          "h1" "h2" "h3" "h4" "h5" "h6" "blockquote" "a" "hr" "span" "div"]
+       :ALLOWED_ATTR #js ["href" "title" "class" "id"]})
+
+(defn- safe-render-markdown
+  "Safely render markdown to sanitized HTML. Returns empty string on error."
+  [text]
+  (try
+    (let [raw-text (if (string? text) text "")]
+      (.sanitize DOMPurify (marked raw-text) dompurify-config))
+    (catch :default e
+      (js/console.warn "Markdown rendering error:" e)
+      "")))
+
+(defn review-summary-item [& _]
+  (let [confirming? (r/atom false)
+        last-id (r/atom nil)]
+    (fn [{:keys [id text author created-at]}]
+      ;; Reset confirmation state if item ID changed (list reordered via SSE)
+      (when (not= @last-id id)
+        (reset! last-id id)
+        (reset! confirming? false))
+      [:div.review-summary-item
+       {:style {:padding "12px"
+                :margin "2px 2px 8px 2px"
+                :background "white"
+                :border-radius "6px"
+                :border "1px solid #d0d7de"}}
+       [:div {:style {:display "flex"
+                      :justify-content "space-between"
+                      :align-items "center"
+                      :margin-bottom "8px"}}
+        [:span {:style {:font-weight "600" :font-size "13px"}} author]
+        [:div {:style {:display "flex" :align-items "center" :gap "8px"}}
+         [:span {:style {:color "#6a737d" :font-size "11px"}}
+          (format-summary-time created-at)]
+         (if @confirming?
+           [:div {:style {:display "flex" :gap "4px"}}
+            [:button.btn.btn-danger
+             {:style {:padding "2px 6px" :font-size "11px"}
+              :on-click #(do (rf/dispatch [:delete-comment id])
+                             (reset! confirming? false))}
+             "Delete"]
+            [:button.btn.btn-secondary
+             {:style {:padding "2px 6px" :font-size "11px"}
+              :on-click #(reset! confirming? false)}
+             "Cancel"]]
+           [:button
+            {:style {:background "none"
+                     :border "none"
+                     :cursor "pointer"
+                     :color "#6a737d"
+                     :font-size "12px"
+                     :padding "2px 4px"}
+             :title "Delete review summary"
+             :on-click #(reset! confirming? true)}
+            "×"])]]
+       [:div.markdown-content
+        {:style {:font-size "13px"
+                 :color "#24292e"
+                 :overflow-x "auto"}
+         :dangerouslySetInnerHTML {:__html (safe-render-markdown text)}}]])))
+
+(defn review-summaries-list []
+  (let [expanded? (r/atom true)]
+    (fn []
+      (let [summaries @(rf/subscribe [:review-summaries])]
+        (when (seq summaries)
+          [:div.review-summaries
+           {:style {:margin-top "16px"}}
+           [:h3 {:style {:display "flex" :align-items "center" :gap "8px" :cursor "pointer"}
+                 :on-click #(swap! expanded? not)}
+            [:span {:style {:font-size "10px"}} (if @expanded? "▼" "▶")]
+            "Review Summary"
+            [:span {:style {:font-weight "normal"
+                            :font-size "12px"
+                            :color "#6a737d"}}
+             (str "(" (count summaries) ")")]]
+           (when @expanded?
+             [:div {:style {:width "100%"}}
+              (for [summary summaries]
+                ^{:key (:id summary)}
+                [review-summary-item summary])])])))))
+
 (defn file-list []
   (let [files @(rf/subscribe [:files])
         changed-files @(rf/subscribe [:changed-files])
@@ -295,6 +391,8 @@
         [:p {:style {:color "#6a737d" :font-size "11px" :margin "0 0 8px 0"}}
          "Click to add to review"]
         [untracked-file-tree available-untracked expanded-folders]])
+     ;; Review summaries section (shown first, above resolved)
+     [review-summaries-list]
      ;; Resolved comments section
      [resolved-comments-list]]))
 

@@ -46,6 +46,11 @@
                          (let [data (js->clj (js/JSON.parse (.-data e)) :keywordize-keys true)]
                            (rf/dispatch [:sse-comment-unresolved (:comment-id data)]))))
 
+    (.addEventListener es "comment-deleted"
+                       (fn [e]
+                         (let [data (js->clj (js/JSON.parse (.-data e)) :keywordize-keys true)]
+                           (rf/dispatch [:sse-comment-deleted (:comment-id data)]))))
+
     (.addEventListener es "session-updated"
                        (fn [e]
                          (let [data (js->clj (js/JSON.parse (.-data e)) :keywordize-keys true)]
