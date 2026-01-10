@@ -2,13 +2,110 @@
   "Session management logic.
 
    Pure functions operate on session data.
-   Impure functions (ending in !) persist to database."
+   Impure functions (ending in !) persist to database.
+
+   Session types:
+   - Local: repo-path + branch, session-id = local:<hash>
+   - GitHub: owner/repo + PR number, session-id = github:<owner>/<repo>:<pr-number>"
   (:require [differ.db :as db]
             [differ.git :as git]
             [differ.util :as util]
+            [differ.backend.protocol :as proto]
+            [differ.backend.local :as local]
+            [differ.backend.github :as github]
+            [differ.github-oauth :as github-oauth]
             [clojure.set :as set]
+            [clojure.string :as str]
             ["fs" :as fs]
             ["path" :as path]))
+
+;; ============================================================================
+;; Session Type Detection
+;; ============================================================================
+
+(defn parse-session-id
+  "Parse session ID to determine type and components.
+   Returns {:type :local|:github, ...} with type-specific keys."
+  [session-id]
+  (cond
+    (str/starts-with? session-id "github:")
+    (let [rest (subs session-id 7)  ; After "github:"
+          [owner-repo pr-str] (str/split rest #":" 2)
+          [owner repo] (str/split owner-repo #"/" 2)]
+      {:type :github
+       :owner owner
+       :repo repo
+       :pr-number (js/parseInt pr-str 10)})
+
+    (str/starts-with? session-id "local:")
+    {:type :local
+     :hash (subs session-id 6)}
+
+    ;; Backwards compatibility: no prefix = local
+    :else
+    {:type :local
+     :hash session-id}))
+
+(defn session-type
+  "Get the type of a session from its ID."
+  [session-id]
+  (:type (parse-session-id session-id)))
+
+(def ^:private github-pr-patterns
+  "Regex patterns for GitHub PR URLs."
+  [;; https://github.com/owner/repo/pull/123
+   #"https?://github\.com/([^/]+)/([^/]+)/pull/(\d+)"
+   ;; github.com/owner/repo/pull/123 (without protocol)
+   #"github\.com/([^/]+)/([^/]+)/pull/(\d+)"
+   ;; owner/repo#123
+   #"^([^/]+)/([^/#]+)#(\d+)$"])
+
+(defn parse-github-pr-url
+  "Parse a GitHub PR URL or shorthand into components.
+   Returns {:owner :repo :pr-number} or nil if not a valid PR reference."
+  [url-or-ref]
+  (when (and url-or-ref (string? url-or-ref))
+    (some (fn [pattern]
+            (when-let [match (re-matches pattern (str/trim url-or-ref))]
+              {:owner (nth match 1)
+               :repo (nth match 2)
+               :pr-number (js/parseInt (nth match 3) 10)}))
+          github-pr-patterns)))
+
+(defn github-session-id
+  "Generate session ID for a GitHub PR."
+  [owner repo pr-number]
+  (str "github:" owner "/" repo ":" pr-number))
+
+(defn local-session-id
+  "Generate session ID for a local repository."
+  [project branch]
+  (str "local:" (util/session-id project branch)))
+
+;; ============================================================================
+;; Backend Factory
+;; ============================================================================
+
+(defn create-backend
+  "Create appropriate backend for a session.
+   Returns {:backend <ReviewBackend>} or {:error <message>} or {:requires-auth <auth-url>}."
+  [session]
+  (let [session-id (:id session)]
+    (case (session-type session-id)
+      :local
+      (let [repo-path (:repo-path session)
+            target-branch (:target-branch session)]
+        {:backend (local/create-local-backend repo-path target-branch session-id)})
+
+      :github
+      (let [{:keys [owner repo pr-number]} (parse-session-id session-id)]
+        (if-let [token-record (github-oauth/get-any-token)]
+          {:backend (github/create-github-backend
+                     owner repo pr-number (:access-token token-record))}
+          {:requires-auth true
+           :auth-url (str "/oauth/github?return_to=/session/" session-id)}))
+
+      {:error (str "Unknown session type for ID: " session-id)})))
 
 ;; ============================================================================
 ;; Pure Functions - operate on data, no side effects
@@ -110,9 +207,8 @@
 ;; Impure Functions - interact with database
 ;; ============================================================================
 
-(defn get-or-create-session
-  "Get existing session or create new one.
-   Returns {:session ... :is-new bool} or {:error ...}"
+(defn- get-or-create-local-session
+  "Get or create a local repository session."
   [{:keys [repo-path project branch target-branch]}]
   (let [validation (validate-repo-path repo-path)]
     (if-not (:valid validation)
@@ -121,16 +217,77 @@
             project (or project (git/get-project-id resolved-path))
             branch (or branch (git/get-current-branch resolved-path))
             target-branch (or target-branch (git/detect-default-branch resolved-path))
-            session-id (util/session-id project branch)]
+            session-id (local-session-id project branch)]
         (if-let [existing (db/get-session session-id)]
           {:session existing :is-new false}
           {:session (db/create-session!
                      {:id session-id
+                      :session-type "local"
                       :project project
                       :branch branch
                       :target-branch target-branch
                       :repo-path resolved-path})
            :is-new true})))))
+
+(defn- get-or-create-github-session
+  "Get or create a GitHub PR session.
+   Returns {:session :is-new} or {:requires-auth :auth-url} or {:error}."
+  [{:keys [owner repo pr-number]}]
+  (let [session-id (github-session-id owner repo pr-number)]
+    ;; Check if session exists
+    (if-let [existing (db/get-session session-id)]
+      {:session existing :is-new false}
+      ;; Need to create - check for auth first
+      (if-let [token-record (github-oauth/get-any-token)]
+        ;; Have token, fetch PR info and create session
+        (let [backend (github/create-github-backend
+                       owner repo pr-number (:access-token token-record))]
+          ;; Fetch context to validate PR exists and get metadata
+          (-> (proto/get-context backend)
+              (.then (fn [context]
+                       {:session (db/create-session!
+                                  {:id session-id
+                                   :session-type "github"
+                                   :project (str owner "/" repo)
+                                   :branch (:head-branch context)
+                                   :target-branch (:base-branch context)
+                                   :repo-path (str "https://github.com/" owner "/" repo)
+                                   :github-owner owner
+                                   :github-repo repo
+                                   :github-pr-number pr-number})
+                        :is-new true}))
+              (.catch (fn [err]
+                        {:error (str "Failed to fetch PR: " (.-message err))}))))
+        ;; No token - require auth
+        {:requires-auth true
+         :auth-url (str "/oauth/github?return_to=/session/" session-id)}))))
+
+(defn get-or-create-session
+  "Get existing session or create new one.
+   Accepts either:
+   - {:repo-path ...} for local repositories
+   - {:github-pr ...} with PR URL like 'https://github.com/owner/repo/pull/123'
+   - {:owner :repo :pr-number} for GitHub PRs directly
+
+   Returns {:session ... :is-new bool} or {:error ...} or {:requires-auth :auth-url}."
+  [{:keys [repo-path github-pr owner repo pr-number] :as params}]
+  (cond
+    ;; GitHub PR by URL
+    github-pr
+    (if-let [parsed (parse-github-pr-url github-pr)]
+      (get-or-create-github-session parsed)
+      {:error (str "Invalid GitHub PR URL: " github-pr)})
+
+    ;; GitHub PR by components
+    (and owner repo pr-number)
+    (get-or-create-github-session {:owner owner :repo repo :pr-number pr-number})
+
+    ;; Local repository
+    repo-path
+    (get-or-create-local-session params)
+
+    :else
+    {:error "Must provide either repo-path for local or github-pr/owner+repo+pr-number for GitHub"}))
 
 (defn- with-unresolved-count
   "Add unresolved comment count to session."

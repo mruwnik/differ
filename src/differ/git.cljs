@@ -1,13 +1,27 @@
 (ns differ.git
-  "Git operations - shells out to git commands."
-  (:require ["child_process" :as cp]
+  "Git operations - thin wrapper delegating to local backend.
+   This module exists for backward compatibility.
+   New code should use differ.backend.local or the ReviewBackend protocol."
+  (:require [differ.backend.local :as local]
+            ["child_process" :as cp]
             ["path" :as path]
             ["fs" :as fs]
             [clojure.string :as str]))
 
+;; Re-export commonly used functions from local backend
+(def git-repo? local/git-repo?)
+(def get-remote-url local/get-remote-url)
+(def get-project-id local/get-project-id)
+(def get-current-branch local/get-current-branch)
+(def detect-default-branch local/detect-default-branch)
+(def list-branches local/list-branches)
+(def parse-diff-hunks local/parse-diff-hunks)
+
+;; These functions need repo-path + target-branch, so they call git directly
+;; using the local backend's internal functions
+
 (defn- exec-sync
-  "Execute command synchronously, return stdout or nil on error.
-   Logs errors to console for debugging."
+  "Execute command synchronously, return stdout or nil on error."
   [cmd opts]
   (try
     (let [result (cp/execSync cmd (clj->js (merge {:encoding "utf8"} opts)))]
@@ -21,55 +35,6 @@
   [repo-path & args]
   (let [cmd (str "git " (str/join " " args))]
     (exec-sync cmd {:cwd repo-path})))
-
-(defn git-repo?
-  "Check if directory is a git repository."
-  [dir]
-  (some? (exec-git dir "rev-parse" "--git-dir")))
-
-(defn get-remote-url
-  "Get the remote origin URL, or nil if not set."
-  [repo-path]
-  (exec-git repo-path "remote" "get-url" "origin"))
-
-(defn get-project-id
-  "Get project identifier: remote URL if available, else directory name."
-  [repo-path]
-  (or (get-remote-url repo-path)
-      (path/basename (path/resolve repo-path))))
-
-(defn get-current-branch
-  "Get the current branch name, or 'working' if not in a git repo."
-  [repo-path]
-  (or (exec-git repo-path "rev-parse" "--abbrev-ref" "HEAD")
-      "working"))
-
-(defn detect-default-branch
-  "Detect the default branch (main or master)."
-  [repo-path]
-  (let [;; Try to get from remote
-        remote-head (exec-git repo-path "symbolic-ref" "refs/remotes/origin/HEAD" "--short")
-        ;; Extract branch name from "origin/main" format
-        remote-branch (when remote-head
-                        (last (str/split remote-head #"/")))]
-    (or remote-branch
-        ;; Check if main exists
-        (when (exec-git repo-path "rev-parse" "--verify" "main") "main")
-        ;; Check if master exists
-        (when (exec-git repo-path "rev-parse" "--verify" "master") "master")
-        ;; Fall back to main
-        "main")))
-
-(defn list-branches
-  "List all local branches."
-  [repo-path]
-  (if-let [output (exec-git repo-path "branch" "--format" "'%(refname:short)'")]
-    (->> (str/split-lines output)
-         (map #(str/replace % #"^'|'$" ""))  ;; Remove surrounding quotes
-         (filter seq)
-         sort
-         vec)
-    []))
 
 (defn get-staged-files
   "Get list of files that are staged for commit."
@@ -101,10 +66,8 @@
   (exec-git repo-path "merge-base" target-branch "HEAD"))
 
 (defn get-diff
-  "Get unified diff between target branch and working tree.
-   Returns raw diff string."
+  "Get unified diff between target branch and working tree."
   [repo-path target-branch]
-  ;; Get diff of staged + unstaged changes relative to target branch
   (exec-git repo-path "diff" target-branch))
 
 (defn get-diff-stat
@@ -113,9 +76,7 @@
   (exec-git repo-path "diff" "--stat" target-branch))
 
 (defn get-changed-files
-  "Get list of files that changed relative to target branch.
-   Returns list of {:path :status} maps, or empty list if not in git repo.
-   Status is :added, :modified, :deleted, or :renamed."
+  "Get list of files that changed relative to target branch."
   [repo-path target-branch]
   (if-let [output (exec-git repo-path "diff" "--name-status" target-branch)]
     (->> (str/split-lines output)
@@ -142,11 +103,13 @@
   [repo-path ref file-path]
   (if ref
     (exec-git repo-path "show" (str ref ":" file-path))
-    (exec-sync (str "cat \"" file-path "\"") {:cwd repo-path})))
+    (let [full-path (path/join repo-path file-path)]
+      (try
+        (fs/readFileSync full-path "utf8")
+        (catch :default _ nil)))))
 
 (defn get-line-content
-  "Get content of a specific line in working tree.
-   Line is 1-indexed."
+  "Get content of a specific line in working tree."
   [repo-path file-path line]
   (when (pos? line)
     (let [content (get-file-content repo-path nil file-path)]
@@ -155,9 +118,7 @@
           (get lines (dec line)))))))
 
 (defn get-lines-range
-  "Get a range of lines from working tree.
-   Lines are 1-indexed, inclusive on both ends.
-   Returns vector of {:line <num> :content <string>}."
+  "Get a range of lines from working tree."
   [repo-path file-path from-line to-line]
   (when (and (pos? from-line) (pos? to-line) (<= from-line to-line))
     (let [content (get-file-content repo-path nil file-path)]
@@ -180,82 +141,12 @@
   [repo-path file-path]
   (let [full-path (path/join repo-path file-path)]
     (try
-      (cp/execSync (str "test -f \"" full-path "\""))
+      (fs/statSync full-path)
       true
-      (catch :default _
-        false))))
-
-(defn- parse-diff-header
-  "Parse diff --git header to extract file paths.
-   Handles edge cases like filenames containing ' b/' by trying multiple strategies:
-   1. Backreference pattern (file-a == file-b, most common)
-   2. Split-based approach for renames (handles ' b/' in filenames)"
-  [diff-line]
-  (or
-   ;; Most common case: same filename on both sides (use backreference)
-   ;; This correctly handles filenames with ' b/' in them
-   (when-let [[_ file] (re-find #"diff --git a/(.+) b/\1$" diff-line)]
-     [file file])
-   ;; Rename case: split on ' b/' and take last segment as file-b
-   ;; Handles filenames containing ' b/' correctly
-   (when-let [[_ rest] (re-find #"diff --git a/(.+)$" diff-line)]
-     (let [parts (str/split rest #" b/")]
-       (when (>= (count parts) 2)
-         (let [file-b (last parts)
-               file-a (str/join " b/" (butlast parts))]
-           [file-a file-b]))))))
-
-(defn parse-diff-hunks
-  "Parse unified diff into structured format.
-   Returns vector of file diffs, each containing:
-   {:file-a :file-b :hunks [{:old-start :old-count :new-start :new-count :lines [...]}]}"
-  [diff-text]
-  (when (and diff-text (seq diff-text))
-    (let [lines (str/split-lines diff-text)
-          ;; Split into file sections
-          file-sections (reduce
-                         (fn [acc line]
-                           (if (str/starts-with? line "diff --git")
-                             (conj acc [line])
-                             (if (seq acc)
-                               (update acc (dec (count acc)) conj line)
-                               acc)))
-                         []
-                         lines)]
-      (mapv
-       (fn [section]
-         (let [;; Parse file header
-               diff-line (first section)
-               [file-a file-b] (parse-diff-header diff-line)
-                ;; Find hunks
-               hunk-lines (drop-while #(not (str/starts-with? % "@@")) section)
-                ;; Parse hunks
-               hunks (loop [remaining hunk-lines
-                            result []]
-                       (if (empty? remaining)
-                         result
-                         (let [hunk-header (first remaining)
-                               [_ old-start old-count new-start new-count]
-                               (re-find #"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@" hunk-header)
-                                ;; Collect lines until next hunk or end
-                               hunk-content (take-while #(not (str/starts-with? % "@@"))
-                                                        (rest remaining))
-                               hunk {:old-start (js/parseInt old-start)
-                                     :old-count (js/parseInt (or old-count "1"))
-                                     :new-start (js/parseInt new-start)
-                                     :new-count (js/parseInt (or new-count "1"))
-                                     :header hunk-header
-                                     :lines (vec hunk-content)}]
-                           (recur (drop (inc (count hunk-content)) remaining)
-                                  (conj result hunk)))))]
-           {:file-a file-a
-            :file-b file-b
-            :hunks hunks}))
-       file-sections))))
+      (catch :default _ false))))
 
 (defn get-file-info
-  "Get file size and optionally content from working tree.
-   Returns {:size :content :error} - content only included if include-content? is true."
+  "Get file size and optionally content from working tree."
   [repo-path file-path include-content?]
   (let [full-path (path/join repo-path file-path)]
     (try
@@ -269,8 +160,7 @@
         {:error (.-message e)}))))
 
 (defn file-to-diff-format
-  "Convert a full file into a diff-like format (all lines as additions).
-   Returns structure compatible with parse-diff-hunks output."
+  "Convert a full file into a diff-like format (all lines as additions)."
   [file-path content]
   (let [lines (str/split-lines (or content ""))
         line-count (count lines)]
