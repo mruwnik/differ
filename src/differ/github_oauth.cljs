@@ -91,6 +91,12 @@
   []
   (db/get-any-github-token))
 
+(defn get-all-tokens
+  "Get all GitHub tokens (OAuth + PATs) ordered for fallback.
+   OAuth tokens come first, then PATs by most recently updated."
+  []
+  (db/get-all-github-tokens))
+
 (defn list-tokens
   "List all stored GitHub tokens.
    Returns list of token records (without actual token values)."
@@ -109,6 +115,24 @@
   (-> (get-user-info token)
       (.then (constantly true))
       (.catch (constantly false))))
+
+(defn validate-pat
+  "Validate a Personal Access Token by calling GitHub API.
+   Returns promise of {:valid true :user {...}} or {:valid false :error ...}."
+  [token]
+  (-> (get-user-info token)
+      (.then (fn [user-info]
+               {:valid true :user user-info}))
+      (.catch (fn [err]
+                {:valid false :error (or (.-message err) (str err))}))))
+
+(defn store-pat!
+  "Store a validated Personal Access Token.
+   Returns the stored token record."
+  [name token username]
+  (db/create-pat! {:name name
+                   :access-token token
+                   :github-username username}))
 
 (defn complete-oauth-flow
   "Complete the OAuth flow after receiving the callback.

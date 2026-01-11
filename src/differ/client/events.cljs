@@ -679,6 +679,52 @@
        (assoc :github-settings-visible false)
        (dissoc :github-just-connected))))
 
+;; PAT (Personal Access Token) modal
+(rf/reg-event-db
+ :show-pat-modal
+ (fn [db _]
+   (assoc db :pat-modal-visible true
+          :pat-form {:name "" :token "" :error nil :submitting false})))
+
+(rf/reg-event-db
+ :hide-pat-modal
+ (fn [db _]
+   (assoc db :pat-modal-visible false
+          :pat-form nil)))
+
+(rf/reg-event-db
+ :update-pat-form
+ (fn [db [_ field value]]
+   (assoc-in db [:pat-form field] value)))
+
+(rf/reg-event-fx
+ :submit-pat
+ (fn [{:keys [db]} _]
+   (let [{:keys [name token]} (:pat-form db)]
+     {:db (-> db
+              (assoc-in [:pat-form :submitting] true)
+              (assoc-in [:pat-form :error] nil))
+      :http {:method "POST"
+             :url "/api/github/tokens"
+             :body {:name name :token token}
+             :on-success [:pat-submitted]
+             :on-failure [:pat-error]}})))
+
+(rf/reg-event-fx
+ :pat-submitted
+ (fn [{:keys [db]} [_ _response]]
+   {:db (assoc db :pat-modal-visible false
+               :pat-form nil)
+    :dispatch-n [[:load-github-tokens]
+                 [:load-github-status]]}))
+
+(rf/reg-event-db
+ :pat-error
+ (fn [db [_ error]]
+   (-> db
+       (assoc-in [:pat-form :submitting] false)
+       (assoc-in [:pat-form :error] (or (:error error) "Failed to add token")))))
+
 ;; Error handling
 (rf/reg-event-db
  :api-error

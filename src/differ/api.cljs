@@ -475,6 +475,34 @@
     (db/delete-github-token! token-id)
     (json-response res {:success true})))
 
+(defn add-github-pat-handler
+  "POST /api/github/tokens - Add a Personal Access Token"
+  [^js req res]
+  (let [body (get-body req)
+        {:keys [name token]} body]
+    (cond
+      (or (nil? name) (str/blank? name))
+      (error-response res 400 "Name is required")
+
+      (or (nil? token) (str/blank? token))
+      (error-response res 400 "Token is required")
+
+      :else
+      ;; Validate the token by calling GitHub API
+      (-> (github-oauth/validate-pat token)
+          (.then (fn [result]
+                   (if (:valid result)
+                     (let [username (get-in result [:user :login])
+                           stored (github-oauth/store-pat! name token username)]
+                       (json-response res {:success true
+                                           :token {:id (:id stored)
+                                                   :name name
+                                                   :github-username username
+                                                   :token-type "pat"}}))
+                     (error-response res 400 (str "Invalid token: " (:error result))))))
+          (.catch (fn [err]
+                    (error-response res 500 (str "Failed to validate token: " (.-message err)))))))))
+
 (defn github-status-handler
   "GET /api/github/status - Check GitHub OAuth configuration and token status"
   [^js _req res]
@@ -539,4 +567,5 @@
   (.get app "/oauth/github/callback" github-oauth-callback-handler)
   (.get app "/api/github/status" github-status-handler)
   (.get app "/api/github/tokens" list-github-tokens-handler)
+  (.post app "/api/github/tokens" add-github-pat-handler)
   (.delete app "/api/github/tokens/:id" delete-github-token-handler))

@@ -196,27 +196,35 @@
 ;; Helper to get backend for a session
 
 (defn- get-backend
-  "Get backend for a session. Returns {:backend} or {:error} or {:requires-auth :auth-url}."
+  "Get backend for a session. Returns Promise of {:backend} or {:error} or {:requires-auth}.
+   Now async because GitHub sessions need to try tokens with fallback."
   [session-id]
   (if-let [session (db/get-session session-id)]
     (sessions/create-backend session)
-    {:error "Session not found"}))
+    (js/Promise.resolve {:error "Session not found"})))
 
 (defn- with-backend
   "Execute fn with backend for session. Handles auth requirements and errors.
-   Returns result or throws appropriate exception."
+   Returns Promise. The callback f can return a value or Promise."
   [session-id f]
-  (let [result (get-backend session-id)]
-    (cond
-      (:error result)
-      (throw (ex-info (:error result) {:code invalid-params}))
+  (-> (get-backend session-id)
+      (.then (fn [result]
+               (cond
+                 (:error result)
+                 (throw (ex-info (:error result) {:code invalid-params}))
 
-      (:requires-auth result)
-      {:requires-auth true
-       :auth-url (:auth-url result)}
+                 (:requires-auth result)
+                 {:requires-auth true
+                  :auth-url (:auth-url result)
+                  :message (:message result)}
 
-      :else
-      (f (:backend result)))))
+                 (:requires-pat result)
+                 {:requires-pat true
+                  :message (:message result)
+                  :settings-url (:settings-url result)}
+
+                 :else
+                 (f (:backend result)))))))
 
 ;; Tool handlers
 
@@ -233,6 +241,33 @@
                         :updated-at (:updated-at s)})
                      sessions)}))
 
+(defn- format-session-result
+  "Format a successful session creation result."
+  [r]
+  (let [session (:session r)]
+    {:session-id (:id session)
+     :session-type (:session-type session)
+     :target-branch (:target-branch session)
+     :repo-path (:repo-path session)
+     :is-new (:is-new r)}))
+
+(defn- format-auth-result
+  "Format an auth-required or PAT-required result."
+  [r]
+  (cond
+    (:requires-pat r)
+    {:requires-pat true
+     :message (:message r)
+     :settings-url (:settings-url r)
+     :github-pat-url (:github-pat-url r)}
+
+    (:requires-auth r)
+    {:requires-auth true
+     :message (:message r)
+     :auth-url (:auth-url r)}
+
+    :else nil))
+
 (defmethod handle-tool "get_or_create_session" [_ params]
   (let [result (sessions/get-or-create-session params)]
     ;; Handle promise (for GitHub) or plain value (for local)
@@ -240,36 +275,26 @@
       (-> result
           (.then (fn [r]
                    (cond
+                     ;; Check auth requirements BEFORE error - they may include
+                     ;; an :error key for debugging but shouldn't throw
+                     (or (:requires-auth r) (:requires-pat r))
+                     (format-auth-result r)
+
                      (:error r)
                      (throw (ex-info (:error r) {:code invalid-params}))
 
-                     (:requires-auth r)
-                     {:requires-auth true
-                      :auth-url (:auth-url r)}
-
                      :else
-                     (let [session (:session r)]
-                       {:session-id (:id session)
-                        :session-type (:session-type session)
-                        :target-branch (:target-branch session)
-                        :repo-path (:repo-path session)
-                        :is-new (:is-new r)})))))
+                     (format-session-result r)))))
       ;; Synchronous result
       (cond
+        (or (:requires-auth result) (:requires-pat result))
+        (format-auth-result result)
+
         (:error result)
         (throw (ex-info (:error result) {:code invalid-params}))
 
-        (:requires-auth result)
-        {:requires-auth true
-         :auth-url (:auth-url result)}
-
         :else
-        (let [session (:session result)]
-          {:session-id (:id session)
-           :session-type (:session-type session)
-           :target-branch (:target-branch session)
-           :repo-path (:repo-path session)
-           :is-new (:is-new result)})))))
+        (format-session-result result)))))
 
 (defmethod handle-tool "register_files" [_ {:keys [session-id paths agent-id]}]
   (let [registered (sessions/register-files! session-id paths agent-id)]

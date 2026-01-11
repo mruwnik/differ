@@ -17,6 +17,7 @@
 ;; Default configuration values
 (def defaults
   {:port 8576
+   :base-url "http://localhost:8576"  ;; Used in MCP responses and OAuth redirects
 
    ;; File display thresholds (client)
    :large-file-threshold 50000      ;; Characters - files larger require explicit load
@@ -124,6 +125,12 @@
   "Get a specific config value."
   [key]
   (get (get-config) key))
+
+(defn base-url
+  "Get the configured base URL for the server.
+   Used in MCP responses and OAuth redirects."
+  []
+  (:base-url (get-config)))
 
 (defn reload!
   "Force reload config from disk."

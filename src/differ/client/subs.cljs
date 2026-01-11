@@ -348,6 +348,17 @@
  (fn [db _]
    (:github-just-connected db)))
 
+;; PAT modal subscriptions
+(rf/reg-sub
+ :pat-modal-visible?
+ (fn [db _]
+   (:pat-modal-visible db)))
+
+(rf/reg-sub
+ :pat-form
+ (fn [db _]
+   (:pat-form db)))
+
 ;; Review summaries (comments with no file - added when finishing a review)
 (rf/reg-sub
  :review-summaries

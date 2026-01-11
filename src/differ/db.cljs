@@ -45,6 +45,25 @@
         ALTER TABLE comments ADD COLUMN context_after TEXT;
       "))))
 
+(defn- migrate-github-tokens-table
+  "Add columns for PAT support."
+  [db]
+  ;; SQLite only supports one ALTER TABLE per statement, so we need separate calls.
+  ;; Check each column individually and add if missing.
+  (try
+    (.exec db "SELECT token_type FROM github_tokens LIMIT 1")
+    (catch :default e
+      ;; Expected error: column doesn't exist. Log for debugging other issues.
+      (js/console.log "Adding token_type column:" (.-message e))
+      (.exec db "ALTER TABLE github_tokens ADD COLUMN token_type TEXT DEFAULT 'oauth'")))
+  (try
+    (.exec db "SELECT name FROM github_tokens LIMIT 1")
+    (catch :default e
+      (js/console.log "Adding name column:" (.-message e))
+      (.exec db "ALTER TABLE github_tokens ADD COLUMN name TEXT")))
+  ;; Add index (IF NOT EXISTS handles idempotency)
+  (.exec db "CREATE INDEX IF NOT EXISTS idx_github_tokens_type ON github_tokens(token_type)"))
+
 (defn- migrate-sessions-table
   "Add columns for GitHub PR session support."
   [db]
@@ -209,6 +228,7 @@
       (create-tables db)
       (migrate-comments-table db)
       (migrate-sessions-table db)
+      (migrate-github-tokens-table db)
       (reset! db-instance db)))
   @db-instance)
 
@@ -647,7 +667,9 @@
      :scope (.-scope row)
      :expires-at (.-expires_at row)
      :created-at (.-created_at row)
-     :updated-at (.-updated_at row)}))
+     :updated-at (.-updated_at row)
+     :token-type (or (.-token_type row) "oauth")
+     :name (.-name row)}))
 
 (defn get-github-token
   "Get GitHub token by github user ID."
@@ -665,7 +687,7 @@
   "List all stored GitHub tokens (without actual token values for security)."
   []
   (let [^js stmt (.prepare (db)
-                           "SELECT id, github_user_id, github_username, scope, expires_at, created_at, updated_at
+                           "SELECT id, github_user_id, github_username, scope, expires_at, created_at, updated_at, token_type, name
                             FROM github_tokens ORDER BY updated_at DESC")]
     (->> (.all stmt)
          (mapv (fn [^js row]
@@ -675,7 +697,18 @@
                   :scope (.-scope row)
                   :expires-at (.-expires_at row)
                   :created-at (.-created_at row)
-                  :updated-at (.-updated_at row)})))))
+                  :updated-at (.-updated_at row)
+                  :token-type (or (.-token_type row) "oauth")
+                  :name (.-name row)})))))
+
+(defn get-all-github-tokens
+  "Get all GitHub tokens with full data (for token fallback logic)."
+  []
+  (let [^js stmt (.prepare (db)
+                           "SELECT * FROM github_tokens ORDER BY
+                            CASE token_type WHEN 'oauth' THEN 0 ELSE 1 END,
+                            updated_at DESC")]
+    (mapv row->github-token (.all stmt))))
 
 (defn create-github-token!
   "Create or update a GitHub token."
@@ -699,6 +732,19 @@
                                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")]
         (.run stmt id github-user-id github-username access-token refresh-token scope expires-at now now)
         (get-github-token github-user-id)))))
+
+(defn create-pat!
+  "Create a Personal Access Token entry."
+  [{:keys [name access-token github-username]}]
+  (let [id (util/gen-uuid)
+        now (util/now-iso)
+        ^js stmt (.prepare (db)
+                           "INSERT INTO github_tokens
+                            (id, github_user_id, github_username, access_token, scope, token_type, name, created_at, updated_at)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")]
+    ;; github_user_id is set to the token id for PATs (no user association)
+    (.run stmt id id github-username access-token "repo" "pat" name now now)
+    (row->github-token (.get (.prepare (db) "SELECT * FROM github_tokens WHERE id = ?") id))))
 
 (defn delete-github-token!
   "Delete a GitHub token by ID."

@@ -6,8 +6,11 @@
 
 (defn- format-date [iso-string]
   (when iso-string
-    (let [date (js/Date. iso-string)]
-      (.toLocaleDateString date "en-US" #js {:year "numeric" :month "short" :day "numeric"}))))
+    (let [date (js/Date. iso-string)
+          year (.getFullYear date)
+          month (-> (.getMonth date) inc (.toString) (.padStart 2 "0"))
+          day (-> (.getDate date) (.toString) (.padStart 2 "0"))]
+      (str year "/" month "/" day))))
 
 (defn- format-time [iso-string]
   (when iso-string
@@ -117,33 +120,144 @@
             :style {:margin-bottom "16px"}}
            "+ New Session"])))))
 
+(defn- token-type-badge [token-type]
+  (let [is-pat? (= token-type "pat")]
+    [:span {:class (str "token-type-badge" (when is-pat? " pat"))
+            :style {:font-size "10px"
+                    :padding "2px 6px"
+                    :border-radius "3px"
+                    :margin-left "8px"
+                    :background (if is-pat? "#fff3cd" "#d1f7d6")
+                    :color (if is-pat? "#856404" "#22863a")
+                    :font-weight "500"}}
+     (if is-pat? "PAT" "OAuth")]))
+
 (defn- token-item [& _]
   (let [confirming? (r/atom false)
         last-id (r/atom nil)]
-    (fn [{:keys [id github-username scope created-at]}]
+    (fn [{:keys [id github-username name token-type scope created-at]}]
       ;; Reset confirmation state if token ID changed (list reordered via SSE)
       (when (not= @last-id id)
         (reset! last-id id)
         (reset! confirming? false))
-      [:div.token-item
-       [:div.token-info
-        [:span.token-username github-username]
-        [:span.token-meta
-         (str "Added " (format-date created-at))
-         (when scope
-           (str " · " scope))]]
-       (if @confirming?
-         [:div {:style {:display "flex" :gap "8px"}}
-          [:button.btn.btn-danger
-           {:on-click #(do (rf/dispatch [:delete-github-token id])
-                           (reset! confirming? false))}
-           "Confirm"]
-          [:button.btn.btn-secondary
-           {:on-click #(reset! confirming? false)}
-           "Cancel"]]
+      (let [is-pat? (= token-type "pat")
+            display-name (if is-pat? name github-username)]
+        [:div.token-item
+         [:div.token-info
+          [:span.token-username
+           display-name
+           [token-type-badge token-type]]
+          [:span.token-meta
+           (str "Added " (format-date created-at))
+           (when (and (not is-pat?) scope)
+             (str " · " scope))]]
+         (if @confirming?
+           [:div {:style {:display "flex" :gap "8px"}}
+            [:button.btn.btn-danger
+             {:on-click #(do (rf/dispatch [:delete-github-token id])
+                             (reset! confirming? false))}
+             "Confirm"]
+            [:button.btn.btn-secondary
+             {:on-click #(reset! confirming? false)}
+             "Cancel"]]
+           [:button.btn.btn-secondary
+            {:on-click #(reset! confirming? true)}
+            "Revoke"])]))))
+
+(defn pat-modal []
+  (let [visible? @(rf/subscribe [:pat-modal-visible?])
+        form @(rf/subscribe [:pat-form])
+        {:keys [name token error submitting]} form
+        loading? submitting]
+    (when visible?
+      [:div.modal-overlay
+       {:on-click #(rf/dispatch [:hide-pat-modal])}
+       [:div.modal-content
+        {:on-click #(.stopPropagation %)}
+        [:div.modal-header
+         [:h3 {:style {:margin 0}} "Add Personal Access Token"]
+         [:button.btn-close
+          {:on-click #(rf/dispatch [:hide-pat-modal])}
+          "×"]]
+        [:div.modal-body
+         [:p {:style {:color "#6a737d" :margin "0 0 16px 0" :font-size "13px"}}
+          "Personal Access Tokens can access repositories that restrict OAuth apps. "
+          "Some organizations block third-party OAuth applications, requiring PATs instead."]
+
+         (when error
+           [:div {:style {:background "#ffeef0"
+                          :border "1px solid #f97583"
+                          :padding "8px 12px"
+                          :border-radius "4px"
+                          :margin-bottom "12px"
+                          :color "#cb2431"
+                          :font-size "13px"}}
+            error])
+
+         [:div {:style {:margin-bottom "12px"}}
+          [:label {:style {:display "block" :font-weight "600" :margin-bottom "4px"}}
+           "Name"]
+          [:input {:type "text"
+                   :placeholder "e.g., Work repos access"
+                   :value (or name "")
+                   :on-change #(rf/dispatch [:update-pat-form :name (.. % -target -value)])
+                   :disabled loading?
+                   :style {:width "100%"
+                           :padding "8px 12px"
+                           :border "1px solid #d1d5da"
+                           :border-radius "4px"
+                           :font-size "14px"
+                           :box-sizing "border-box"}}]
+          [:span {:style {:font-size "11px" :color "#6a737d"}}
+           "A name to help you remember what this token is for"]]
+
+         [:div {:style {:margin-bottom "16px"}}
+          [:label {:style {:display "block" :font-weight "600" :margin-bottom "4px"}}
+           "Token"]
+          [:input {:type "password"
+                   :placeholder "ghp_xxxxxxxxxxxxxxxxxxxx"
+                   :value (or token "")
+                   :on-change #(rf/dispatch [:update-pat-form :token (.. % -target -value)])
+                   :on-key-down #(when (and (= (.-key %) "Enter")
+                                            (not (str/blank? name))
+                                            (not (str/blank? token))
+                                            (not loading?))
+                                   (rf/dispatch [:submit-pat]))
+                   :disabled loading?
+                   :style {:width "100%"
+                           :padding "8px 12px"
+                           :border "1px solid #d1d5da"
+                           :border-radius "4px"
+                           :font-size "14px"
+                           :font-family "monospace"
+                           :box-sizing "border-box"}}]
+          [:span {:style {:font-size "11px" :color "#6a737d"}}
+           "Classic PAT or fine-grained token with repo access"]]
+
+         [:div {:style {:background "#f6f8fa"
+                        :border "1px solid #d1d5da"
+                        :border-radius "4px"
+                        :padding "12px"
+                        :margin-bottom "16px"}}
+          [:p {:style {:margin "0 0 8px 0" :font-weight "600" :font-size "13px"}}
+           "Create a token:"]
+          [:ol {:style {:margin "0" :padding-left "20px" :font-size "12px" :color "#6a737d"}}
+           [:li "Go to "
+            [:a {:href "https://github.com/settings/tokens/new?scopes=repo&description=differ-access"
+                 :target "_blank"
+                 :rel "noopener noreferrer"}
+             "GitHub → Settings → Personal Access Tokens"]]
+           [:li "Select \"repo\" scope (full control of private repositories)"]
+           [:li "Generate and copy the token"]]]]
+        [:div.modal-footer
          [:button.btn.btn-secondary
-          {:on-click #(reset! confirming? true)}
-          "Revoke"])])))
+          {:on-click #(rf/dispatch [:hide-pat-modal])
+           :disabled loading?}
+          "Cancel"]
+         [:button.btn.btn-primary
+          {:on-click #(rf/dispatch [:submit-pat])
+           :disabled (or loading? (str/blank? name) (str/blank? token))}
+          (if loading? "Adding..." "Add Token")]]]])))
 
 (defn github-settings []
   (let [visible? @(rf/subscribe [:github-settings-visible?])
@@ -191,13 +305,20 @@
                (for [token tokens]
                  ^{:key (:id token)}
                  [token-item token])]])
-           [:a.btn.btn-primary
-            {:href "/oauth/github"
-             :style {:display "inline-block" :margin-top "12px"}}
-            (if (empty? tokens) "Connect GitHub Account" "Connect Another Account")]
+           [:div {:style {:display "flex" :gap "8px" :margin-top "12px" :flex-wrap "wrap"}}
+            [:a.btn.btn-primary
+             {:href "/oauth/github"
+              :style {:display "inline-block"}}
+             (if (empty? tokens) "Connect GitHub Account" "Connect Another Account")]
+            [:button.btn.btn-secondary
+             {:on-click #(rf/dispatch [:show-pat-modal])}
+             "Add Personal Access Token"]]
            (when (seq tokens)
              [:p {:style {:color "#6a737d" :margin "8px 0 0 0" :font-size "11px"}}
-              "To add a different account, first log out of GitHub or use a private window."])])])]))
+              "To add a different account, first log out of GitHub or use a private window."])
+           [:p {:style {:color "#6a737d" :margin "8px 0 0 0" :font-size "11px"}}
+            "Use PATs to access repositories in organizations that restrict OAuth apps."]])
+        [pat-modal]])]))
 
 (defn session-list []
   (let [sessions @(rf/subscribe [:sessions])

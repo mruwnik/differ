@@ -10,6 +10,7 @@
   (:require [differ.db :as db]
             [differ.git :as git]
             [differ.util :as util]
+            [differ.config :as config]
             [differ.backend.protocol :as proto]
             [differ.backend.local :as local]
             [differ.backend.github :as github]
@@ -18,6 +19,9 @@
             [clojure.string :as str]
             ["fs" :as fs]
             ["path" :as path]))
+
+;; Forward declarations for functions used before definition
+(declare try-tokens-sequentially)
 
 ;; ============================================================================
 ;; Session Type Detection
@@ -88,24 +92,40 @@
 
 (defn create-backend
   "Create appropriate backend for a session.
-   Returns {:backend <ReviewBackend>} or {:error <message>} or {:requires-auth <auth-url>}."
+   Returns Promise of {:backend <ReviewBackend>} or {:error <message>} or {:requires-auth/:requires-pat}.
+   For local sessions, returns immediately. For GitHub, tries tokens with fallback."
   [session]
   (let [session-id (:id session)]
     (case (session-type session-id)
       :local
       (let [repo-path (:repo-path session)
             target-branch (:target-branch session)]
-        {:backend (local/create-local-backend repo-path target-branch session-id)})
+        (js/Promise.resolve
+         {:backend (local/create-local-backend repo-path target-branch session-id)}))
 
       :github
-      (let [{:keys [owner repo pr-number]} (parse-session-id session-id)]
-        (if-let [token-record (github-oauth/get-any-token)]
-          {:backend (github/create-github-backend
-                     owner repo pr-number (:access-token token-record))}
-          {:requires-auth true
-           :auth-url (str "/oauth/github?return_to=/session/" session-id)}))
+      (let [{:keys [owner repo pr-number]} (parse-session-id session-id)
+            tokens (github-oauth/get-all-tokens)]
+        (if (empty? tokens)
+          (let [base (config/base-url)]
+            (js/Promise.resolve
+             {:requires-auth true
+              :message "GitHub authentication required."
+              :auth-url (str base "/oauth/github?return_to=/session/" session-id)}))
+          ;; Try tokens with fallback (same logic as session creation)
+          (-> (try-tokens-sequentially owner repo pr-number tokens)
+              (.then (fn [result]
+                       (if (:success result)
+                         {:backend (:backend result)}
+                         (if (:oauth-restricted result)
+                           (let [base (config/base-url)]
+                             {:requires-pat true
+                              :message "OAuth token cannot access this repo. Add a PAT."
+                              :settings-url (str base "/#github")})
+                           {:error (str "Failed to access repo: " (:last-error result))})))))))
 
-      {:error (str "Unknown session type for ID: " session-id)})))
+      (js/Promise.resolve
+       {:error (str "Unknown session type for ID: " session-id)}))))
 
 ;; ============================================================================
 ;; Pure Functions - operate on data, no side effects
@@ -231,39 +251,103 @@
                        :repo-path resolved-path})
             :is-new true}))))))
 
+(defn- oauth-restriction-error?
+  "Check if error message indicates OAuth app access restrictions.
+   Only matches specific OAuth restriction messages - not generic 'not found' errors
+   which could indicate a typo in the repo URL or genuinely deleted repo."
+  [error-msg]
+  (and (string? error-msg)
+       (or (str/includes? error-msg "OAuth App access restrictions")
+           (str/includes? error-msg "Resource not accessible by integration"))))
+
+(defn- try-token-for-pr
+  "Try to fetch PR context with a single token.
+   Returns promise of {:success backend :context ctx} or {:error msg :oauth-restricted bool}."
+  [owner repo pr-number token-record]
+  (let [backend (github/create-github-backend
+                 owner repo pr-number (:access-token token-record))]
+    (-> (proto/get-context backend)
+        (.then (fn [context]
+                 {:success true :backend backend :context context}))
+        (.catch (fn [err]
+                  (let [msg (or (.-message err) (str err))]
+                    {:success false
+                     :error msg
+                     :oauth-restricted (oauth-restriction-error? msg)}))))))
+
+(defn- try-tokens-sequentially
+  "Try tokens one by one until success. Returns promise.
+   Returns {:success ... :context ...} or {:all-failed true :last-error ... :oauth-restricted bool}.
+   Always tries remaining tokens on failure (token might be revoked, rate limited, etc.)."
+  [owner repo pr-number tokens]
+  (if (empty? tokens)
+    (js/Promise.resolve {:all-failed true :last-error "No tokens available"})
+    (let [[token & remaining] tokens]
+      (-> (try-token-for-pr owner repo pr-number token)
+          (.then (fn [result]
+                   (if (:success result)
+                     result
+                     ;; Token failed - try remaining tokens if any
+                     (if (seq remaining)
+                       (-> (try-tokens-sequentially owner repo pr-number remaining)
+                           (.then (fn [next-result]
+                                    ;; Propagate oauth-restricted flag if any token hit it
+                                    (if (and (:all-failed next-result)
+                                             (:oauth-restricted result)
+                                             (not (:oauth-restricted next-result)))
+                                      (assoc next-result :oauth-restricted true)
+                                      next-result))))
+                       ;; No more tokens
+                       {:all-failed true
+                        :last-error (:error result)
+                        :oauth-restricted (:oauth-restricted result)}))))))))
+
 (defn- get-or-create-github-session
   "Get or create a GitHub PR session.
-   Always returns a Promise for consistency with local sessions."
+   Always returns a Promise for consistency with local sessions.
+   Tries OAuth token first, falls back to PATs on org restriction errors."
   [{:keys [owner repo pr-number]}]
-  (let [session-id (github-session-id owner repo pr-number)]
+  (let [session-id (github-session-id owner repo pr-number)
+        tokens (github-oauth/get-all-tokens)]
     ;; Check if session exists
     (if-let [existing (db/get-session session-id)]
       (js/Promise.resolve {:session existing :is-new false})
-      ;; Need to create - check for auth first
-      (if-let [token-record (github-oauth/get-any-token)]
-        ;; Have token, fetch PR info and create session
-        (let [backend (github/create-github-backend
-                       owner repo pr-number (:access-token token-record))]
-          ;; Fetch context to validate PR exists and get metadata
-          (-> (proto/get-context backend)
-              (.then (fn [context]
-                       {:session (db/create-session!
-                                  {:id session-id
-                                   :session-type "github"
-                                   :project (str owner "/" repo)
-                                   :branch (:head-branch context)
-                                   :target-branch (:base-branch context)
-                                   :repo-path (str "https://github.com/" owner "/" repo)
-                                   :github-owner owner
-                                   :github-repo repo
-                                   :github-pr-number pr-number})
-                        :is-new true}))
-              (.catch (fn [err]
-                        {:error (str "Failed to fetch PR: " (.-message err))}))))
-        ;; No token - require auth
-        (js/Promise.resolve
-         {:requires-auth true
-          :auth-url (str "/oauth/github?return_to=/session/" session-id)})))))
+      ;; Need to create - check for tokens
+      (if (empty? tokens)
+        ;; No tokens - require auth
+        (let [base (config/base-url)]
+          (js/Promise.resolve
+           {:requires-auth true
+            :message "GitHub authentication required. Click the auth_url to connect your GitHub account, then retry this request."
+            :auth-url (str base "/oauth/github?return_to=/session/" session-id)}))
+        ;; Try tokens with fallback
+        (-> (try-tokens-sequentially owner repo pr-number tokens)
+            (.then (fn [result]
+                     (if (:success result)
+                       ;; Success - create session
+                       (let [context (:context result)]
+                         {:session (db/create-session!
+                                    {:id session-id
+                                     :session-type "github"
+                                     :project (str owner "/" repo)
+                                     :branch (:head-branch context)
+                                     :target-branch (:base-branch context)
+                                     :repo-path (str "https://github.com/" owner "/" repo)
+                                     :github-owner owner
+                                     :github-repo repo
+                                     :github-pr-number pr-number})
+                          :is-new true})
+                       ;; All tokens failed
+                       (if (:oauth-restricted result)
+                         ;; OAuth restriction - suggest PAT
+                         (let [base (config/base-url)]
+                           {:requires-pat true
+                            :message (str "This repository restricts OAuth app access (common for forks from organizations with security policies). "
+                                          "Create a Personal Access Token at github_pat_url, then add it at settings_url and retry.")
+                            :settings-url (str base "/#github")
+                            :github-pat-url "https://github.com/settings/tokens/new?scopes=repo&description=differ-access"})
+                         ;; Other error
+                         {:error (str "Failed to fetch PR: " (:last-error result))})))))))))
 
 (defn get-or-create-session
   "Get existing session or create new one.

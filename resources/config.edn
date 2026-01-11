@@ -11,10 +11,12 @@
 ;;    Or via shell environment variables, or add them to :github below.
 ;;
 {:port 8576
+ :base-url "http://localhost:8576"  ;; Used in MCP responses and OAuth redirects
 
  ;; GitHub credentials - prefer env vars GITHUB_CLIENT_ID/GITHUB_CLIENT_SECRET
  ;; :github {:client-id "..."
  ;;          :client-secret "..."}
+
  ;; File display thresholds (client)
  :large-file-threshold 50000      ;; Characters - files larger require explicit load
  :line-count-threshold 400        ;; Diff lines - more than this requires explicit expand

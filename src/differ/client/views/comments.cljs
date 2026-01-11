@@ -6,8 +6,13 @@
 
 (defn- format-time [iso-string]
   (when iso-string
-    (let [date (js/Date. iso-string)]
-      (.toLocaleString date))))
+    (let [date (js/Date. iso-string)
+          year (.getFullYear date)
+          month (-> (.getMonth date) inc (.toString) (.padStart 2 "0"))
+          day (-> (.getDate date) (.toString) (.padStart 2 "0"))
+          hours (-> (.getHours date) (.toString) (.padStart 2 "0"))
+          mins (-> (.getMinutes date) (.toString) (.padStart 2 "0"))]
+      (str year "/" month "/" day " " hours ":" mins))))
 
 (defn- staleness-indicator [staleness]
   (case staleness
