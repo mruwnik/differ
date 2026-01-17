@@ -101,6 +101,14 @@ The endpoint accepts standard MCP JSON-RPC over HTTP POST. Any agent that suppor
 | `add_comment` | Add a comment or reply |
 | `resolve_comment` | Mark a comment as resolved |
 | `unresolve_comment` | Reopen a resolved comment |
+| `submit_review` | Finish your review with an optional summary comment |
+| `get_session_diff` | Get the diff content for a session |
+| `get_file_versions` | Get original and modified versions of a file |
+| `get_context` | Get session context (path, branch, PR info) |
+| `list_directory` | List directory contents at a ref |
+| `get_file_content` | Get file content at a ref |
+| `get_history` | Get commit/change history for the session |
+| `create_pull_request` | Push branch and create a GitHub PR |
 
 ## Slash Commands
 
@@ -134,7 +142,32 @@ Edit `resources/config.edn` to customize settings:
  :context-expand-size 15          ;; Lines to expand at a time
 
  ;; Watcher settings (server)
- :watcher-debounce-ms 300}        ;; Debounce file change events
+ :watcher-debounce-ms 300         ;; Debounce file change events
+
+ ;; Push whitelist - controls which repos/branches can be pushed via create_pull_request
+ ;; Empty map = all repos/branches allowed
+ ;; Example: {"owner/repo" ["feature/*" "fix/*"], "myorg/*" ["*"]}
+ :push-whitelist {}}
+```
+
+### Push Whitelist
+
+The `create_pull_request` tool can be restricted via a whitelist in `config.edn`:
+
+```edn
+{:push-whitelist {"owner/repo" ["feature/*" "fix/*"]
+                  "myorg/*" ["*"]}}
+```
+
+- **Empty whitelist** (default): All repos/branches allowed
+- **Repo keys**: Can use wildcards like `"owner/*"` to match any repo from that owner
+- **Branch patterns**: Can use wildcards like `"feature/*"` to match branches
+- `"*"` matches anything
+
+The whitelist can also be set via the `PUSH_WHITELIST` environment variable as JSON:
+
+```bash
+export PUSH_WHITELIST='{"owner/repo": ["main", "develop"]}'
 ```
 
 Environment variables:

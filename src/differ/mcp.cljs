@@ -5,7 +5,10 @@
             [differ.git :as git]
             [differ.backend.protocol :as proto]
             [differ.sse :as sse]
-            [differ.util :as util]))
+            [differ.util :as util]
+            [differ.pull-request :as pr]
+            [differ.oauth :as oauth]
+            [clojure.string :as str]))
 
 ;; MCP Protocol version
 (def protocol-version "2024-11-05")
@@ -171,7 +174,22 @@
                                       :description "Filter to commits touching path"}
                                :limit {:type "integer"
                                        :description "Max entries (default 50)"}}
-                  :required ["session_id"]}}])
+                  :required ["session_id"]}}
+
+   {:name "create_pull_request"
+    :description "Push current branch to remote and create a GitHub PR. Returns existing PR if one already exists for the branch."
+    :inputSchema {:type "object"
+                  :properties {:repo_path {:type "string"
+                                           :description "Absolute path to the local git repository"}
+                               :title {:type "string"
+                                       :description "PR title (defaults to last commit message)"}
+                               :body {:type "string"
+                                      :description "PR description/body"}
+                               :base_branch {:type "string"
+                                             :description "Base branch to merge into (defaults to main/master)"}
+                               :draft {:type "boolean"
+                                       :description "Create as draft PR (default: false)"}}
+                  :required ["repo_path"]}}])
 
 ;; JSON-RPC helpers
 
@@ -462,6 +480,22 @@
           (-> result (.then (fn [entries] {:entries entries})))
           {:entries result})))))
 
+(defmethod handle-tool "create_pull_request" [_ {:keys [repo-path title body base-branch draft]}]
+  ;; Validate required parameter before calling downstream
+  (when-not (and (some? repo-path) (string? repo-path) (seq repo-path))
+    (throw (ex-info "repo_path is required and must be a non-empty string"
+                    {:code invalid-params})))
+  (-> (pr/create-pull-request! {:repo-path repo-path
+                                :title title
+                                :body body
+                                :base-branch base-branch
+                                :draft draft})
+      (.then (fn [result]
+               (if (:error result)
+                 (throw (ex-info (:error result)
+                                 {:code (or (:code result) invalid-params)}))
+                 result)))))
+
 (defmethod handle-tool :default [tool-name _]
   (throw (ex-info "Unknown tool" {:tool tool-name})))
 
@@ -512,6 +546,13 @@
 
 ;; HTTP handler
 
+(defn- extract-bearer-token
+  "Extract Bearer token from Authorization header."
+  [^js req]
+  (when-let [auth-header (.. req -headers -authorization)]
+    (when (str/starts-with? auth-header "Bearer ")
+      (subs auth-header 7))))
+
 (defn- send-response! [^js res id result]
   (let [response (json-rpc-response id result)]
     (-> res
@@ -524,31 +565,54 @@
         (.status 200)
         (.json (clj->js response)))))
 
+;; Methods that don't require authentication (MCP protocol handshake)
+(def unauthenticated-methods
+  #{"initialize" "tools/list"})
+
+(defn- method-requires-auth?
+  "Check if a method requires authentication.
+   MCP protocol methods like 'initialize' and 'tools/list' must work
+   without auth since clients call them before obtaining tokens."
+  [method]
+  (not (contains? unauthenticated-methods method)))
+
 (defn mcp-handler
-  "POST /mcp - MCP JSON-RPC endpoint"
+  "POST /mcp - MCP JSON-RPC endpoint
+   Most methods require Bearer token authentication via API key or OAuth access token.
+   Protocol methods (initialize, tools/list) are allowed without auth."
   [^js req ^js res]
   (let [body (.-body req)]
     (try
       (let [request (js->clj body :keywordize-keys true)
             id (:id request)
             method (:method request)
-            params (:params request)]
-        (try
-          (let [result (handle-method method params)]
-            ;; Handle Promise results (for future async tools)
-            (if (instance? js/Promise result)
-              (-> result
-                  (.then (fn [r] (send-response! res id r)))
-                  (.catch (fn [e]
-                            (let [data (ex-data e)
-                                  code (or (:code data) internal-error)]
-                              (send-error! res id code (.-message e))))))
-              ;; Synchronous result
-              (send-response! res id result)))
-          (catch :default e
-            (let [data (ex-data e)
-                  code (or (:code data) internal-error)]
-              (send-error! res id code (.-message e))))))
+            params (:params request)
+            token (extract-bearer-token req)]
+        ;; Check auth for methods that require it
+        (if (and (method-requires-auth? method)
+                 (not (oauth/verify-token token)))
+          ;; No valid token for authenticated method - return 401
+          (-> res
+              (.status 401)
+              (.json #js {:error "Unauthorized"
+                          :message "Valid Bearer token required"}))
+          ;; Auth OK or not required - process request
+          (try
+            (let [result (handle-method method params)]
+              ;; Handle Promise results (for future async tools)
+              (if (instance? js/Promise result)
+                (-> result
+                    (.then (fn [r] (send-response! res id r)))
+                    (.catch (fn [e]
+                              (let [data (ex-data e)
+                                    code (or (:code data) internal-error)]
+                                (send-error! res id code (.-message e))))))
+                ;; Synchronous result
+                (send-response! res id result)))
+            (catch :default e
+              (let [data (ex-data e)
+                    code (or (:code data) internal-error)]
+                (send-error! res id code (.-message e)))))))
       (catch :default _
         (send-error! res nil parse-error "Parse error")))))
 
