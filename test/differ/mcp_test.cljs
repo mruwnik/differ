@@ -72,7 +72,12 @@
       (is (contains? tool-names "get_context"))
       (is (contains? tool-names "list_directory"))
       (is (contains? tool-names "get_file_content"))
-      (is (contains? tool-names "get_history")))))
+      (is (contains? tool-names "get_history"))
+      ;; Diff tools
+      (is (contains? tool-names "get_session_diff"))
+      (is (contains? tool-names "get_file_versions"))
+      ;; PR creation
+      (is (contains? tool-names "create_pull_request")))))
 
 (deftest tool-schema-test
   (testing "get_or_create_session has repo_path and github_pr options"
@@ -327,3 +332,62 @@
   (testing "unknown tool throws error"
     (is (thrown? js/Error
                  (mcp/handle-tool "nonexistent_tool" {})))))
+
+;; ============================================================================
+;; Authentication Tests
+;; ============================================================================
+
+(deftest unauthenticated-methods-test
+  (testing "initialize and tools/list don't require auth"
+    (is (contains? mcp/unauthenticated-methods "initialize"))
+    (is (contains? mcp/unauthenticated-methods "tools/list")))
+
+  (testing "tools/call requires auth"
+    (is (#'mcp/method-requires-auth? "tools/call")))
+
+  (testing "initialize does not require auth"
+    (is (not (#'mcp/method-requires-auth? "initialize"))))
+
+  (testing "tools/list does not require auth"
+    (is (not (#'mcp/method-requires-auth? "tools/list")))))
+
+;; ============================================================================
+;; create_pull_request Tool Tests
+;; ============================================================================
+
+(deftest create-pull-request-tool-schema-test
+  (testing "create_pull_request has correct schema"
+    (let [tool (first (filter #(= "create_pull_request" (:name %)) mcp/tools))
+          schema (:inputSchema tool)
+          props (:properties schema)
+          required (set (:required schema))]
+      ;; Required field
+      (is (contains? required "repo_path"))
+      ;; Optional fields
+      (is (contains? props :title))
+      (is (contains? props :body))
+      (is (contains? props :base_branch))
+      (is (contains? props :draft))
+      ;; Check types
+      (is (= "string" (get-in props [:repo_path :type])))
+      (is (= "string" (get-in props [:title :type])))
+      (is (= "string" (get-in props [:body :type])))
+      (is (= "string" (get-in props [:base_branch :type])))
+      (is (= "boolean" (get-in props [:draft :type]))))))
+
+(deftest create-pull-request-validation-test
+  (testing "create_pull_request throws when repo-path is missing"
+    (is (thrown-with-msg? js/Error #"repo_path is required"
+                          (mcp/handle-tool "create_pull_request" {}))))
+
+  (testing "create_pull_request throws when repo-path is nil"
+    (is (thrown-with-msg? js/Error #"repo_path is required"
+                          (mcp/handle-tool "create_pull_request" {:repo-path nil}))))
+
+  (testing "create_pull_request throws when repo-path is empty"
+    (is (thrown-with-msg? js/Error #"repo_path is required"
+                          (mcp/handle-tool "create_pull_request" {:repo-path ""}))))
+
+  (testing "create_pull_request throws when repo-path is not a string"
+    (is (thrown-with-msg? js/Error #"repo_path is required"
+                          (mcp/handle-tool "create_pull_request" {:repo-path 123})))))

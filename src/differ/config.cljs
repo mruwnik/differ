@@ -25,7 +25,12 @@
    :context-expand-size 15          ;; Lines to expand at a time
 
    ;; Watcher settings (server)
-   :watcher-debounce-ms 300})       ;; Debounce file change events
+   :watcher-debounce-ms 300         ;; Debounce file change events
+
+   ;; Push whitelist - controls which repos/branches can be pushed
+   ;; Empty map = all repos/branches allowed
+   ;; Example: {"owner/repo" ["feature/*" "fix/*"], "myorg/*" ["*"]}
+   :push-whitelist {}})
 
 (defonce ^:private config-cache (atom nil))
 
@@ -96,10 +101,10 @@
 
 (defn- merge-github-from-env
   "Merge GitHub credentials from .env file or environment variables.
-   .env file takes precedence over process.env."
-  [config]
-  (let [env-file (load-env-file)
-        client-id (get-env env-file "GITHUB_CLIENT_ID")
+   .env file takes precedence over process.env.
+   env-file should be pre-loaded via load-env-file."
+  [config env-file]
+  (let [client-id (get-env env-file "GITHUB_CLIENT_ID")
         client-secret (get-env env-file "GITHUB_CLIENT_SECRET")]
     (if (or client-id client-secret)
       (update config :github merge
@@ -108,6 +113,45 @@
                 client-secret (assoc :client-secret client-secret)))
       config)))
 
+(defn- valid-whitelist-value?
+  "Check if a whitelist value is a valid array of strings."
+  [v]
+  (and (sequential? v)
+       (every? string? v)))
+
+(defn- parse-push-whitelist-env
+  "Parse PUSH_WHITELIST from env var as JSON.
+   Expected format: {\"owner/repo\": [\"branch1\", \"branch2\"]}
+   Values must be arrays of strings.
+   Returns nil if not set or invalid."
+  [env-file]
+  (when-let [json-str (get-env env-file "PUSH_WHITELIST")]
+    (try
+      (let [parsed (js/JSON.parse json-str)
+            as-clj (js->clj parsed)]
+        ;; Validate structure: must be map with arrays of strings as values
+        (if (and (map? as-clj)
+                 (every? valid-whitelist-value? (vals as-clj)))
+          as-clj
+          (do
+            (js/console.warn "PUSH_WHITELIST has invalid structure: expected {\"repo\": [\"branch\", ...]}")
+            nil)))
+      (catch :default e
+        (js/console.warn "Failed to parse PUSH_WHITELIST env var:" (.-message e))
+        nil))))
+
+(defn- merge-push-whitelist-from-env
+  "Merge push whitelist from PUSH_WHITELIST env var.
+   Uses shallow merge: env entries replace file entries with the same key.
+   For example, if config.edn has {\"org/repo\" [\"main\"]} and env has
+   {\"org/repo\" [\"develop\"]}, the result is {\"org/repo\" [\"develop\"]}.
+   New keys from env are added to the whitelist.
+   env-file should be pre-loaded via load-env-file."
+  [config env-file]
+  (if-let [env-whitelist (parse-push-whitelist-env env-file)]
+    (update config :push-whitelist merge env-whitelist)
+    config))
+
 (defn get-config
   "Get merged configuration (defaults + config.edn + env vars).
    Environment variables override file config for secrets.
@@ -115,9 +159,11 @@
   []
   (if-let [cached @config-cache]
     cached
-    (let [merged (-> defaults
+    (let [env-file (load-env-file)
+          merged (-> defaults
                      (merge (read-config-file))
-                     merge-github-from-env)]
+                     (merge-github-from-env env-file)
+                     (merge-push-whitelist-from-env env-file))]
       (reset! config-cache merged)
       merged)))
 
