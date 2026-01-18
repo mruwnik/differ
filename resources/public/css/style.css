@@ -68,10 +68,37 @@ a:hover {
   border-radius: 6px;
   margin-bottom: 8px;
   transition: border-color 0.2s;
+  position: relative;
 }
 
 .session-item:hover {
   border-color: #0366d6;
+}
+
+.session-delete {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 24px;
+  height: 24px;
+  border: none;
+  background: transparent;
+  color: #6a737d;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  border-radius: 4px;
+  opacity: 0;
+  transition: opacity 0.15s, background-color 0.15s, color 0.15s;
+}
+
+.session-item:hover .session-delete {
+  opacity: 1;
+}
+
+.session-delete:hover {
+  background: #ffeef0;
+  color: #cb2431;
 }
 
 .session-info {

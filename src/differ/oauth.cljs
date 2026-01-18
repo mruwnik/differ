@@ -11,8 +11,8 @@
 ;; Configuration
 (def allowed-scopes #{"read" "write"})
 (def base-scopes ["read"])
-(def access-token-lifetime (* 30 24 3600))  ; 30 days
-(def refresh-token-lifetime (* 30 24 3600)) ; 30 days
+(def access-token-lifetime (* 365 24 3600))  ; 1 year
+(def refresh-token-lifetime (* 365 24 3600)) ; 1 year
 (def auth-code-lifetime 600)                 ; 10 minutes
 
 (defn- read-config []

@@ -33,20 +33,52 @@
                     (str/replace #"^.*[:/]" ""))]
     cleaned))
 
-(defn session-item [{:keys [id project branch target-branch unresolved-count updated-at]}]
-  (let [count (or unresolved-count 0)]
-    [:li.session-item
-     {:on-click #(rf/dispatch [:navigate-session id])}
-     [:div.session-info
-      [:span.session-project (extract-project-name project)]
-      [:span.session-branch
-       (str branch " → " target-branch)
-       [:span {:style {:color "#6a737d" :margin-left "8px"}}
-        (format-time updated-at)]]]
-     [:span {:class (str "session-badge" (when (zero? count) " zero"))}
-      (if (zero? count)
-        "No comments"
-        (str count " unresolved"))]]))
+(defn session-item [& _]
+  (let [confirming? (r/atom false)
+        last-id (r/atom nil)]
+    (fn [{:keys [id project branch target-branch unresolved-count updated-at]}]
+      ;; Reset confirmation state if item ID changed (list reordered via SSE)
+      (when (not= @last-id id)
+        (reset! last-id id)
+        (reset! confirming? false))
+      (let [count (or unresolved-count 0)]
+        [:li.session-item
+         {:on-click #(when-not @confirming?
+                       (rf/dispatch [:navigate-session id]))}
+         (if @confirming?
+           [:div.session-delete-confirm
+            {:style {:display "flex" :gap "4px"}
+             :on-click #(.stopPropagation %)}
+            [:button.btn.btn-danger
+             {:style {:padding "2px 8px" :font-size "11px"}
+              :on-click #(do (rf/dispatch [:delete-session id])
+                             (reset! confirming? false))}
+             "Delete"]
+            [:button.btn.btn-secondary
+             {:style {:padding "2px 8px" :font-size "11px"}
+              :on-click #(reset! confirming? false)}
+             "Cancel"]]
+           [:button.session-delete
+            {:on-click (fn [e]
+                         (.stopPropagation e)
+                         (reset! confirming? true))
+             :title "Delete session"
+             :aria-label "Delete session"}
+            "x"])
+         [:div.session-info
+          [:span.session-project (extract-project-name project)]
+          [:span.session-branch
+           (if (str/blank? branch)
+             [:em {:style {:color "#6a737d"}} "working tree"]
+             [:span branch])
+           " -> "
+           target-branch
+           [:span {:style {:color "#6a737d" :margin-left "8px"}}
+            (format-time updated-at)]]]
+         [:span {:class (str "session-badge" (when (zero? count) " zero"))}
+          (if (zero? count)
+            "No comments"
+            (str count " unresolved"))]]))))
 
 (defn- get-recent-paths []
   (try

@@ -446,7 +446,8 @@
   "Get full review state for a session including files and comments."
   [session-id repo-path]
   (when-let [session (get-session session-id)]
-    (let [git-files (git/get-changed-files repo-path (:target-branch session))
+    (let [source-branch (not-empty (:branch session))
+          git-files (git/get-changed-files repo-path (:target-branch session) source-branch)
           untracked (git/get-untracked-files repo-path)
           files (compute-file-set session git-files untracked)
           ;; Only count unresolved comments on files currently in review

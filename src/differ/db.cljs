@@ -311,6 +311,7 @@
         ^js stmt (.prepare (db)
                            "UPDATE sessions SET
                 project = ?,
+                branch = ?,
                 target_branch = ?,
                 repo_path = ?,
                 registered_files = ?,
@@ -320,6 +321,7 @@
                 WHERE id = ?")]
     (.run stmt
           (:project new-data)
+          (:branch new-data)
           (:target-branch new-data)
           (:repo-path new-data)
           (js/JSON.stringify (clj->js (:registered-files new-data)))

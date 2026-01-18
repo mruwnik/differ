@@ -61,42 +61,61 @@
   (some? (exec-git repo-path "rev-parse" "--verify" branch)))
 
 (defn get-merge-base
-  "Get the merge base between current HEAD and target branch."
-  [repo-path target-branch]
-  (exec-git repo-path "merge-base" target-branch "HEAD"))
+  "Get the merge base between source and target branch.
+   If source-branch is nil, uses HEAD (working tree)."
+  [repo-path target-branch & [source-branch]]
+  (exec-git repo-path "merge-base" target-branch (or source-branch "HEAD")))
 
 (defn get-diff
-  "Get unified diff between target branch and working tree."
-  [repo-path target-branch]
-  (exec-git repo-path "diff" target-branch))
+  "Get unified diff between target branch and source branch.
+   If source-branch is nil, compares against working tree.
+   Uses three-dot diff (A...B) for branch comparison to show changes
+   introduced on source-branch since it diverged from target-branch."
+  [repo-path target-branch & [source-branch]]
+  (if source-branch
+    (exec-git repo-path "diff" (str target-branch "..." source-branch))
+    (exec-git repo-path "diff" target-branch)))
 
 (defn get-diff-stat
-  "Get diff statistics (files changed, insertions, deletions)."
-  [repo-path target-branch]
-  (exec-git repo-path "diff" "--stat" target-branch))
+  "Get diff statistics (files changed, insertions, deletions).
+   If source-branch is nil, compares against working tree.
+   Uses three-dot diff for branch comparison."
+  [repo-path target-branch & [source-branch]]
+  (if source-branch
+    (exec-git repo-path "diff" "--stat" (str target-branch "..." source-branch))
+    (exec-git repo-path "diff" "--stat" target-branch)))
 
 (defn get-changed-files
-  "Get list of files that changed relative to target branch."
-  [repo-path target-branch]
-  (if-let [output (exec-git repo-path "diff" "--name-status" target-branch)]
-    (->> (str/split-lines output)
-         (filter seq)
-         (map (fn [line]
-                (let [[status & path-parts] (str/split line #"\t")
-                      path (str/join "\t" path-parts)]
-                  {:path path
-                   :status (case (first status)
-                             \A :added
-                             \M :modified
-                             \D :deleted
-                             \R :renamed
-                             :modified)}))))
-    []))
+  "Get list of files that changed relative to target branch.
+   If source-branch is nil, compares against working tree.
+   Uses three-dot diff for branch comparison."
+  [repo-path target-branch & [source-branch]]
+  (let [output (if source-branch
+                 (exec-git repo-path "diff" "--name-status" (str target-branch "..." source-branch))
+                 (exec-git repo-path "diff" "--name-status" target-branch))]
+    (if output
+      (->> (str/split-lines output)
+           (filter seq)
+           (map (fn [line]
+                  (let [[status & path-parts] (str/split line #"\t")
+                        path (str/join "\t" path-parts)]
+                    {:path path
+                     :status (case (first status)
+                               \A :added
+                               \M :modified
+                               \D :deleted
+                               \R :renamed
+                               :modified)}))))
+      [])))
 
 (defn get-file-diff
-  "Get diff for a specific file."
-  [repo-path target-branch file-path]
-  (exec-git repo-path "diff" target-branch "--" file-path))
+  "Get diff for a specific file.
+   If source-branch is nil, compares against working tree.
+   Uses three-dot diff for branch comparison."
+  [repo-path target-branch file-path & [source-branch]]
+  (if source-branch
+    (exec-git repo-path "diff" (str target-branch "..." source-branch) "--" file-path)
+    (exec-git repo-path "diff" target-branch "--" file-path)))
 
 (defn get-file-content
   "Get file content at a specific ref (or working tree if ref is nil)."

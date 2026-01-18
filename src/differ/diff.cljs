@@ -6,7 +6,8 @@
   (:require [differ.git :as git]
             [differ.sessions :as sessions]
             [differ.config :as config]
-            [clojure.set :as set]))
+            [clojure.set :as set]
+            [clojure.string :as str]))
 
 (defn default-max-file-size
   "Files larger than this (in bytes) won't have content loaded initially.
@@ -74,15 +75,19 @@
 ;; ============================================================================
 
 (defn- compute-git-diff-data
-  "Compute diff data for a git repository."
-  [repo-path target-branch files untracked-files max-size]
+  "Compute diff data for a git repository.
+   source-branch is optional - if nil, compares against working tree."
+  [repo-path target-branch source-branch files untracked-files max-size]
   (let [;; Get the raw diff and parse it
-        raw-diff (git/get-diff repo-path target-branch)
+        raw-diff (git/get-diff repo-path target-branch source-branch)
         git-parsed (git/parse-diff-hunks raw-diff)
-        git-changed-files (git/get-changed-files repo-path target-branch)
+        git-changed-files (git/get-changed-files repo-path target-branch source-branch)
 
-        ;; Find untracked files that are in the review set
-        untracked-in-review (find-untracked-in-review files untracked-files)
+        ;; Untracked files only matter when comparing against working tree
+        ;; (when source-branch is nil)
+        untracked-in-review (if source-branch
+                              #{}
+                              (find-untracked-in-review files untracked-files))
 
         ;; Get content for untracked files (they won't be in git diff)
         untracked-parsed (collect-file-diffs repo-path untracked-in-review max-size)
@@ -119,11 +124,14 @@
   (let [max-size (or max-size (default-max-file-size))
         repo-path (:repo-path session)
         target-branch (:target-branch session)
+        ;; source-branch nil means compare against working tree
+        ;; Trim whitespace to handle accidental spaces in branch names
+        source-branch (not-empty (some-> (:branch session) str/trim))
         is-git-repo (git/git-repo? repo-path)
 
         ;; Get git info (needed for computing file set and diff)
         git-changed (when is-git-repo
-                      (git/get-changed-files repo-path target-branch))
+                      (git/get-changed-files repo-path target-branch source-branch))
         untracked (when is-git-repo
                     (git/get-untracked-files repo-path))
 
@@ -133,7 +141,7 @@
 
         ;; Compute diff data based on repo type
         diff-data (if is-git-repo
-                    (compute-git-diff-data repo-path target-branch files untracked max-size)
+                    (compute-git-diff-data repo-path target-branch source-branch files untracked max-size)
                     (compute-non-git-diff-data repo-path files max-size))]
 
     (merge diff-data
@@ -152,14 +160,15 @@
    - :size       - file size (only for non-git or untracked files)
 
    Returns nil if file cannot be read."
-  [session file-path & {:keys [max-size]}]
-  (let [max-size (or max-size (default-max-file-size))
-        repo-path (:repo-path session)
+  [session file-path & {:keys [_max-size]}]
+  (let [repo-path (:repo-path session)
         target-branch (:target-branch session)
+        ;; Trim whitespace to handle accidental spaces in branch names
+        source-branch (not-empty (some-> (:branch session) str/trim))
         is-git-repo (git/git-repo? repo-path)]
     (if is-git-repo
       ;; Try git diff first
-      (let [raw-diff (git/get-file-diff repo-path target-branch file-path)]
+      (let [raw-diff (git/get-file-diff repo-path target-branch file-path source-branch)]
         (if (seq raw-diff)
           {:file file-path
            :diff raw-diff

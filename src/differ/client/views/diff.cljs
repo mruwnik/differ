@@ -901,29 +901,42 @@
 
 (defn session-settings-modal []
   (let [form-state (r/atom {:initialized false
-                            :show-branches false})]
+                            :show-source-branches false
+                            :show-target-branches false})]
     (fn []
       (let [session @(rf/subscribe [:current-session])
             visible? @(rf/subscribe [:session-settings-visible?])
             branches @(rf/subscribe [:branches])
-            {:keys [project repo-path target-branch initialized show-branches]} @form-state
-            ;; Filter branches based on current input
-            filtered-branches (when (and branches show-branches)
-                                (if (str/blank? target-branch)
-                                  branches
-                                  (filterv #(str/includes? (str/lower-case %)
-                                                           (str/lower-case target-branch))
-                                           branches)))]
+            {:keys [project repo-path branch target-branch initialized
+                    show-source-branches show-target-branches]} @form-state
+            ;; Filter branches based on current input for source branch
+            filtered-source-branches (when (and branches show-source-branches)
+                                       (if (str/blank? branch)
+                                         branches
+                                         (filterv #(str/includes? (str/lower-case %)
+                                                                  (str/lower-case branch))
+                                                  branches)))
+            ;; Filter branches based on current input for target branch
+            filtered-target-branches (when (and branches show-target-branches)
+                                       (if (str/blank? target-branch)
+                                         branches
+                                         (filterv #(str/includes? (str/lower-case %)
+                                                                  (str/lower-case target-branch))
+                                                  branches)))]
         ;; Initialize form when modal becomes visible
         (when (and visible? (not initialized) session)
           (reset! form-state {:project (or (:project session) "")
                               :repo-path (or (:repo-path session) "")
+                              :branch (or (:branch session) "")
                               :target-branch (or (:target-branch session) "")
                               :initialized true
-                              :show-branches false}))
+                              :show-source-branches false
+                              :show-target-branches false}))
         ;; Reset when closing
         (when (and (not visible?) initialized)
-          (reset! form-state {:initialized false :show-branches false}))
+          (reset! form-state {:initialized false
+                              :show-source-branches false
+                              :show-target-branches false}))
         (when visible?
           [:div {:style {:position "fixed"
                          :top 0 :left 0 :right 0 :bottom 0
@@ -968,25 +981,25 @@
                               :font-size "14px"}}]
              [:p {:style {:margin "4px 0 0 0" :font-size "12px" :color "#6a737d"}}
               "Absolute path to the project directory"]]
-            ;; Target branch with autocomplete
+            ;; Source branch with autocomplete
             [:div {:style {:margin-bottom "16px" :position "relative"}}
              [:label {:style {:display "block" :margin-bottom "4px" :font-weight 500}}
-              "Target Branch"]
+              "Source Branch"]
              [:input {:type "text"
-                      :value (or target-branch "")
-                      :on-change #(swap! form-state assoc :target-branch (.. % -target -value))
-                      :on-focus #(swap! form-state assoc :show-branches true)
+                      :value (or branch "")
+                      :on-change #(swap! form-state assoc :branch (.. % -target -value))
+                      :on-focus #(swap! form-state assoc :show-source-branches true)
                       :on-blur #(js/setTimeout
-                                 (fn [] (swap! form-state assoc :show-branches false))
+                                 (fn [] (swap! form-state assoc :show-source-branches false))
                                  150)
-                      :placeholder "e.g., main, master, develop"
+                      :placeholder "Leave empty to use working tree"
                       :style {:width "100%"
                               :padding "8px 12px"
                               :border "1px solid #d0d7de"
                               :border-radius "6px"
                               :font-size "14px"}}]
              ;; Branch suggestions dropdown
-             (when (and show-branches (seq filtered-branches))
+             (when (and show-source-branches (seq filtered-source-branches))
                [:div {:style {:position "absolute"
                               :top "100%"
                               :left 0
@@ -999,20 +1012,67 @@
                               :box-shadow "0 4px 12px rgba(0,0,0,0.15)"
                               :z-index 10
                               :margin-top "4px"}}
-                (for [branch filtered-branches]
-                  ^{:key branch}
+                (for [b filtered-source-branches]
+                  ^{:key b}
                   [:div {:on-mouse-down #(do
                                            (.preventDefault %)
                                            (swap! form-state assoc
-                                                  :target-branch branch
-                                                  :show-branches false))
+                                                  :branch b
+                                                  :show-source-branches false))
                          :style {:padding "8px 12px"
                                  :cursor "pointer"
                                  :font-size "14px"
                                  :border-bottom "1px solid #f0f0f0"}
                          :on-mouse-over #(set! (.. % -target -style -background) "#f6f8fa")
                          :on-mouse-out #(set! (.. % -target -style -background) "white")}
-                   branch])])
+                   b])])
+             [:p {:style {:margin "4px 0 0 0" :font-size "12px" :color "#6a737d"}}
+              "The branch containing changes to review (empty = working tree)"]]
+            ;; Target branch with autocomplete
+            [:div {:style {:margin-bottom "16px" :position "relative"}}
+             [:label {:style {:display "block" :margin-bottom "4px" :font-weight 500}}
+              "Target Branch"]
+             [:input {:type "text"
+                      :value (or target-branch "")
+                      :on-change #(swap! form-state assoc :target-branch (.. % -target -value))
+                      :on-focus #(swap! form-state assoc :show-target-branches true)
+                      :on-blur #(js/setTimeout
+                                 (fn [] (swap! form-state assoc :show-target-branches false))
+                                 150)
+                      :placeholder "e.g., main, master, develop"
+                      :style {:width "100%"
+                              :padding "8px 12px"
+                              :border "1px solid #d0d7de"
+                              :border-radius "6px"
+                              :font-size "14px"}}]
+             ;; Branch suggestions dropdown
+             (when (and show-target-branches (seq filtered-target-branches))
+               [:div {:style {:position "absolute"
+                              :top "100%"
+                              :left 0
+                              :right 0
+                              :max-height "200px"
+                              :overflow-y "auto"
+                              :background "white"
+                              :border "1px solid #d0d7de"
+                              :border-radius "6px"
+                              :box-shadow "0 4px 12px rgba(0,0,0,0.15)"
+                              :z-index 10
+                              :margin-top "4px"}}
+                (for [b filtered-target-branches]
+                  ^{:key b}
+                  [:div {:on-mouse-down #(do
+                                           (.preventDefault %)
+                                           (swap! form-state assoc
+                                                  :target-branch b
+                                                  :show-target-branches false))
+                         :style {:padding "8px 12px"
+                                 :cursor "pointer"
+                                 :font-size "14px"
+                                 :border-bottom "1px solid #f0f0f0"}
+                         :on-mouse-over #(set! (.. % -target -style -background) "#f6f8fa")
+                         :on-mouse-out #(set! (.. % -target -style -background) "white")}
+                   b])])
              [:p {:style {:margin "4px 0 0 0" :font-size "12px" :color "#6a737d"}}
               "The branch to compare against"]]
             [:div {:style {:display "flex" :gap "8px" :justify-content "flex-end"}}
@@ -1020,9 +1080,10 @@
               {:on-click #(rf/dispatch [:hide-session-settings])}
               "Cancel"]
              [:button.btn.btn-primary
-              {:on-click #(rf/dispatch [:update-session {:target_branch target-branch
+              {:on-click #(rf/dispatch [:update-session {:branch branch
+                                                         :target-branch target-branch
                                                          :project project
-                                                         :repo_path repo-path}])}
+                                                         :repo-path repo-path}])}
               "Save"]]]])))))
 
 (defn- comment-id
@@ -1230,7 +1291,9 @@
         [:div
          [:strong (:project session)]
          [:span {:style {:margin "0 8px" :color "#6a737d"}} "/"]
-         [:span (:branch session)]
+         (if (str/blank? (:branch session))
+           [:em {:style {:color "#6a737d"}} "working tree"]
+           [:span (:branch session)])
          [:span {:style {:margin "0 8px" :color "#6a737d"}} "→"]
          [:span {:style {:color "#6a737d"}} (:target-branch session)]]
         [:button {:on-click #(rf/dispatch [:show-session-settings])
