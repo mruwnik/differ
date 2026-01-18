@@ -120,7 +120,23 @@
      opts: {:body string - optional review summary}
      Local: no-op (comments are already visible)
      GitHub: submits pending review comments as COMMENT (not approve/request-changes)
-     Returns promise of {:submitted true} or {:submitted false :reason string}."))
+     Returns promise of {:submitted true} or {:submitted false :reason string}.")
+
+  (request-review! [this opts]
+    "Request external review of the current changes.
+     Pushes current branch and makes changes available for review by others.
+
+     opts: {:title string - PR title (defaults to last commit message)
+            :body string - PR description
+            :draft boolean - create as draft PR}
+
+     Returns Promise of:
+       {:review-url string - URL where review can be accessed
+        :review-session-id string - session ID for collaborative review
+        :status :created|:existing}
+
+     Local: pushes branch, creates PR (or finds existing), returns GitHub session ID
+     GitHub: pushes branch (if repo-path in opts), returns existing PR info"))
 
 ;; Helper for line range extraction
 (defn extract-lines

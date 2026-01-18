@@ -10,7 +10,8 @@
             [differ.github-oauth :as github-oauth]
             [differ.sse :as sse]
             [differ.util :as util]
-            [differ.config :as config]))
+            [differ.config :as config]
+            [differ.backend.protocol :as proto]))
 
 ;; ============================================================================
 ;; HTTP Response Helpers
@@ -242,6 +243,27 @@
         {:keys [path]} (get-body req)]
     (sessions/restore-file! session-id path)
     (json-response res {:success true :path path})))
+
+;; Review request endpoint
+
+(defn request-review-handler
+  "POST /api/sessions/:id/request-review
+   Request external review - pushes branch and creates PR (for local sessions)
+   or returns existing PR (for GitHub sessions)."
+  [^js req res]
+  (let [session-id (.. req -params -id)
+        body (get-body req)]
+    (if-let [session (db/get-session session-id)]
+      (-> (sessions/create-backend session)
+          (.then (fn [result]
+                   (if (:error result)
+                     (error-response res 400 (:error result))
+                     (proto/request-review! (:backend result) body))))
+          (.then (fn [review-result]
+                   (json-response res review-result)))
+          (.catch (fn [err]
+                    (error-response res 500 (or (.-message err) (str err))))))
+      (error-response res 404 "Session not found"))))
 
 ;; Comment endpoints
 
@@ -545,6 +567,9 @@
   (.post app "/api/sessions/:id/manual-files" add-manual-file-handler)
   (.delete app "/api/sessions/:id/manual-files" remove-manual-file-handler)
   (.post app "/api/sessions/:id/restore-file" restore-file-handler)
+
+  ;; Review
+  (.post app "/api/sessions/:id/request-review" request-review-handler)
 
   ;; Comments
   (.get app "/api/sessions/:id/comments" list-comments-handler)

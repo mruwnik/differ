@@ -5,6 +5,7 @@
             [differ.db :as db]
             [differ.schema :as schema]
             [differ.util :as util]
+            [differ.pull-request :as pr]
             ["child_process" :as cp]
             ["path" :as path]
             ["fs" :as fs]
@@ -415,7 +416,24 @@
           {:session-id (proto/session-id this)
            :text body
            :author (or author "reviewer")}))
-       {:submitted true}))))
+       {:submitted true})))
+
+  (request-review! [_ opts]
+    (-> (pr/create-pull-request! {:repo-path repo-path
+                                  :title (:title opts)
+                                  :body (:body opts)
+                                  :draft (:draft opts)})
+        (.then (fn [result]
+                 (if (:error result)
+                   (throw (ex-info (:error result)
+                                   {:code (or (:code result) :unknown)}))
+                   (let [{:keys [pr-url pr-number]} result
+                         ;; Parse owner/repo from the PR URL
+                         [_ owner repo] (re-find #"github\.com/([^/]+)/([^/]+)/pull" pr-url)
+                         github-session-id (str "github:" owner "/" repo ":" pr-number)]
+                     {:review-url pr-url
+                      :review-session-id github-session-id
+                      :status (if (:created result) :created :existing)})))))))
 
 ;; Constructor
 

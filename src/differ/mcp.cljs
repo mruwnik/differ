@@ -6,7 +6,6 @@
             [differ.backend.protocol :as proto]
             [differ.sse :as sse]
             [differ.util :as util]
-            [differ.pull-request :as pr]
             [differ.oauth :as oauth]
             [clojure.string :as str]))
 
@@ -176,20 +175,18 @@
                                        :description "Max entries (default 50)"}}
                   :required ["session_id"]}}
 
-   {:name "create_pull_request"
-    :description "Push current branch to remote and create a GitHub PR. Returns existing PR if one already exists for the branch."
+   {:name "request_review"
+    :description "Request external review of changes. Pushes branch and makes changes reviewable. For local sessions, creates a GitHub PR. For GitHub sessions, returns existing PR. Returns a review session ID for collaborative review."
     :inputSchema {:type "object"
-                  :properties {:repo_path {:type "string"
-                                           :description "Absolute path to the local git repository"}
+                  :properties {:session_id {:type "string"
+                                            :description "Session ID for the review"}
                                :title {:type "string"
-                                       :description "PR title (defaults to last commit message)"}
+                                       :description "PR title (defaults to last commit message, local sessions only)"}
                                :body {:type "string"
-                                      :description "PR description/body"}
-                               :base_branch {:type "string"
-                                             :description "Base branch to merge into (defaults to main/master)"}
+                                      :description "PR description/body (local sessions only)"}
                                :draft {:type "boolean"
-                                       :description "Create as draft PR (default: false)"}}
-                  :required ["repo_path"]}}])
+                                       :description "Create as draft PR (default: false, local sessions only)"}}
+                  :required ["session_id"]}}])
 
 ;; JSON-RPC helpers
 
@@ -480,21 +477,10 @@
           (-> result (.then (fn [entries] {:entries entries})))
           {:entries result})))))
 
-(defmethod handle-tool "create_pull_request" [_ {:keys [repo-path title body base-branch draft]}]
-  ;; Validate required parameter before calling downstream
-  (when-not (and (some? repo-path) (string? repo-path) (seq repo-path))
-    (throw (ex-info "repo_path is required and must be a non-empty string"
-                    {:code invalid-params})))
-  (-> (pr/create-pull-request! {:repo-path repo-path
-                                :title title
-                                :body body
-                                :base-branch base-branch
-                                :draft draft})
-      (.then (fn [result]
-               (if (:error result)
-                 (throw (ex-info (:error result)
-                                 {:code (or (:code result) invalid-params)}))
-                 result)))))
+(defmethod handle-tool "request_review" [_ {:keys [session-id title body draft]}]
+  (with-backend session-id
+    (fn [backend]
+      (proto/request-review! backend {:title title :body body :draft draft}))))
 
 (defmethod handle-tool :default [tool-name _]
   (throw (ex-info "Unknown tool" {:tool tool-name})))

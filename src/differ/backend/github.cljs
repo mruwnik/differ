@@ -4,12 +4,32 @@
   (:require [differ.backend.protocol :as proto]
             [differ.github-api :as gh-api]
             [differ.util :as util]
-            [clojure.string :as str]))
+            [clojure.string :as str]
+            ["child_process" :as cp]))
 
 (defn- escape-regex
   "Escape special regex characters in a string."
   [s]
   (str/replace s #"[.*+?^${}()|\[\]\\]" "\\$&"))
+
+(defn- push-branch-async
+  "Push current branch to origin. Returns Promise of {:success bool :error string?}."
+  [repo-path branch]
+  (js/Promise.
+   (fn [resolve _]
+     (let [proc (cp/spawn "git" #js ["push" "-u" "origin" branch]
+                          #js {:cwd repo-path :encoding "utf8"})
+           stderr-chunks #js []]
+       (.on (.-stderr proc) "data" #(.push stderr-chunks %))
+       (.on proc "close"
+            (fn [code]
+              (if (zero? code)
+                (resolve {:success true})
+                (resolve {:success false
+                          :error (str/trim (.join stderr-chunks ""))}))))
+       (.on proc "error"
+            (fn [err]
+              (resolve {:success false :error (.-message err)})))))))
 
 ;; Use shared graphql-request from github-api
 (def ^:private graphql-request gh-api/graphql-request)
@@ -526,7 +546,26 @@
                        {:submitted true
                         :review-id (:id review)
                         :state (:state review)}
-                       result))))))))
+                       result)))))))
+
+  (request-review! [this opts]
+    (let [pr-url (str "https://github.com/" owner "/" repo "/pull/" pr-number)
+          do-return (fn []
+                      {:review-url pr-url
+                       :review-session-id (proto/session-id this)
+                       :status :existing})]
+      ;; If repo-path provided, push first
+      (if-let [repo-path (:repo-path opts)]
+        (-> (proto/get-context this)
+            (.then (fn [ctx]
+                     (push-branch-async repo-path (:head-branch ctx))))
+            (.then (fn [push-result]
+                     (when-not (:success push-result)
+                       (throw (ex-info (str "Push failed: " (:error push-result))
+                                       {:code :push-failed})))
+                     (do-return))))
+        ;; No repo-path, just return PR info
+        (js/Promise.resolve (do-return))))))
 
 ;; Constructor
 

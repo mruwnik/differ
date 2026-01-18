@@ -8,11 +8,54 @@
   (:require [differ.push-permissions :as perms]
             [differ.github-oauth :as github-oauth]
             [differ.github-api :as gh-api]
-            [differ.backend.local :as local]
             [differ.config :as config]
             [clojure.string :as str]
             ["child_process" :as cp]
             ["path" :as path]))
+
+;; Git command execution (sync version for local checks)
+
+(defn- exec-sync
+  "Execute command synchronously, return stdout or nil on error."
+  [cmd opts]
+  (try
+    (let [result (cp/execSync cmd (clj->js (merge {:encoding "utf8"} opts)))]
+      (str/trim result))
+    (catch :default _e
+      nil)))
+
+(defn- exec-git
+  "Execute git command in given directory."
+  [repo-path & args]
+  (let [cmd (str "git " (str/join " " args))]
+    (exec-sync cmd {:cwd repo-path})))
+
+(defn- git-repo?
+  "Check if directory is a git repository."
+  [dir]
+  (some? (exec-git dir "rev-parse" "--git-dir")))
+
+(defn- get-remote-url
+  "Get the remote origin URL, or nil if not set."
+  [repo-path]
+  (exec-git repo-path "remote" "get-url" "origin"))
+
+(defn- get-current-branch
+  "Get the current branch name, or 'working' if not in a git repo."
+  [repo-path]
+  (or (exec-git repo-path "rev-parse" "--abbrev-ref" "HEAD")
+      "working"))
+
+(defn- detect-default-branch
+  "Detect the default branch (main or master)."
+  [repo-path]
+  (let [remote-head (exec-git repo-path "symbolic-ref" "refs/remotes/origin/HEAD" "--short")
+        remote-branch (when remote-head
+                        (last (str/split remote-head #"/")))]
+    (or remote-branch
+        (when (exec-git repo-path "rev-parse" "--verify" "main") "main")
+        (when (exec-git repo-path "rev-parse" "--verify" "master") "master")
+        "main")))
 
 ;; Git command execution (async version)
 
@@ -242,14 +285,14 @@
                          {:code :invalid-path :repo-path repo-path})))
 
        ;; Step 2: Validate it's a git repository
-       (when-not (local/git-repo? repo-path)
+       (when-not (git-repo? repo-path)
          (throw (ex-info "Not a git repository"
                          {:code :not-git-repo :repo-path repo-path})))
 
        ;; Step 3: Get branch and remote info
-       (let [branch (local/get-current-branch repo-path)
-             remote-url (local/get-remote-url repo-path)
-             base (or base-branch (local/detect-default-branch repo-path))]
+       (let [branch (get-current-branch repo-path)
+             remote-url (get-remote-url repo-path)
+             base (or base-branch (detect-default-branch repo-path))]
 
          ;; Step 4: Check for detached HEAD state
          (when (= branch "HEAD")
