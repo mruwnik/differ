@@ -129,6 +129,37 @@ cp .claude/commands/*.md ~/.claude/commands/
 
 Then `/review` and `/fix-review` will work in any repo where the differ MCP server is configured.
 
+## Review stop hook
+
+In `.claude/hooks/pr_review_loop.py` there is a script that can be used to force
+agents to go through a proper internal review -> GitHub PR -> PR closed flow, by
+prompting the agent to push all changes to a proper PR, and then wait until it's closed.
+To use it, add the following to the `"hooks"` section of the appropriate `settings.json` file:
+
+```json
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 shared/hooks/pr_review_loop.py",
+            "timeout": 3600
+          }
+        ]
+      }
+    ]
+```
+
+This will not run if the folder in which Claude Code is running is not a git repo, or if
+the `PR_REVIEW_LOOP_DISABLED` env variable is set to `1`, `true` or `yes`.
+By default, once all changes have been pushed etc., the script will wait up to 12h polling
+for unresolved comments on the PR, after which it will just let the agent continue. The hook
+definition has a timeout (default is 30s) after which it will just continue. So the lower of
+these two values limits how long the agent will wait for feedback.
+
+If the PR is closed, and there are no local changes, the hook will ask the Claude session to
+commit sepukku for doing such a good job.
+
 ## Configuration
 
 Edit `resources/config.edn` to customize settings:
