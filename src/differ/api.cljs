@@ -423,7 +423,8 @@
       (error-response res 404 "Session not found"))))
 
 (defn get-pending-handler
-  "GET /api/sessions/:id/pending"
+  "GET /api/sessions/:id/pending
+   Returns pending comments and CI status for the session."
   [^js req res]
   (let [session-id (.. req -params -id)
         since (.. req -query -since)]
@@ -432,11 +433,16 @@
           (.then (fn [result]
                    (if (:error result)
                      (throw (js/Error. (:error result)))
-                     (proto/get-pending-comments (:backend result) {:since since}))))
-          (.then (fn [comments]
-                   ;; LocalBackend.get-pending-comments already annotates staleness,
-                   ;; so we don't need to annotate again here
-                   (json-response res {:comments comments})))
+                     (let [backend (:backend result)]
+                       ;; Fetch both pending comments and CI status in parallel
+                       (js/Promise.all
+                        #js [(proto/get-pending-comments backend {:since since})
+                             (proto/get-ci-status backend)])))))
+          (.then (fn [results]
+                   (let [[comments ci-status] results]
+                     ;; LocalBackend.get-pending-comments already annotates staleness,
+                     ;; so we don't need to annotate again here
+                     (json-response res {:comments comments :ci ci-status}))))
           (.catch (fn [err]
                     (error-response res 500 (or (.-message err) (str err))))))
       (error-response res 404 "Session not found"))))

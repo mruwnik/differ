@@ -217,11 +217,35 @@ def find_session_for_branch(repo_path: str, branch: str) -> dict[str, Any]:
     return local_session or {}
 
 
-def get_pending_comment_count(session_id: str) -> int:
-    """Get number of unresolved review comments."""
+def get_pending_feedback(session_id: str) -> dict[str, Any]:
+    """Get pending feedback: unresolved comments and CI status.
+
+    Returns: {
+        'comment_count': int,
+        'ci_state': str | None,  # 'success', 'failure', 'pending', 'error', 'unknown'
+        'ci_failures': list[dict]  # [{name, state, url}, ...]
+    }
+    """
     encoded_id = urllib.parse.quote(session_id, safe="")
     pending = api_get(f"/api/sessions/{encoded_id}/pending")
-    return len(pending.get("comments", []))
+
+    comments = pending.get("comments", [])
+    ci = pending.get("ci", {})
+    ci_state = ci.get("state")
+    checks = ci.get("checks", [])
+
+    # Extract failed checks
+    ci_failures = [
+        {"name": c.get("name", "unknown"), "state": c.get("state"), "url": c.get("url")}
+        for c in checks
+        if c.get("state") in ("failure", "error")
+    ]
+
+    return {
+        "comment_count": len(comments),
+        "ci_state": ci_state,
+        "ci_failures": ci_failures,
+    }
 
 
 def get_pr_status(session_id: str) -> str | None:
@@ -249,6 +273,23 @@ def block_for_pending_comments(
         f'3. Call: request_review(session_id="{session_id}", repo_path="{repo_path}")\n'
         "4. Call resolve_comment for each issue you've addressed\n"
         f"5. {COMMIT_REMINDER}"
+    )
+
+
+def block_for_ci_failures(
+    pr_info: str, failures: list[dict[str, Any]], session_id: str, repo_path: str
+) -> NoReturn:
+    """Block with instructions to fix CI failures."""
+    failure_list = "\n".join(
+        f"  • **{f['name']}**: {f.get('url', 'no URL')}" for f in failures
+    )
+    block(
+        f"ACTION REQUIRED: Fix {len(failures)} failing CI check(s) on {pr_info}.\n\n"
+        f"{failure_list}\n\n"
+        "1. Review the CI logs at the URLs above\n"
+        "2. Fix the failing tests or checks\n"
+        f"3. {COMMIT_REMINDER}\n"
+        f'4. Call: request_review(session_id="{session_id}", repo_path="{repo_path}")'
     )
 
 
@@ -316,13 +357,23 @@ def require_github_session(repo_path: str, branch: str) -> dict[str, Any]:
 
 
 def poll_for_comments(session_id: str, pr_info: str, repo_path: str) -> None:
-    """Poll for review comments. Blocks on comments, exits when PR closed/merged."""
+    """Poll for review comments and CI status. Blocks on issues, exits when PR closed/merged."""
     idle_start = time.time()
 
     while True:
-        pending_count = get_pending_comment_count(session_id)
-        if pending_count > 0:
-            block_for_pending_comments(pr_info, pending_count, session_id, repo_path)
+        feedback = get_pending_feedback(session_id)
+
+        # Check for unresolved comments first
+        if feedback["comment_count"] > 0:
+            block_for_pending_comments(
+                pr_info, feedback["comment_count"], session_id, repo_path
+            )
+
+        # Check for CI failures
+        if feedback["ci_failures"]:
+            block_for_ci_failures(
+                pr_info, feedback["ci_failures"], session_id, repo_path
+            )
 
         pr_status = get_pr_status(session_id)
         if pr_status in ["merged", "closed"]:

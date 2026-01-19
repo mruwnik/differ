@@ -64,7 +64,7 @@
                   :required ["session_id"]}}
 
    {:name "get_pending_feedback"
-    :description "Get unresolved comments, optionally since a timestamp."
+    :description "Get unresolved comments and CI status. Returns {comments: [...], ci: {state, checks}}."
     :inputSchema {:type "object"
                   :properties {:session_id {:type "string"}
                                :since {:type "string"
@@ -433,8 +433,12 @@
 (defmethod handle-tool "get_pending_feedback" [_ {:keys [session-id since]}]
   (with-backend session-id
     (fn [backend]
-      (-> (ensure-promise (proto/get-pending-comments backend {:since since}))
-          (.then (fn [comments] {:comments comments}))))))
+      (-> (js/Promise.all
+           #js [(ensure-promise (proto/get-pending-comments backend {:since since}))
+                (ensure-promise (proto/get-ci-status backend))])
+          (.then (fn [results]
+                   (let [[comments ci-status] results]
+                     {:comments comments :ci ci-status})))))))
 
 (defmethod handle-tool "add_comment" [_ {:keys [session-id] :as params}]
   (with-backend session-id

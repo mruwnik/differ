@@ -266,6 +266,40 @@
     }
   }")
 
+(def ci-status-query
+  "query($owner: String!, $repo: String!, $number: Int!) {
+    repository(owner: $owner, name: $repo) {
+      pullRequest(number: $number) {
+        commits(last: 1) {
+          nodes {
+            commit {
+              statusCheckRollup {
+                state
+                contexts(first: 100) {
+                  nodes {
+                    __typename
+                    ... on CheckRun {
+                      name
+                      status
+                      conclusion
+                      detailsUrl
+                    }
+                    ... on StatusContext {
+                      context
+                      state
+                      targetUrl
+                      description
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }")
+
 (defn format-new-pr-result
   "Format result when a new PR was created from request-review!."
   [{:keys [pr-url pr-number pr-state]}]
@@ -636,7 +670,35 @@
 
                      ;; PR is open, no repo-path - just return existing
                      :else
-                     (format-existing-pr-result (proto/session-id this) pr-url (:state ctx)))))))))
+                     (format-existing-pr-result (proto/session-id this) pr-url (:state ctx))))))))
+
+  (get-ci-status [_]
+    (-> (graphql-request token ci-status-query
+                         {:owner owner :repo repo :number pr-number})
+        (.then (fn [data]
+                 (let [rollup (get-in data [:repository :pullRequest :commits :nodes 0 :commit :statusCheckRollup])
+                       overall-state (some-> (:state rollup) str/lower-case keyword)
+                       contexts (get-in rollup [:contexts :nodes] [])]
+                   {:state (or overall-state :unknown)
+                    :checks (mapv (fn [ctx]
+                                    (if (= (:__typename ctx) "CheckRun")
+                                      ;; GitHub Actions check run
+                                      {:name (:name ctx)
+                                       :state (cond
+                                                (= (:status ctx) "IN_PROGRESS") :pending
+                                                (= (:status ctx) "QUEUED") :pending
+                                                (= (:conclusion ctx) "SUCCESS") :success
+                                                (= (:conclusion ctx) "FAILURE") :failure
+                                                (= (:conclusion ctx) "CANCELLED") :cancelled
+                                                (= (:conclusion ctx) "SKIPPED") :skipped
+                                                :else :error)
+                                       :url (:detailsUrl ctx)}
+                                      ;; Legacy status context
+                                      {:name (:context ctx)
+                                       :state (some-> (:state ctx) str/lower-case keyword)
+                                       :description (:description ctx)
+                                       :url (:targetUrl ctx)}))
+                                  contexts)}))))))
 
 ;; Constructor
 

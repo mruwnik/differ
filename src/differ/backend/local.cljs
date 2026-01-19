@@ -389,7 +389,11 @@
                          {:review-url pr-url
                           :review-session-id github-session-id
                           :state (pr/normalize-pr-state pr-state)
-                          :status (if (:created result) :created :existing)})))))))))
+                          :status (if (:created result) :created :existing)}))))))))
+
+  (get-ci-status [_]
+    ;; Local sessions don't have CI - return unknown
+    (js/Promise.resolve {:state :unknown :checks []})))
 
 ;; Constructor
 

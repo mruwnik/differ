@@ -138,7 +138,18 @@
         :status :created|:existing}
 
      Local: pushes branch, creates PR (or finds existing), returns GitHub session ID
-     GitHub: pushes branch (if repo-path in opts), returns existing PR info"))
+     GitHub: pushes branch (if repo-path in opts), returns existing PR info")
+
+  (get-ci-status [this]
+    "Get CI/status check results for the PR's head commit.
+     Returns promise of:
+       {:state :success|:failure|:pending|:error|:unknown
+        :checks [{:name string
+                  :state :success|:failure|:pending|:error
+                  :description string?
+                  :url string?}]}
+     Local: returns {:state :unknown :checks []} (no CI for local sessions)
+     GitHub: queries statusCheckRollup on head commit"))
 
 ;; Helper for line range extraction
 (defn extract-lines
