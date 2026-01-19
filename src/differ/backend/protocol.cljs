@@ -119,7 +119,9 @@
     "Submit/publish a review with pending comments.
      opts: {:body string - optional review summary}
      Local: no-op (comments are already visible)
-     GitHub: submits pending review comments as COMMENT (not approve/request-changes)
+     GitHub: submits pending review comments as COMMENT (not approve/request-changes).
+             If no pending review exists but body is provided, creates a top-level
+             issue comment as a fallback.
      Returns promise of {:submitted true} or {:submitted false :reason string}.")
 
   (request-review! [this opts]

@@ -561,22 +561,44 @@
           (.then (fn [data]
                    (let [reviews (get-in data [:repository :pullRequest :reviews :nodes])
                          my-review (first (filter :viewerDidAuthor reviews))]
-                     (if my-review
-                       ;; Submit the pending review
+                     (cond
+                       ;; Have a pending review - submit it
+                       my-review
                        (graphql-request token submit-review-mutation
                                         {:input (cond-> {:pullRequestReviewId (:id my-review)
                                                          :event gh-event}
                                                   formatted-body (assoc :body formatted-body))})
-                       ;; No pending review found
-                       {:submitted false :reason "No pending review found"}))))
+                       ;; No pending review but have body - create top-level comment
+                       formatted-body
+                       (-> (graphql-request token pr-query {:owner owner :repo repo :number pr-number})
+                           (.then (fn [pr-data]
+                                    (let [pr-node-id (get-in pr-data [:repository :pullRequest :id])]
+                                      (if pr-node-id
+                                        (graphql-request token add-issue-comment-mutation
+                                                         {:input {:subjectId pr-node-id
+                                                                  :body formatted-body}})
+                                        (throw (ex-info "PR not found or inaccessible"
+                                                        {:owner owner :repo repo :pr-number pr-number})))))))
+                       ;; No pending review and no body - nothing to submit
+                       :else
+                       {:submitted false :reason "No pending review and no body provided"}))))
           (.then (fn [result]
-                   (if (:submitted result)
-                     result
-                     (if-let [review (get-in result [:submitPullRequestReview :pullRequestReview])]
+                   (cond
+                     ;; Already a final result
+                     (contains? result :submitted) result
+                     ;; Submitted a pending review
+                     (get-in result [:submitPullRequestReview :pullRequestReview])
+                     (let [review (get-in result [:submitPullRequestReview :pullRequestReview])]
                        {:submitted true
                         :review-id (:id review)
-                        :state (:state review)}
-                       result)))))))
+                        :state (:state review)})
+                     ;; Created a top-level comment
+                     (get-in result [:addComment :commentEdge :node])
+                     {:submitted true
+                      :comment-id (get-in result [:addComment :commentEdge :node :id])}
+                     ;; Unknown result
+                     :else
+                     {:submitted false :reason "Unexpected response"}))))))
 
   (request-review! [this opts]
     (let [pr-url (str "https://github.com/" owner "/" repo "/pull/" pr-number)]

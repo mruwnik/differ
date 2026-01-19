@@ -143,7 +143,7 @@ To use it, add the following to the `"hooks"` section of the appropriate `settin
           {
             "type": "command",
             "command": "python3 shared/hooks/pr_review_loop.py",
-            "timeout": 3600
+            "timeout": 43200
           }
         ]
       }
