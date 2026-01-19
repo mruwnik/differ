@@ -11,11 +11,20 @@
             [differ.sse :as sse]
             [differ.util :as util]
             [differ.config :as config]
-            [differ.backend.protocol :as proto]))
+            [differ.backend.protocol :as proto]
+            ["path" :as path]))
 
 ;; ============================================================================
 ;; HTTP Response Helpers
 ;; ============================================================================
+
+(defn- handle-by-session-type
+  "Execute different logic based on session type.
+   handlers is a map with :local and :github keys, each a 0-arg fn."
+  [session-id {:keys [local github]}]
+  (if (= :local (sessions/session-type session-id))
+    (local)
+    (github)))
 
 (defn- json-response
   "Send JSON response. Keys stay as kebab-case for internal UI client."
@@ -40,7 +49,56 @@
       (js->clj :keywordize-keys true)
       util/keys->kebab))
 
+;; ============================================================================
+;; Path Validation
+;; ============================================================================
+
+(defn- safe-file-path?
+  "Check if file-path is safe (doesn't escape repo-path via path traversal).
+   Returns true if the resolved path is within repo-path."
+  [repo-path file-path]
+  (let [resolved (path/resolve repo-path file-path)
+        repo-normalized (str (path/resolve repo-path) "/")]
+    (str/starts-with? (str resolved "/") repo-normalized)))
+
+(defn- validate-file-path
+  "Validate file path is safe and return error response if not.
+   Returns true if safe (caller should proceed), false if error was sent."
+  [repo-path file-path res]
+  (if (safe-file-path? repo-path file-path)
+    true
+    (do
+      (error-response res 400 "Invalid file path: path traversal not allowed")
+      false)))
+
 ;; Session endpoints
+
+(defn- fetch-github-session-state
+  "Fetch review state for a GitHub session.
+   Returns promise of state map with :session-id, :project, :branch, :target-branch,
+   :repo-path, :state, :title, :files, :excluded-files, :comments, :unresolved-count."
+  [session-id session]
+  (-> (sessions/create-backend session)
+      (.then (fn [result]
+               (if (:error result)
+                 (throw (js/Error. (:error result)))
+                 (let [backend (:backend result)]
+                   (js/Promise.all
+                    #js [(proto/get-context backend)
+                         (proto/get-changed-files backend)
+                         (proto/get-comments backend)])))))
+      (.then (fn [[ctx files comments]]
+               {:session-id session-id
+                :project (:project session)
+                :branch (:head-branch ctx)
+                :target-branch (:base-branch ctx)
+                :repo-path (:repo-path session)
+                :state (:state ctx)
+                :title (:title ctx)
+                :files (mapv :path files)
+                :excluded-files (:manual-removals session)
+                :comments comments
+                :unresolved-count (count (remove :resolved comments))}))))
 
 (defn list-sessions-handler
   "GET /api/sessions"
@@ -54,9 +112,16 @@
   [^js req res]
   (let [session-id (.. req -params -id)]
     (if-let [session (db/get-session session-id)]
-      (if-let [state (sessions/get-review-state session-id (:repo-path session))]
-        (json-response res state)
-        (error-response res 500 "Could not get review state"))
+      (if (= :github (sessions/session-type session-id))
+        ;; For GitHub sessions, use extracted helper
+        (-> (fetch-github-session-state session-id session)
+            (.then (fn [state] (json-response res state)))
+            (.catch (fn [err]
+                      (error-response res 500 (or (.-message err) (str err))))))
+        ;; For local sessions, use existing get-review-state
+        (if-let [state (sessions/get-review-state session-id (:repo-path session))]
+          (json-response res state)
+          (error-response res 500 "Could not get review state")))
       (error-response res 404 "Session not found"))))
 
 (defn create-session-handler
@@ -91,46 +156,61 @@
   [^js req res]
   (let [session-id (.. req -params -id)]
     (if-let [session (db/get-session session-id)]
-      (let [repo-path (:repo-path session)
-            branches (git/list-branches repo-path)]
-        (json-response res {:branches branches}))
+      (-> (sessions/create-backend session)
+          (.then (fn [result]
+                   (if (:error result)
+                     (throw (js/Error. (:error result)))
+                     (proto/get-branches (:backend result)))))
+          (.then (fn [branches]
+                   (json-response res {:branches (mapv :name (or branches []))})))
+          (.catch (fn [err]
+                    (error-response res 500 (or (.-message err) (str err))))))
       (error-response res 404 "Session not found"))))
 
 (defn get-staged-files-handler
-  "GET /api/sessions/:id/staged"
+  "GET /api/sessions/:id/staged
+   Local-only: returns staged/unstaged files. Returns error for GitHub sessions."
   [^js req res]
   (let [session-id (.. req -params -id)]
     (if-let [session (db/get-session session-id)]
-      (let [repo-path (:repo-path session)
-            staged (git/get-staged-files repo-path)
-            unstaged (git/get-unstaged-files repo-path)]
-        (json-response res {:staged (vec staged)
-                            :unstaged (vec unstaged)}))
+      (if (not= :local (sessions/session-type session-id))
+        (error-response res 400 "Staging operations not available for GitHub PR sessions")
+        (let [repo-path (:repo-path session)
+              staged (git/get-staged-files repo-path)
+              unstaged (git/get-unstaged-files repo-path)]
+          (json-response res {:staged (vec staged)
+                              :unstaged (vec unstaged)})))
       (error-response res 404 "Session not found"))))
 
 (defn get-untracked-files-handler
-  "GET /api/sessions/:id/untracked"
+  "GET /api/sessions/:id/untracked
+   Local-only: returns untracked files. Returns error for GitHub sessions."
   [^js req res]
   (let [session-id (.. req -params -id)]
     (if-let [session (db/get-session session-id)]
-      (let [repo-path (:repo-path session)
-            untracked (git/get-untracked-files repo-path)]
-        (json-response res {:untracked (vec untracked)}))
+      (if (not= :local (sessions/session-type session-id))
+        (error-response res 400 "Untracked files not available for GitHub PR sessions")
+        (let [repo-path (:repo-path session)
+              untracked (git/get-untracked-files repo-path)]
+          (json-response res {:untracked (vec untracked)})))
       (error-response res 404 "Session not found"))))
 
 (defn stage-file-handler
-  "POST /api/sessions/:id/stage"
+  "POST /api/sessions/:id/stage
+   Local-only: stages a file. Returns error for GitHub sessions."
   [^js req res]
   (let [session-id (.. req -params -id)
         {:keys [path]} (get-body req)]
     (if-let [session (db/get-session session-id)]
-      (let [repo-path (:repo-path session)]
-        (git/stage-file! repo-path path)
-        (let [staged (git/get-staged-files repo-path)
-              unstaged (git/get-unstaged-files repo-path)]
-          (json-response res {:success true
-                              :staged (vec staged)
-                              :unstaged (vec unstaged)})))
+      (if (not= :local (sessions/session-type session-id))
+        (error-response res 400 "Staging operations not available for GitHub PR sessions")
+        (let [repo-path (:repo-path session)]
+          (git/stage-file! repo-path path)
+          (let [staged (git/get-staged-files repo-path)
+                unstaged (git/get-unstaged-files repo-path)]
+            (json-response res {:success true
+                                :staged (vec staged)
+                                :unstaged (vec unstaged)}))))
       (error-response res 404 "Session not found"))))
 
 (defn get-diff-handler
@@ -138,7 +218,31 @@
   [^js req res]
   (let [session-id (.. req -params -id)]
     (if-let [session (db/get-session session-id)]
-      (json-response res (diff/get-diff-data session))
+      (handle-by-session-type
+       session-id
+       {:local #(json-response res (diff/get-diff-data session))
+        :github #(-> (sessions/create-backend session)
+                     (.then (fn [result]
+                              (if (:error result)
+                                (throw (js/Error. (:error result)))
+                                (let [backend (:backend result)]
+                                  (js/Promise.all
+                                   #js [(proto/get-diff backend)
+                                        (proto/get-changed-files backend)])))))
+                     (.then (fn [[raw-diff changed-files]]
+                              (json-response res
+                                             {:diff raw-diff
+                                              :parsed (git/parse-diff-hunks raw-diff)
+                                              :files (mapv :path changed-files)
+                                              :files-with-size (mapv (fn [f]
+                                                                       {:path (:path f)
+                                                                        :additions (:additions f)
+                                                                        :deletions (:deletions f)})
+                                                                     changed-files)
+                                              :changed-files changed-files
+                                              :is-git-repo true})))
+                     (.catch (fn [err]
+                               (error-response res 500 (or (.-message err) (str err))))))})
       (error-response res 404 "Session not found"))))
 
 (defn get-file-diff-handler
@@ -147,9 +251,25 @@
   (let [session-id (.. req -params -id)
         file (js/decodeURIComponent (.. req -params -file))]
     (if-let [session (db/get-session session-id)]
-      (if-let [data (diff/get-file-diff-data session file)]
-        (json-response res data)
-        (error-response res 404 "Could not read file"))
+      (when (validate-file-path (:repo-path session) file res)
+        (handle-by-session-type
+         session-id
+         {:local #(if-let [data (diff/get-file-diff-data session file)]
+                    (json-response res data)
+                    (error-response res 404 "Could not read file"))
+          :github #(-> (sessions/create-backend session)
+                       (.then (fn [result]
+                                (if (:error result)
+                                  (throw (js/Error. (:error result)))
+                                  (proto/get-file-diff (:backend result) file))))
+                       (.then (fn [raw-diff]
+                                (json-response res
+                                               {:file file
+                                                :diff raw-diff
+                                                :parsed (git/parse-diff-hunks raw-diff)
+                                                :is-git-repo true})))
+                       (.catch (fn [err]
+                                 (error-response res 500 (or (.-message err) (str err))))))}))
       (error-response res 404 "Session not found"))))
 
 (defn get-file-content-handler
@@ -159,15 +279,23 @@
   (let [session-id (.. req -params -id)
         file (js/decodeURIComponent (.. req -params -file))]
     (if-let [session (db/get-session session-id)]
-      (let [repo-path (:repo-path session)
-            info (git/get-file-info repo-path file true)]
-        (if (:error info)
-          (error-response res 404 (:error info))
-          (let [parsed (git/file-to-diff-format file (:content info))]
-            (json-response res {:file file
-                                :content (:content info)
-                                :size (:size info)
-                                :parsed parsed}))))
+      (when (validate-file-path (:repo-path session) file res)
+        (-> (sessions/create-backend session)
+            (.then (fn [result]
+                     (if (:error result)
+                       (throw (js/Error. (:error result)))
+                       ;; nil ref means working tree for local, head for GitHub
+                       (proto/get-file-content (:backend result) nil file))))
+            (.then (fn [content]
+                     (if content
+                       (let [parsed (git/file-to-diff-format file content)]
+                         (json-response res {:file file
+                                             :content content
+                                             :size (count content)
+                                             :parsed parsed}))
+                       (error-response res 404 "Could not read file"))))
+            (.catch (fn [err]
+                      (error-response res 500 (or (.-message err) (str err)))))))
       (error-response res 404 "Session not found"))))
 
 (defn get-context-lines-handler
@@ -192,14 +320,23 @@
 
       :else
       (if-let [session (db/get-session session-id)]
-        (let [repo-path (:repo-path session)
-              lines (git/get-lines-range repo-path file from-line to-line)]
-          (if lines
-            (json-response res {:file file
-                                :from from-line
-                                :to to-line
-                                :lines lines})
-            (error-response res 404 "Could not read file")))
+        (when (validate-file-path (:repo-path session) file res)
+          (-> (sessions/create-backend session)
+              (.then (fn [result]
+                       (if (:error result)
+                         (throw (js/Error. (:error result)))
+                         ;; Use protocol with line range options
+                         (proto/get-file-content (:backend result) nil file
+                                                 {:from from-line :to to-line}))))
+              (.then (fn [lines]
+                       (if lines
+                         (json-response res {:file file
+                                             :from from-line
+                                             :to to-line
+                                             :lines lines})
+                         (error-response res 404 "Could not read file"))))
+              (.catch (fn [err]
+                        (error-response res 500 (or (.-message err) (str err)))))))
         (error-response res 404 "Session not found")))))
 
 ;; File management endpoints
@@ -254,13 +391,8 @@
   (let [session-id (.. req -params -id)
         body (get-body req)]
     (if-let [session (db/get-session session-id)]
-      (-> (sessions/create-backend session)
-          (.then (fn [result]
-                   (if (:error result)
-                     (throw (js/Error. (:error result)))
-                     (proto/request-review! (:backend result) body))))
-          (.then (fn [review-result]
-                   (json-response res review-result)))
+      (-> (sessions/request-review! session body)
+          (.then (fn [result] (json-response res result)))
           (.catch (fn [err]
                     (error-response res 500 (or (.-message err) (str err))))))
       (error-response res 404 "Session not found"))))
@@ -335,10 +467,12 @@
         {:keys [session-id author]} (get-body req)]
     (if-not session-id
       ;; Fallback for backwards compatibility with local sessions
-      (let [comment (comments/resolve-comment! comment-id author)]
-        (when-let [sid (:session-id comment)]
-          (sse/emit-comment-resolved! sid comment-id))
-        (json-response res {:success true}))
+      (if-let [comment (comments/resolve-comment! comment-id author)]
+        (do
+          (when-let [sid (:session-id comment)]
+            (sse/emit-comment-resolved! sid comment-id))
+          (json-response res {:success true}))
+        (error-response res 404 "Comment not found"))
       ;; Use backend protocol when session-id is provided
       (if-let [session (db/get-session session-id)]
         (-> (sessions/create-backend session)
@@ -361,10 +495,12 @@
         {:keys [session-id author]} (get-body req)]
     (if-not session-id
       ;; Fallback for backwards compatibility with local sessions
-      (let [comment (comments/unresolve-comment! comment-id author)]
-        (when-let [sid (:session-id comment)]
-          (sse/emit-comment-unresolved! sid comment-id))
-        (json-response res {:success true}))
+      (if-let [comment (comments/unresolve-comment! comment-id author)]
+        (do
+          (when-let [sid (:session-id comment)]
+            (sse/emit-comment-unresolved! sid comment-id))
+          (json-response res {:success true}))
+        (error-response res 404 "Comment not found"))
       ;; Use backend protocol when session-id is provided
       (if-let [session (db/get-session session-id)]
         (-> (sessions/create-backend session)
@@ -380,16 +516,21 @@
         (error-response res 404 "Session not found")))))
 
 (defn delete-comment-handler
-  "DELETE /api/comments/:id"
+  "DELETE /api/comments/:id
+   Local-only: Deleting GitHub comments requires editing/deleting via GitHub's UI."
   [^js req res]
   (let [comment-id (.. req -params -id)
         comment (db/get-comment comment-id)]
     (if comment
-      (do
-        (db/delete-comment! comment-id)
-        (when-let [session-id (:session-id comment)]
-          (sse/emit-comment-deleted! session-id comment-id))
-        (json-response res {:success true}))
+      ;; Use the comment's actual session-id to determine session type (security)
+      (let [comment-session-id (:session-id comment)]
+        (if (= :github (sessions/session-type comment-session-id))
+          (error-response res 400 "Deleting comments on GitHub PRs is not supported via API")
+          (do
+            (db/delete-comment! comment-id)
+            (when comment-session-id
+              (sse/emit-comment-deleted! comment-session-id comment-id))
+            (json-response res {:success true}))))
       (error-response res 404 "Comment not found"))))
 
 ;; OAuth endpoints
@@ -408,17 +549,19 @@
   "POST /oauth/register - RFC 7591 Dynamic Client Registration"
   [^js req res]
   (let [body (get-body req)
-        client (oauth/register-client body)]
-    ;; OAuth spec requires snake_case - use JS object directly
-    (-> res
-        (.status 200)
-        (.json #js {:client_id (:client-id client)
-                    :client_name (:client-name client)
-                    :redirect_uris (clj->js (:redirect-uris client))
-                    :scope (:scope client)
-                    :token_endpoint_auth_method "none"
-                    :grant_types #js ["authorization_code" "refresh_token"]
-                    :response_types #js ["code"]}))))
+        result (oauth/register-client body)]
+    (if-let [error (:error result)]
+      (error-response res 400 error)
+      ;; OAuth spec requires snake_case - use JS object directly
+      (-> res
+          (.status 200)
+          (.json #js {:client_id (:client-id result)
+                      :client_name (:client-name result)
+                      :redirect_uris (clj->js (:redirect-uris result))
+                      :scope (:scope result)
+                      :token_endpoint_auth_method "none"
+                      :grant_types #js ["authorization_code" "refresh_token"]
+                      :response_types #js ["code"]})))))
 
 (defn- get-query
   "Get query params with snake->kebab key conversion."

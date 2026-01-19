@@ -76,8 +76,8 @@
       ;; Diff tools
       (is (contains? tool-names "get_session_diff"))
       (is (contains? tool-names "get_file_versions"))
-      ;; PR creation
-      (is (contains? tool-names "create_pull_request")))))
+      ;; PR creation/review request
+      (is (contains? tool-names "request_review")))))
 
 (deftest tool-schema-test
   (testing "get_or_create_session has repo_path and github_pr options"
@@ -352,42 +352,109 @@
     (is (not (#'mcp/method-requires-auth? "tools/list")))))
 
 ;; ============================================================================
-;; create_pull_request Tool Tests
+;; request_review Tool Tests
 ;; ============================================================================
 
-(deftest create-pull-request-tool-schema-test
-  (testing "create_pull_request has correct schema"
-    (let [tool (first (filter #(= "create_pull_request" (:name %)) mcp/tools))
+(deftest request-review-tool-schema-test
+  (testing "request_review has correct schema"
+    (let [tool (first (filter #(= "request_review" (:name %)) mcp/tools))
           schema (:inputSchema tool)
           props (:properties schema)
           required (set (:required schema))]
       ;; Required field
-      (is (contains? required "repo_path"))
+      (is (contains? required "session_id"))
       ;; Optional fields
+      (is (contains? props :repo_path))
       (is (contains? props :title))
       (is (contains? props :body))
-      (is (contains? props :base_branch))
       (is (contains? props :draft))
       ;; Check types
+      (is (= "string" (get-in props [:session_id :type])))
       (is (= "string" (get-in props [:repo_path :type])))
       (is (= "string" (get-in props [:title :type])))
       (is (= "string" (get-in props [:body :type])))
-      (is (= "string" (get-in props [:base_branch :type])))
       (is (= "boolean" (get-in props [:draft :type]))))))
 
-(deftest create-pull-request-validation-test
-  (testing "create_pull_request throws when repo-path is missing"
-    (is (thrown-with-msg? js/Error #"repo_path is required"
-                          (mcp/handle-tool "create_pull_request" {}))))
+(deftest request-review-validation-test
+  (testing "request_review throws when session not found"
+    (is (thrown-with-msg? js/Error #"Session not found"
+                          (mcp/handle-tool "request_review" {}))))
 
-  (testing "create_pull_request throws when repo-path is nil"
-    (is (thrown-with-msg? js/Error #"repo_path is required"
-                          (mcp/handle-tool "create_pull_request" {:repo-path nil}))))
+  (testing "request_review throws with nil session_id"
+    (is (thrown-with-msg? js/Error #"Session not found"
+                          (mcp/handle-tool "request_review" {:session-id nil}))))
 
-  (testing "create_pull_request throws when repo-path is empty"
-    (is (thrown-with-msg? js/Error #"repo_path is required"
-                          (mcp/handle-tool "create_pull_request" {:repo-path ""}))))
+  (testing "request_review throws with empty session_id"
+    (is (thrown-with-msg? js/Error #"Session not found"
+                          (mcp/handle-tool "request_review" {:session-id ""}))))
 
-  (testing "create_pull_request throws when repo-path is not a string"
-    (is (thrown-with-msg? js/Error #"repo_path is required"
-                          (mcp/handle-tool "create_pull_request" {:repo-path 123})))))
+  (testing "request_review throws with nonexistent session"
+    (is (thrown-with-msg? js/Error #"Session not found"
+                          (mcp/handle-tool "request_review" {:session-id "nonexistent-session"})))))
+
+;; ============================================================================
+;; Input Validation Tests
+;; ============================================================================
+
+(deftest tools-by-name-test
+  (testing "tools-by-name lookup map is populated"
+    (is (map? mcp/tools-by-name))
+    (is (= (count mcp/tools) (count mcp/tools-by-name)))
+    (is (contains? mcp/tools-by-name "register_files"))
+    (is (contains? mcp/tools-by-name "add_comment"))))
+
+(deftest validate-tool-args-missing-required-test
+  (testing "missing required field throws error"
+    (is (thrown-with-msg? js/Error #"Missing required field: session_id"
+                          (#'mcp/validate-tool-args "register_files" {:paths ["a.txt"] :agent-id "agent1"}))))
+
+  (testing "missing multiple required fields reports first missing"
+    (is (thrown-with-msg? js/Error #"Missing required field"
+                          (#'mcp/validate-tool-args "register_files" {}))))
+
+  (testing "all required fields present passes validation"
+    (is (= {:session-id "s1" :paths ["a.txt"] :agent-id "agent1"}
+           (#'mcp/validate-tool-args "register_files" {:session-id "s1" :paths ["a.txt"] :agent-id "agent1"})))))
+
+(deftest validate-tool-args-type-checking-test
+  (testing "wrong type for string field throws error"
+    (is (thrown-with-msg? js/Error #"expected string but got"
+                          (#'mcp/validate-tool-args "get_review_state" {:session-id 123}))))
+
+  (testing "wrong type for array field throws error"
+    (is (thrown-with-msg? js/Error #"expected array but got"
+                          (#'mcp/validate-tool-args "register_files" {:session-id "s1" :paths "not-an-array" :agent-id "agent1"}))))
+
+  (testing "wrong type for integer field throws error"
+    (is (thrown-with-msg? js/Error #"expected integer but got"
+                          (#'mcp/validate-tool-args "get_session_diff" {:session-id "s1" :from "not-a-number"}))))
+
+  (testing "wrong type for boolean field throws error"
+    (is (thrown-with-msg? js/Error #"expected boolean but got"
+                          (#'mcp/validate-tool-args "request_review" {:session-id "s1" :draft "true"})))))
+
+(deftest validate-tool-args-optional-fields-test
+  (testing "optional fields can be omitted"
+    (is (= {:session-id "s1"}
+           (#'mcp/validate-tool-args "get_session_diff" {:session-id "s1"}))))
+
+  (testing "optional fields with correct types pass validation"
+    (is (= {:session-id "s1" :file "test.txt" :from 1 :to 10}
+           (#'mcp/validate-tool-args "get_session_diff" {:session-id "s1" :file "test.txt" :from 1 :to 10})))))
+
+(deftest validate-tool-args-unknown-tool-test
+  (testing "unknown tool passes through (handled by dispatch)"
+    (is (= {:foo "bar"}
+           (#'mcp/validate-tool-args "nonexistent_tool" {:foo "bar"})))))
+
+(deftest get-json-type-test
+  (testing "correctly identifies JSON types"
+    (is (nil? (#'mcp/get-json-type nil)))
+    (is (= "string" (#'mcp/get-json-type "hello")))
+    (is (= "boolean" (#'mcp/get-json-type true)))
+    (is (= "boolean" (#'mcp/get-json-type false)))
+    (is (= "integer" (#'mcp/get-json-type 42)))
+    (is (= "number" (#'mcp/get-json-type 3.14)))
+    (is (= "array" (#'mcp/get-json-type [1 2 3])))
+    (is (= "array" (#'mcp/get-json-type '(1 2 3))))
+    (is (= "object" (#'mcp/get-json-type {:a 1})))))

@@ -85,17 +85,27 @@
   [github-user-id]
   (db/get-github-token github-user-id))
 
+(defn- token-valid?
+  "Check if a token is not expired.
+   Returns true if token has no expiry (PATs) or expiry is in the future."
+  [token]
+  (or (nil? (:expires-at token))
+      (> (js/Date.parse (:expires-at token)) (js/Date.now))))
+
 (defn get-any-token
   "Get any stored GitHub token (for single-user scenarios).
-   Returns token record or nil."
+   Returns token record or nil. Filters out expired tokens."
   []
-  (db/get-any-github-token))
+  (when-let [token (db/get-any-github-token)]
+    (when (token-valid? token)
+      token)))
 
 (defn get-all-tokens
   "Get all GitHub tokens (OAuth + PATs) ordered for fallback.
-   OAuth tokens come first, then PATs by most recently updated."
+   OAuth tokens come first, then PATs by most recently updated.
+   Filters out expired tokens."
   []
-  (db/get-all-github-tokens))
+  (filter token-valid? (db/get-all-github-tokens)))
 
 (defn list-tokens
   "List all stored GitHub tokens.

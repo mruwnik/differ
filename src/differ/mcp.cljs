@@ -190,6 +190,92 @@
                                        :description "Create as draft PR (default: false, local sessions only)"}}
                   :required ["session_id"]}}])
 
+;; Error codes
+(def parse-error -32700)
+(def invalid-request -32600)
+(def method-not-found -32601)
+(def invalid-params -32602)
+(def internal-error -32603)
+
+;; Tool schema lookup
+(def tools-by-name
+  "Map of tool name -> tool definition for schema lookup."
+  (into {} (map (fn [t] [(:name t) t]) tools)))
+
+;; Input validation
+
+(defn- get-json-type
+  "Return JSON schema type for a value."
+  [v]
+  (cond
+    (nil? v) nil
+    (string? v) "string"
+    (boolean? v) "boolean"
+    (int? v) "integer"
+    (number? v) "number"
+    (vector? v) "array"
+    (sequential? v) "array"
+    (map? v) "object"
+    :else nil))
+
+(defn- validate-type
+  "Validate that a value matches the expected JSON schema type.
+   Returns nil if valid, error message if invalid."
+  [field-name value expected-type]
+  (when-not (nil? value)
+    (let [actual-type (get-json-type value)]
+      ;; Allow integer where number is expected
+      (when-not (or (= actual-type expected-type)
+                    (and (= expected-type "number") (= actual-type "integer")))
+        (str "Field '" field-name "' expected " expected-type " but got " (or actual-type (type value)))))))
+
+(defn- schema-key->arg-key
+  "Convert a schema field name (string or keyword with underscores) to an arg key (kebab-case keyword).
+   Schema: :session_id or \"session_id\" -> Args: :session-id"
+  [field]
+  (let [field-str (if (keyword? field) (name field) field)]
+    (keyword (util/snake->kebab field-str))))
+
+(defn- validate-required-fields
+  "Validate that all required fields are present and have correct types.
+   Throws ex-info with :code :invalid-params on validation failure."
+  [tool-name args schema]
+  (let [required (get schema :required [])
+        properties (get schema :properties {})]
+    ;; Check required fields are present (required is a vector of strings)
+    (doseq [field required]
+      (let [field-kw (schema-key->arg-key field)
+            value (get args field-kw)]
+        (when (nil? value)
+          (throw (ex-info (str "Missing required field: " field)
+                          {:code invalid-params
+                           :tool tool-name
+                           :field field})))))
+    ;; Check types for all provided fields (properties has keyword keys)
+    (doseq [[field-name field-schema] properties]
+      (let [field-kw (schema-key->arg-key field-name)
+            value (get args field-kw)
+            expected-type (get field-schema :type)
+            ;; Use the original keyword name for error messages
+            display-name (if (keyword? field-name) (name field-name) field-name)]
+        (when-let [type-error (validate-type display-name value expected-type)]
+          (throw (ex-info type-error
+                          {:code invalid-params
+                           :tool tool-name
+                           :field display-name
+                           :expected expected-type
+                           :actual (get-json-type value)})))))))
+
+(defn- validate-tool-args
+  "Validate arguments for a tool call. Returns args if valid, throws on error."
+  [tool-name args]
+  (if-let [tool (get tools-by-name tool-name)]
+    (let [schema (:inputSchema tool)]
+      (validate-required-fields tool-name args schema)
+      args)
+    ;; Unknown tool - let handle-tool :default handle it
+    args))
+
 ;; JSON-RPC helpers
 
 (defn- json-rpc-response [id result]
@@ -202,13 +288,6 @@
    :id id
    :error (cond-> {:code code :message message}
             data (assoc :data data))})
-
-;; Error codes
-(def parse-error -32700)
-(def invalid-request -32600)
-(def method-not-found -32601)
-(def invalid-params -32602)
-(def internal-error -32603)
 
 ;; Helper to get backend for a session
 
@@ -242,6 +321,13 @@
 
                  :else
                  (f (:backend result)))))))
+
+(defn- ensure-promise
+  "Wrap value in a Promise if it isn't already one."
+  [x]
+  (if (instance? js/Promise x)
+    x
+    (js/Promise.resolve x)))
 
 ;; Tool handlers
 
@@ -326,70 +412,58 @@
 (defmethod handle-tool "get_review_state" [_ {:keys [session-id]}]
   (with-backend session-id
     (fn [backend]
-      (let [session (db/get-session session-id)
-            files-promise (proto/get-changed-files backend)
-            comments-promise (proto/get-comments backend)]
-        (-> (js/Promise.all #js [files-promise comments-promise])
-            (.then (fn [[files comments]]
-                     {:session-id session-id
-                      :project (:project session)
-                      :branch (:branch session)
-                      :target-branch (:target-branch session)
-                      :repo-path (:repo-path session)
-                      :files (mapv :path files)
-                      :comments comments})))))))
+      (let [session (db/get-session session-id)]
+        ;; Fetch context, files, and comments via protocol
+        (-> (js/Promise.all #js [(proto/get-context backend)
+                                 (proto/get-changed-files backend)
+                                 (proto/get-comments backend)])
+            (.then (fn [[ctx files comments]]
+                     (cond-> {:session-id session-id
+                              :project (:project session)
+                              :branch (or (:head-branch ctx) (:branch session))
+                              :target-branch (or (:base-branch ctx) (:target-branch session))
+                              :repo-path (:repo-path session)
+                              :files (mapv :path files)
+                              :comments comments
+                              :unresolved-count (count (remove :resolved comments))}
+                       ;; Include state/title for GitHub sessions
+                       (:state ctx) (assoc :state (:state ctx))
+                       (:title ctx) (assoc :title (:title ctx))))))))))
 
 (defmethod handle-tool "get_pending_feedback" [_ {:keys [session-id since]}]
   (with-backend session-id
     (fn [backend]
-      (let [result (proto/get-pending-comments backend {:since since})]
-        (if (instance? js/Promise result)
-          (-> result (.then (fn [comments] {:comments comments})))
-          {:comments result})))))
+      (-> (ensure-promise (proto/get-pending-comments backend {:since since}))
+          (.then (fn [comments] {:comments comments}))))))
 
 (defmethod handle-tool "add_comment" [_ {:keys [session-id] :as params}]
   (with-backend session-id
     (fn [backend]
-      (let [result (proto/add-comment! backend params)]
-        (if (instance? js/Promise result)
-          (-> result (.then (fn [comment]
-                              (sse/emit-comment-added! session-id comment)
-                              {:comment-id (:id comment)})))
-          (do
-            (sse/emit-comment-added! session-id result)
-            {:comment-id (:id result)}))))))
+      (-> (ensure-promise (proto/add-comment! backend params))
+          (.then (fn [comment]
+                   (sse/emit-comment-added! session-id comment)
+                   {:comment-id (:id comment)}))))))
 
 (defmethod handle-tool "resolve_comment" [_ {:keys [session-id comment-id author]}]
   (with-backend session-id
     (fn [backend]
-      (let [result (proto/resolve-comment! backend comment-id author)]
-        (if (instance? js/Promise result)
-          (-> result (.then (fn [_]
-                              (sse/emit-comment-resolved! session-id comment-id)
-                              {:success true})))
-          (do
-            (sse/emit-comment-resolved! session-id comment-id)
-            {:success true}))))))
+      (-> (ensure-promise (proto/resolve-comment! backend comment-id author))
+          (.then (fn [_]
+                   (sse/emit-comment-resolved! session-id comment-id)
+                   {:success true}))))))
 
 (defmethod handle-tool "unresolve_comment" [_ {:keys [session-id comment-id author]}]
   (with-backend session-id
     (fn [backend]
-      (let [result (proto/unresolve-comment! backend comment-id author)]
-        (if (instance? js/Promise result)
-          (-> result (.then (fn [_]
-                              (sse/emit-comment-resolved! session-id comment-id)
-                              {:success true})))
-          (do
-            (sse/emit-comment-resolved! session-id comment-id)
-            {:success true}))))))
+      (-> (ensure-promise (proto/unresolve-comment! backend comment-id author))
+          (.then (fn [_]
+                   (sse/emit-comment-unresolved! session-id comment-id)
+                   {:success true}))))))
 
 (defmethod handle-tool "submit_review" [_ {:keys [session-id body author model]}]
   (with-backend session-id
     (fn [backend]
-      (let [result (proto/submit-review! backend {:body body :author author :model model})]
-        (if (instance? js/Promise result)
-          result
-          (js/Promise.resolve result))))))
+      (ensure-promise (proto/submit-review! backend {:body body :author author :model model})))))
 
 (defmethod handle-tool "get_session_diff" [_ {:keys [session-id file from to]}]
   (with-backend session-id
@@ -398,22 +472,14 @@
             diff-result (if file
                           (proto/get-file-diff backend file opts)
                           (proto/get-diff backend opts))]
-        ;; Handle promise or value
-        (if (instance? js/Promise diff-result)
-          (-> diff-result
-              (.then (fn [raw-diff]
-                       (let [parsed (git/parse-diff-hunks raw-diff)]
-                         {:session-id session-id
-                          :files (if file
-                                   (when parsed [file])
-                                   (mapv :file-b parsed))
-                          :diff parsed}))))
-          (let [parsed (git/parse-diff-hunks diff-result)]
-            {:session-id session-id
-             :files (if file
-                      (when parsed [file])
-                      (mapv :file-b parsed))
-             :diff parsed}))))))
+        (-> (ensure-promise diff-result)
+            (.then (fn [raw-diff]
+                     (let [parsed (git/parse-diff-hunks raw-diff)]
+                       {:session-id session-id
+                        :files (if file
+                                 (when parsed [file])
+                                 (mapv :file-b parsed))
+                        :diff parsed}))))))))
 
 (defmethod handle-tool "get_file_versions" [_ {:keys [session-id file from to]}]
   (with-backend session-id
@@ -421,68 +487,49 @@
       (let [opts (when (or from to) {:from from :to to})
             original (proto/get-file-content backend "base" file opts)
             modified (proto/get-file-content backend nil file opts)]
-        ;; Handle promise or value
-        (if (or (instance? js/Promise original) (instance? js/Promise modified))
-          (-> (js/Promise.all #js [original modified])
-              (.then (fn [[orig mod]]
-                       {:session-id session-id
-                        :file file
-                        :original orig
-                        :modified mod
-                        :is-new (nil? orig)
-                        :is-deleted (nil? mod)})))
-          {:session-id session-id
-           :file file
-           :original original
-           :modified modified
-           :is-new (nil? original)
-           :is-deleted (nil? modified)})))))
+        (-> (js/Promise.all #js [(ensure-promise original) (ensure-promise modified)])
+            (.then (fn [[orig mod]]
+                     {:session-id session-id
+                      :file file
+                      :original orig
+                      :modified mod
+                      :is-new (nil? orig)
+                      :is-deleted (nil? mod)})))))))
 
 (defmethod handle-tool "get_context" [_ {:keys [session-id]}]
   (with-backend session-id
     (fn [backend]
-      (let [result (proto/get-context backend)]
-        (if (instance? js/Promise result)
-          result
-          result)))))
+      (proto/get-context backend))))
 
 (defmethod handle-tool "list_directory" [_ {:keys [session-id ref path]}]
   (with-backend session-id
     (fn [backend]
-      (let [result (proto/list-directory backend ref (or path ""))]
-        (if (instance? js/Promise result)
-          (-> result (.then (fn [entries] {:entries entries})))
-          {:entries result})))))
+      (-> (ensure-promise (proto/list-directory backend ref (or path "")))
+          (.then (fn [entries] {:entries entries}))))))
 
 (defmethod handle-tool "get_file_content" [_ {:keys [session-id ref file from to]}]
   (with-backend session-id
     (fn [backend]
-      (let [opts (when (or from to) {:from from :to to})
-            result (proto/get-file-content backend ref file opts)]
-        (if (instance? js/Promise result)
-          (-> result (.then (fn [content]
-                              {:session-id session-id
-                               :file file
-                               :content content})))
-          {:session-id session-id
-           :file file
-           :content result})))))
+      (let [opts (when (or from to) {:from from :to to})]
+        (-> (ensure-promise (proto/get-file-content backend ref file opts))
+            (.then (fn [content]
+                     {:session-id session-id
+                      :file file
+                      :content content})))))))
 
 (defmethod handle-tool "get_history" [_ {:keys [session-id path limit]}]
   (with-backend session-id
     (fn [backend]
       (let [opts (cond-> {}
                    path (assoc :path path)
-                   limit (assoc :limit limit))
-            result (proto/get-history backend opts)]
-        (if (instance? js/Promise result)
-          (-> result (.then (fn [entries] {:entries entries})))
-          {:entries result})))))
+                   limit (assoc :limit limit))]
+        (-> (ensure-promise (proto/get-history backend opts))
+            (.then (fn [entries] {:entries entries})))))))
 
 (defmethod handle-tool "request_review" [_ {:keys [session-id repo-path title body draft]}]
-  (with-backend session-id
-    (fn [backend]
-      (proto/request-review! backend {:repo-path repo-path :title title :body body :draft draft}))))
+  (if-let [session (db/get-session session-id)]
+    (sessions/request-review! session {:repo-path repo-path :title title :body body :draft draft})
+    (throw (ex-info "Session not found" {:code :invalid-params :session-id session-id}))))
 
 (defmethod handle-tool :default [tool-name _]
   (throw (ex-info "Unknown tool" {:tool tool-name})))
@@ -509,18 +556,13 @@
               :text (str "Error: " (or (.-message e) (ex-message e) (str e)))}]
    :isError true})
 
-(defn- ensure-promise
-  "Wrap value in a Promise if it isn't already one."
-  [x]
-  (if (instance? js/Promise x)
-    x
-    (js/Promise.resolve x)))
-
 (defmethod handle-method "tools/call" [_ params]
   (let [tool-name (:name params)
         ;; Normalize incoming args: snake_case -> kebab-case
         arguments (util/keys->kebab (or (:arguments params) {}))]
     (try
+      ;; Validate required fields and types before dispatch
+      (validate-tool-args tool-name arguments)
       (let [result (handle-tool tool-name arguments)]
         ;; Normalize to Promise for consistent handling
         (-> (ensure-promise result)

@@ -74,19 +74,60 @@
 
 ;; Client registration
 
+(defn- in-172-16-range?
+  "Check if hostname is in 172.16.0.0/12 range (172.16.x.x - 172.31.x.x)."
+  [hostname]
+  (when-let [[_ second-octet] (re-matches #"172\.(\d+)\.\d+\.\d+" hostname)]
+    (let [octet (js/parseInt second-octet 10)]
+      (and (>= octet 16) (<= octet 31)))))
+
+(defn- localhost-uri?
+  "Check if a URI points to localhost or local network addresses.
+   This tool is for local development, so we restrict redirect URIs accordingly.
+   Covers: localhost, 127.0.0.1, ::1, 10.x.x.x, 172.16-31.x.x, 192.168.x.x"
+  [uri]
+  (try
+    (let [parsed (js/URL. uri)
+          hostname (.-hostname parsed)]
+      (or (= hostname "localhost")
+          (= hostname "127.0.0.1")
+          (= hostname "::1")
+          (= hostname "[::1]")
+          (str/starts-with? hostname "192.168.")
+          (str/starts-with? hostname "10.")
+          (in-172-16-range? hostname)))
+    (catch :default _
+      false)))
+
+(defn- validate-redirect-uris
+  "Validate that all redirect URIs are localhost/local network only.
+   Returns {:valid true} or {:valid false :error \"...\"}."
+  [redirect-uris]
+  (let [invalid-uris (remove localhost-uri? redirect-uris)]
+    (if (seq invalid-uris)
+      {:valid false
+       :error (str "Redirect URIs must be localhost or local network addresses. "
+                   "Invalid URIs: " (str/join ", " invalid-uris))}
+      {:valid true})))
+
 (defn register-client
-  "Register or update an OAuth client. Generates client-id if not provided."
+  "Register or update an OAuth client. Generates client-id if not provided.
+   Redirect URIs must be localhost or local network addresses."
   [{:keys [client-id client-secret client-name redirect-uris scope client-uri logo-uri]}]
-  (let [generated-id (or client-id (util/gen-token "client_"))
-        final-scope (or scope "read write")]
-    (db/create-oauth-client!
-     {:client-id generated-id
-      :client-secret client-secret
-      :client-name (or client-name "MCP Client")
-      :redirect-uris (or redirect-uris [])
-      :scope final-scope
-      :client-uri client-uri
-      :logo-uri logo-uri})))
+  (let [uris (or redirect-uris [])
+        validation (validate-redirect-uris uris)]
+    (if-not (:valid validation)
+      {:error (:error validation)}
+      (let [generated-id (or client-id (util/gen-token "client_"))
+            final-scope (or scope "read write")]
+        (db/create-oauth-client!
+         {:client-id generated-id
+          :client-secret client-secret
+          :client-name (or client-name "MCP Client")
+          :redirect-uris uris
+          :scope final-scope
+          :client-uri client-uri
+          :logo-uri logo-uri})))))
 
 (defn get-client
   "Get OAuth client information."
@@ -154,11 +195,27 @@
                                 "code=" code
                                 "&state=" gen-state)}))))))
 
+;; PKCE verification
+
+(defn- verify-pkce
+  "Verify PKCE code_verifier against stored code_challenge.
+   Returns true if verification passes, false otherwise.
+   If no challenge was stored, verification passes (PKCE was optional)."
+  [code-verifier stored-challenge]
+  (cond
+    ;; No challenge stored - PKCE wasn't used during authorization
+    (nil? stored-challenge) true
+    ;; Challenge exists but no verifier provided - reject
+    (nil? code-verifier) false
+    ;; Verify the challenge matches
+    :else (let [computed-challenge (util/sha256-base64url code-verifier)]
+            (= computed-challenge stored-challenge))))
+
 ;; Token exchange
 
 (defn exchange-authorization-code
   "Exchange authorization code for tokens."
-  [{:keys [code client-id]}]
+  [{:keys [code client-id code-verifier]}]
   (let [oauth-state (db/get-oauth-state-by-code code)]
     (cond
       (not oauth-state)
@@ -172,6 +229,9 @@
 
       (not (:user-id oauth-state))
       {:error "Authorization not completed"}
+
+      (not (verify-pkce code-verifier (:code-challenge oauth-state)))
+      {:error "Invalid code_verifier"}
 
       :else
       (create-tokens

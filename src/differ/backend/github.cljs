@@ -3,6 +3,7 @@
    Uses GitHub's GraphQL API for all operations."
   (:require [differ.backend.protocol :as proto]
             [differ.github-api :as gh-api]
+            [differ.pull-request :as pr]
             [differ.util :as util]
             [clojure.string :as str]
             ["child_process" :as cp]))
@@ -58,6 +59,11 @@
     "head" (:headRefOid pr)
     (nil "") (:headRefOid pr)
     ref))
+
+(defn- pr-closed?
+  "Check if PR context indicates a terminal state (closed/merged)."
+  [ctx]
+  (pr/pr-terminal-state? (:state ctx)))
 
 ;; Use shared paginate-graphql from github-api
 (def ^:private paginate-graphql gh-api/paginate-graphql)
@@ -259,6 +265,30 @@
       }
     }
   }")
+
+(defn format-new-pr-result
+  "Format result when a new PR was created from request-review!."
+  [{:keys [pr-url pr-number pr-state]}]
+  (let [parsed (re-find #"github\.com/([^/]+)/([^/]+)/pull" pr-url)]
+    (if-not parsed
+      (throw (ex-info (str "Invalid PR URL format: " pr-url)
+                      {:code :invalid-pr-url :pr-url pr-url}))
+      (let [[_ owner repo] parsed]
+        {:review-url pr-url
+         ;; NOTE: Duplicates sessions/github-session-id logic.
+         ;; Cannot import sessions.cljs here - it would create a circular
+         ;; dependency (sessions.cljs -> github.cljs -> sessions.cljs).
+         :review-session-id (str "github:" owner "/" repo ":" pr-number)
+         :state (pr/normalize-pr-state pr-state)
+         :status :created}))))
+
+(defn format-existing-pr-result
+  "Format result when returning an existing PR from request-review!."
+  [session-id pr-url state]
+  {:review-url pr-url
+   :review-session-id session-id
+   :state (pr/normalize-pr-state state)
+   :status :existing})
 
 ;; Helper to get diff via REST API (GraphQL doesn't support diff format)
 (defn- get-pr-diff
@@ -549,23 +579,42 @@
                        result)))))))
 
   (request-review! [this opts]
-    (let [pr-url (str "https://github.com/" owner "/" repo "/pull/" pr-number)
-          do-return (fn []
-                      {:review-url pr-url
-                       :review-session-id (proto/session-id this)
-                       :status :existing})]
-      ;; If repo-path provided, push first
-      (if-let [repo-path (:repo-path opts)]
-        (-> (proto/get-context this)
-            (.then (fn [ctx]
-                     (push-branch-async repo-path (:head-branch ctx))))
-            (.then (fn [push-result]
-                     (when-not (:success push-result)
-                       (throw (ex-info (str "Push failed: " (:error push-result))
-                                       {:code :push-failed})))
-                     (do-return))))
-        ;; No repo-path, just return PR info
-        (js/Promise.resolve (do-return))))))
+    (let [pr-url (str "https://github.com/" owner "/" repo "/pull/" pr-number)]
+      ;; Always fetch context to get PR state
+      (-> (proto/get-context this)
+          (.then (fn [ctx]
+                   (cond
+                     ;; PR is closed/merged and we have a repo-path - create new PR
+                     (and (pr-closed? ctx) (:repo-path opts))
+                     (-> (pr/create-pull-request! {:repo-path (:repo-path opts)
+                                                   :title (:title opts)
+                                                   :body (:body opts)
+                                                   :draft (:draft opts)})
+                         (.then (fn [result]
+                                  (if (:error result)
+                                    (throw (ex-info (:error result)
+                                                    {:code (or (:code result) :pr-creation-failed)}))
+                                    (format-new-pr-result result)))))
+
+                     ;; PR is closed/merged but no repo-path - error
+                     (pr-closed? ctx)
+                     (throw (ex-info (str "PR #" pr-number " is " (:state ctx)
+                                          ". Provide repo_path to create a new PR.")
+                                     {:code :pr-closed
+                                      :state (:state ctx)}))
+
+                     ;; PR is open - push if repo-path provided, then return existing
+                     (:repo-path opts)
+                     (-> (push-branch-async (:repo-path opts) (:head-branch ctx))
+                         (.then (fn [push-result]
+                                  (when-not (:success push-result)
+                                    (throw (ex-info (str "Push failed: " (:error push-result))
+                                                    {:code :push-failed})))
+                                  (format-existing-pr-result (proto/session-id this) pr-url (:state ctx)))))
+
+                     ;; PR is open, no repo-path - just return existing
+                     :else
+                     (format-existing-pr-result (proto/session-id this) pr-url (:state ctx)))))))))
 
 ;; Constructor
 

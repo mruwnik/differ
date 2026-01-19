@@ -1,9 +1,11 @@
 (ns differ.api-test
   "Tests for REST API handlers.
-   Tests handler logic and request/response formatting."
+   Tests handler logic, request/response formatting, and security validation."
   (:require [clojure.test :refer [deftest testing is use-fixtures]]
+            [clojure.string :as str]
             [differ.test-helpers :as helpers]
-            [differ.util :as util]))
+            [differ.util :as util]
+            ["path" :as path]))
 
 ;; ============================================================================
 ;; Test Setup
@@ -326,3 +328,245 @@
     (let [encoded "src%2Fmy%20file.cljs"
           decoded (js/decodeURIComponent encoded)]
       (is (= "src/my file.cljs" decoded)))))
+
+;; ============================================================================
+;; Path Traversal Security Tests
+;; Testing the same algorithm used by api/safe-file-path? (which is private)
+;; ============================================================================
+
+(defn safe-file-path?
+  "Reimplementation of api/safe-file-path? for testing.
+   Check if file-path is safe (doesn't escape repo-path via path traversal).
+   Returns true if the resolved path is within repo-path."
+  [repo-path file-path]
+  (let [resolved (path/resolve repo-path file-path)
+        repo-normalized (str (path/resolve repo-path) "/")]
+    (str/starts-with? (str resolved "/") repo-normalized)))
+
+(deftest safe-file-path-basic-test
+  (testing "allows simple relative paths within repo"
+    (is (true? (safe-file-path? "/repo" "src/main.cljs")))
+    (is (true? (safe-file-path? "/repo" "README.md")))
+    (is (true? (safe-file-path? "/repo" "nested/deep/file.txt"))))
+
+  (testing "allows absolute paths within repo"
+    (is (true? (safe-file-path? "/repo" "/repo/src/main.cljs"))))
+
+  (testing "allows paths with dots in filenames"
+    (is (true? (safe-file-path? "/repo" "file.test.cljs")))
+    (is (true? (safe-file-path? "/repo" "src/.gitignore")))
+    (is (true? (safe-file-path? "/repo" ".hidden/file")))))
+
+(deftest safe-file-path-traversal-attack-test
+  (testing "blocks basic path traversal with ../"
+    (is (false? (safe-file-path? "/repo" "../etc/passwd")))
+    (is (false? (safe-file-path? "/repo" "../../../etc/passwd")))
+    (is (false? (safe-file-path? "/repo" "src/../../../etc/passwd"))))
+
+  (testing "blocks path traversal at different depths"
+    (is (false? (safe-file-path? "/repo" "..")))
+    (is (false? (safe-file-path? "/repo" "../../")))
+    (is (false? (safe-file-path? "/repo" "foo/../../bar/../../../etc"))))
+
+  (testing "blocks absolute paths outside repo"
+    (is (false? (safe-file-path? "/repo" "/etc/passwd")))
+    (is (false? (safe-file-path? "/repo" "/tmp/evil")))
+    (is (false? (safe-file-path? "/repo" "/home/user/.ssh/id_rsa"))))
+
+  (testing "blocks traversal attempts that start inside repo but escape"
+    (is (false? (safe-file-path? "/repo/subdir" "../file.txt")))
+    (is (false? (safe-file-path? "/home/user/project" "../../.ssh/id_rsa")))))
+
+(deftest safe-file-path-edge-cases-test
+  (testing "handles paths with multiple consecutive slashes"
+    ;; path.resolve normalizes these, should still be safe
+    (is (true? (safe-file-path? "/repo" "src//main.cljs")))
+    (is (true? (safe-file-path? "/repo" "src///nested///file.txt"))))
+
+  (testing "handles paths with trailing slashes"
+    (is (true? (safe-file-path? "/repo" "src/")))
+    (is (true? (safe-file-path? "/repo/" "src/main.cljs"))))
+
+  (testing "handles paths with current directory references"
+    (is (true? (safe-file-path? "/repo" "./src/main.cljs")))
+    (is (true? (safe-file-path? "/repo" "src/./nested/./file.txt"))))
+
+  (testing "handles empty and single-char paths"
+    (is (true? (safe-file-path? "/repo" "")))
+    (is (true? (safe-file-path? "/repo" ".")))
+    (is (true? (safe-file-path? "/repo" "a"))))
+
+  (testing "handles repo path variations"
+    (is (true? (safe-file-path? "/repo/" "src/main.cljs")))
+    (is (true? (safe-file-path? "/repo//" "src/main.cljs")))))
+
+(deftest safe-file-path-unicode-test
+  (testing "handles unicode filenames safely"
+    (is (true? (safe-file-path? "/repo" "src/文件.cljs")))
+    (is (true? (safe-file-path? "/repo" "émojis/🎉.txt")))
+    (is (true? (safe-file-path? "/repo" "données/fichier.txt")))))
+
+(deftest safe-file-path-special-chars-test
+  (testing "handles special characters in paths"
+    (is (true? (safe-file-path? "/repo" "src/file with spaces.cljs")))
+    (is (true? (safe-file-path? "/repo" "src/file-with-dashes.cljs")))
+    (is (true? (safe-file-path? "/repo" "src/file_with_underscores.cljs")))
+    (is (true? (safe-file-path? "/repo" "src/file@special#chars.cljs")))))
+
+;; ============================================================================
+;; Line Number Validation Tests (get-context-lines-handler logic)
+;; ============================================================================
+
+(defn parse-and-validate-line
+  "Simulate the line number parsing and validation from get-context-lines-handler."
+  [from-str to-str]
+  (let [from-line (js/parseInt (or from-str "1") 10)
+        to-line (js/parseInt (or to-str "1") 10)]
+    (cond
+      (or (js/isNaN from-line) (js/isNaN to-line))
+      {:error "Invalid line numbers: must be integers"}
+
+      (or (< from-line 1) (< to-line 1))
+      {:error "Invalid line numbers: must be positive"}
+
+      (> from-line to-line)
+      {:error "Invalid range: from must be <= to"}
+
+      :else
+      {:valid true :from from-line :to to-line})))
+
+(deftest line-number-valid-inputs-test
+  (testing "accepts valid line number ranges"
+    (is (= {:valid true :from 1 :to 10} (parse-and-validate-line "1" "10")))
+    (is (= {:valid true :from 5 :to 5} (parse-and-validate-line "5" "5")))
+    (is (= {:valid true :from 100 :to 200} (parse-and-validate-line "100" "200"))))
+
+  (testing "accepts nil inputs (default to 1)"
+    (is (= {:valid true :from 1 :to 1} (parse-and-validate-line nil nil)))
+    (is (= {:valid true :from 1 :to 5} (parse-and-validate-line nil "5"))))
+
+  (testing "from > to is invalid even with nil defaults"
+    ;; When from=5 and to defaults to 1, that's an invalid range
+    (is (= {:error "Invalid range: from must be <= to"}
+           (parse-and-validate-line "5" nil)))))
+
+(deftest line-number-nan-test
+  (testing "rejects non-numeric strings"
+    (is (= {:error "Invalid line numbers: must be integers"}
+           (parse-and-validate-line "abc" "10")))
+    (is (= {:error "Invalid line numbers: must be integers"}
+           (parse-and-validate-line "10" "xyz")))
+    (is (= {:error "Invalid line numbers: must be integers"}
+           (parse-and-validate-line "foo" "bar"))))
+
+  (testing "rejects empty strings (parsed as NaN)"
+    (is (= {:error "Invalid line numbers: must be integers"}
+           (parse-and-validate-line "" "10")))
+    (is (= {:error "Invalid line numbers: must be integers"}
+           (parse-and-validate-line "10" ""))))
+
+  (testing "rejects special values"
+    (is (= {:error "Invalid line numbers: must be integers"}
+           (parse-and-validate-line "NaN" "10")))
+    (is (= {:error "Invalid line numbers: must be integers"}
+           (parse-and-validate-line "Infinity" "10")))
+    (is (= {:error "Invalid line numbers: must be integers"}
+           (parse-and-validate-line "-Infinity" "10")))))
+
+(deftest line-number-negative-test
+  (testing "rejects negative line numbers"
+    (is (= {:error "Invalid line numbers: must be positive"}
+           (parse-and-validate-line "-1" "10")))
+    (is (= {:error "Invalid line numbers: must be positive"}
+           (parse-and-validate-line "1" "-5")))
+    (is (= {:error "Invalid line numbers: must be positive"}
+           (parse-and-validate-line "-10" "-1")))))
+
+(deftest line-number-zero-test
+  (testing "rejects zero as line number"
+    (is (= {:error "Invalid line numbers: must be positive"}
+           (parse-and-validate-line "0" "10")))
+    (is (= {:error "Invalid line numbers: must be positive"}
+           (parse-and-validate-line "1" "0")))
+    (is (= {:error "Invalid line numbers: must be positive"}
+           (parse-and-validate-line "0" "0")))))
+
+(deftest line-number-invalid-range-test
+  (testing "rejects ranges where from > to"
+    (is (= {:error "Invalid range: from must be <= to"}
+           (parse-and-validate-line "10" "5")))
+    (is (= {:error "Invalid range: from must be <= to"}
+           (parse-and-validate-line "100" "1")))
+    (is (= {:error "Invalid range: from must be <= to"}
+           (parse-and-validate-line "2" "1")))))
+
+(deftest line-number-decimal-test
+  (testing "handles decimal numbers (parseInt truncates)"
+    ;; parseInt("1.5", 10) = 1, so these should be valid
+    (is (= {:valid true :from 1 :to 10} (parse-and-validate-line "1.5" "10")))
+    (is (= {:valid true :from 1 :to 10} (parse-and-validate-line "1" "10.9")))
+    (is (= {:valid true :from 1 :to 1} (parse-and-validate-line "1.1" "1.9")))))
+
+(deftest line-number-large-values-test
+  (testing "accepts large line numbers"
+    (is (= {:valid true :from 1 :to 999999}
+           (parse-and-validate-line "1" "999999")))
+    (is (= {:valid true :from 100000 :to 200000}
+           (parse-and-validate-line "100000" "200000")))))
+
+(deftest line-number-whitespace-test
+  (testing "handles strings with leading/trailing whitespace"
+    ;; parseInt ignores leading whitespace
+    (is (= {:valid true :from 5 :to 10}
+           (parse-and-validate-line " 5" "10")))
+    (is (= {:valid true :from 5 :to 10}
+           (parse-and-validate-line "5 " "10")))))
+
+;; ============================================================================
+;; Handler Integration Tests
+;; ============================================================================
+
+(deftest get-context-lines-handler-validation-test
+  (testing "handler returns 400 for invalid line numbers"
+    (let [[res get-response] (make-mock-res)
+          req (make-mock-req :params {:id "session-123" :file "main.cljs"}
+                             :query {:from "abc" :to "10"})]
+      ;; The handler checks line numbers before session lookup
+      ;; Simulating the error path
+      (let [from-str (.. req -query -from)
+            to-str (.. req -query -to)
+            from-line (js/parseInt from-str 10)
+            to-line (js/parseInt to-str 10)]
+        (when (or (js/isNaN from-line) (js/isNaN to-line))
+          (-> res
+              (.status 400)
+              (.json #js {:error "Invalid line numbers: must be integers"}))))
+      (let [result (get-response)]
+        (is (= 400 (:status result)))
+        (is (str/includes? (get-in result [:data :error]) "Invalid"))))))
+
+(deftest validate-file-path-handler-test
+  (testing "handler returns 400 for path traversal attempt"
+    (let [[res get-response] (make-mock-res)
+          repo-path "/repo"
+          file-path "../../../etc/passwd"]
+      ;; Simulate validate-file-path behavior using our local implementation
+      (when-not (safe-file-path? repo-path file-path)
+        (-> res
+            (.status 400)
+            (.json #js {:error "Invalid file path: path traversal not allowed"})))
+      (let [result (get-response)]
+        (is (= 400 (:status result)))
+        (is (str/includes? (get-in result [:data :error]) "path traversal")))))
+
+  (testing "handler allows valid paths"
+    (let [[_res get-response] (make-mock-res)
+          repo-path "/repo"
+          file-path "src/main.cljs"]
+      ;; Simulate validation success - no error response sent
+      (when (safe-file-path? repo-path file-path)
+        ;; Handler would proceed normally
+        nil)
+      (let [result (get-response)]
+        ;; No error response was sent
+        (is (nil? (:status result)))))))

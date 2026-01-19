@@ -142,18 +142,27 @@
 (defn extract-lines
   "Extract lines from content string based on opts.
    opts: {:from int :to int} - 1-indexed, inclusive
-   Returns subset of lines, nil for nil content, or full content if no range specified."
+   Clamps ranges to file boundaries:
+   - from < 1 becomes 1
+   - to > line-count becomes line-count
+   Returns nil for nil content, nil for from > to (invalid range),
+   nil for range entirely beyond file (from > line-count).
+   Returns full content if no range specified."
   [content {:keys [from to]}]
   (when content
     (if (or from to)
       (let [lines (str/split-lines content)
-            line-count (count lines)
-            ;; Normalize and clamp range
-            start (max 0 (dec (or from 1)))
-            end (min line-count (or to line-count))]
-        ;; Return nil for invalid ranges, empty string for out-of-bounds
+            line-count (count lines)]
         (cond
-          (> start end) nil  ; Invalid range (from > to)
-          (>= start line-count) ""  ; Beyond file end
-          :else (str/join "\n" (subvec (vec lines) start end))))
+          ;; Empty file: return empty string for any range request
+          (zero? line-count) ""
+          ;; Invalid range: from > to
+          (and from to (> from to)) nil
+          ;; Range entirely beyond file
+          (and from (> from line-count)) nil
+          ;; Valid range: clamp to boundaries and extract
+          :else
+          (let [start (max 0 (dec (or from 1)))
+                end (min (or to line-count) line-count)]
+            (str/join "\n" (subvec (vec lines) start end)))))
       content)))

@@ -15,7 +15,62 @@
 (def get-current-branch local/get-current-branch)
 (def detect-default-branch local/detect-default-branch)
 (def list-branches local/list-branches)
-(def parse-diff-hunks local/parse-diff-hunks)
+
+;; Diff parsing
+
+(defn- parse-diff-header
+  "Parse diff --git header to extract file paths."
+  [diff-line]
+  (or
+   (when-let [[_ file] (re-find #"diff --git a/(.+) b/\1$" diff-line)]
+     [file file])
+   (when-let [[_ rest] (re-find #"diff --git a/(.+)$" diff-line)]
+     (let [parts (str/split rest #" b/")]
+       (when (>= (count parts) 2)
+         (let [file-b (last parts)
+               file-a (str/join " b/" (butlast parts))]
+           [file-a file-b]))))))
+
+(defn parse-diff-hunks
+  "Parse unified diff into structured format."
+  [diff-text]
+  (when (and diff-text (seq diff-text))
+    (let [lines (str/split-lines diff-text)
+          file-sections (reduce
+                         (fn [acc line]
+                           (if (str/starts-with? line "diff --git")
+                             (conj acc [line])
+                             (if (seq acc)
+                               (update acc (dec (count acc)) conj line)
+                               acc)))
+                         []
+                         lines)]
+      (mapv
+       (fn [section]
+         (let [diff-line (first section)
+               [file-a file-b] (parse-diff-header diff-line)
+               hunk-lines (drop-while #(not (str/starts-with? % "@@")) section)
+               hunks (loop [remaining hunk-lines
+                            result []]
+                       (if (empty? remaining)
+                         result
+                         (let [hunk-header (first remaining)
+                               [_ old-start old-count new-start new-count]
+                               (re-find #"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@" hunk-header)
+                               hunk-content (take-while #(not (str/starts-with? % "@@"))
+                                                        (rest remaining))
+                               hunk {:old-start (js/parseInt old-start)
+                                     :old-count (js/parseInt (or old-count "1"))
+                                     :new-start (js/parseInt new-start)
+                                     :new-count (js/parseInt (or new-count "1"))
+                                     :header hunk-header
+                                     :lines (vec hunk-content)}]
+                           (recur (drop (inc (count hunk-content)) remaining)
+                                  (conj result hunk)))))]
+           {:file-a file-a
+            :file-b file-b
+            :hunks hunks}))
+       file-sections))))
 
 ;; These functions need repo-path + target-branch, so they call git directly
 ;; using the local backend's internal functions

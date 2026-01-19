@@ -63,6 +63,7 @@ def check_repeated_block(reason: str) -> bool:
 
     # Check if all recent entries are identical
     if len(history) >= MAX_REPEATED_BLOCKS and len(set(history)) == 1:
+        BLOCK_HISTORY_FILE.unlink()
         print(
             f"Same block reason repeated {MAX_REPEATED_BLOCKS} times. Giving up.",
             file=sys.stderr,

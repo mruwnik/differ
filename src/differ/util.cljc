@@ -27,6 +27,19 @@
                (.update (or s ""))
                (.digest "hex"))))
 
+(defn sha256-base64url
+  "Returns SHA-256 hash of string as base64url (no padding).
+   Used for PKCE code_challenge verification."
+  [s]
+  #?(:clj (let [md (MessageDigest/getInstance "SHA-256")
+                bytes (.digest md (.getBytes (or s "") "UTF-8"))]
+            (-> (java.util.Base64/getUrlEncoder)
+                (.withoutPadding)
+                (.encodeToString bytes)))
+     :cljs (-> (crypto/createHash "sha256")
+               (.update (or s ""))
+               (.digest "base64url"))))
+
 (defn session-id
   "Generate deterministic session ID from project and branch."
   [project branch]

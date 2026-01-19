@@ -129,8 +129,9 @@
       (is (true? (branch-matches? "feature/foo")))
       (is (true? (branch-matches? "fix/bar")))
       (is (true? (branch-matches? "release/1.0")))
-      (is (false? (branch-matches? "main")))
-      (is (false? (branch-matches? "develop"))))))
+      ;; some returns nil (not false) when nothing matches
+      (is (not (branch-matches? "main")))
+      (is (not (branch-matches? "develop"))))))
 
 ;; ============================================================================
 ;; validate-push! tests

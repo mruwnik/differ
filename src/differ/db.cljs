@@ -15,6 +15,17 @@
   [n]
   (str/join "," (repeat n "?")))
 
+(defn- safe-parse-json
+  "Parse JSON string, returning default on error."
+  [s default]
+  (if (or (nil? s) (= s ""))
+    default
+    (try
+      (js->clj (js/JSON.parse s))
+      (catch :default _
+        (js/console.warn "[db] Failed to parse JSON:" s)
+        default))))
+
 (defn- data-dir
   "Get XDG-compliant data directory."
   []
@@ -254,9 +265,9 @@
              :target-branch (.-target_branch row)
              :repo-path (.-repo_path row)
              :session-type (or (.-session_type row) "local")
-             :registered-files (js->clj (js/JSON.parse (.-registered_files row)))
-             :manual-additions (js->clj (js/JSON.parse (.-manual_additions row)))
-             :manual-removals (js->clj (js/JSON.parse (.-manual_removals row)))
+             :registered-files (safe-parse-json (.-registered_files row) {})
+             :manual-additions (safe-parse-json (.-manual_additions row) [])
+             :manual-removals (safe-parse-json (.-manual_removals row) [])
              :created-at (.-created_at row)
              :updated-at (.-updated_at row)}
       ;; GitHub-specific fields (only when present)
@@ -303,7 +314,8 @@
     (get-session id)))
 
 (defn update-session!
-  "Update session fields."
+  "Update session fields.
+   Note: No authorization needed - this is a local single-user tool."
   [session-id updates]
   (let [session (get-session session-id)
         now (util/now-iso)
@@ -394,24 +406,13 @@
      (mapv row->comment rows))))
 
 (defn count-unresolved-comments
-  "Count unresolved top-level comments for a session.
-   Optionally filter to only count comments on specific files."
-  ([session-id]
-   (let [^js stmt (.prepare (db)
-                            "SELECT COUNT(*) as count FROM comments
-                 WHERE session_id = ? AND resolved = 0 AND parent_id IS NULL")]
-     (.-count (.get stmt session-id))))
-  ([session-id files]
-   (if (empty? files)
-     0
-     (let [query (str "SELECT COUNT(*) as count FROM comments
-                       WHERE session_id = ? AND resolved = 0 AND parent_id IS NULL
-                       AND file IN (" (in-clause (count files)) ")")
-           ^js stmt (.prepare (db) query)
-           params (into-array (cons session-id files))
-           ;; Use .bind to safely bind parameters, then .get
-           ^js bound (.apply (.-bind stmt) stmt params)]
-       (.-count (.get bound))))))
+  "Count all unresolved comments for a session (including replies).
+   This provides consistent semantics across local and GitHub sessions."
+  [session-id]
+  (let [^js stmt (.prepare (db)
+                           "SELECT COUNT(*) as count FROM comments
+                            WHERE session_id = ? AND resolved = 0")]
+    (.-count (.get stmt session-id))))
 
 (defn create-comment!
   "Create a new comment."

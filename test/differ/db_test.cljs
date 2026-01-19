@@ -2,7 +2,6 @@
   "Tests for database operations.
    Uses a separate test database to avoid affecting production data."
   (:require [clojure.test :refer [deftest testing is use-fixtures]]
-            [clojure.string :as str]
             [differ.test-helpers :as helpers]
             [differ.util :as util]))
 
@@ -149,28 +148,14 @@
   (let [^js stmt (.prepare *test-db* "SELECT * FROM users WHERE email = ?")]
     (row->user (.get stmt email))))
 
-(defn- in-clause
-  "Generate placeholder string for SQL IN clause."
-  [n]
-  (str/join "," (repeat n "?")))
-
 (defn count-unresolved-comments
-  "Count unresolved top-level comments for a session.
-   Optionally filter to only count comments on specific files."
-  ([session-id]
-   (let [^js stmt (.prepare *test-db*
-                            "SELECT COUNT(*) as count FROM comments
-                 WHERE session_id = ? AND resolved = 0 AND parent_id IS NULL")]
-     (.-count (.get stmt session-id))))
-  ([session-id files]
-   (if (empty? files)
-     0
-     (let [query (str "SELECT COUNT(*) as count FROM comments
-                       WHERE session_id = ? AND resolved = 0 AND parent_id IS NULL
-                       AND file IN (" (in-clause (count files)) ")")
-           ^js stmt (.prepare *test-db* query)
-           params (into-array (cons session-id files))]
-       (.-count (.apply (.-get stmt) stmt params))))))
+  "Count all unresolved comments for a session (including replies).
+   This provides consistent semantics across local and GitHub sessions."
+  [session-id]
+  (let [^js stmt (.prepare *test-db*
+                           "SELECT COUNT(*) as count FROM comments
+                            WHERE session_id = ? AND resolved = 0")]
+    (.-count (.get stmt session-id))))
 
 ;; ============================================================================
 ;; Session CRUD Tests
@@ -428,11 +413,11 @@
       (is (= "unique@example.com" (:email user))))))
 
 ;; ============================================================================
-;; Count Unresolved Comments Tests (tests in-clause helper)
+;; Count Unresolved Comments Tests
 ;; ============================================================================
 
 (deftest count-unresolved-comments-test
-  (testing "counts all unresolved comments without file filter"
+  (testing "counts all unresolved comments"
     (create-session! {:id "count-session" :project "p" :branch "b" :target-branch "main" :repo-path "/tmp"})
     (is (= 0 (count-unresolved-comments "count-session")))
     (create-comment! {:session-id "count-session" :file "a.cljs" :line 1 :line-content-hash "h" :text "comment 1" :author "a"})
@@ -440,35 +425,16 @@
     (create-comment! {:session-id "count-session" :file "b.cljs" :line 2 :line-content-hash "h" :text "comment 2" :author "a"})
     (is (= 2 (count-unresolved-comments "count-session"))))
 
-  (testing "returns 0 for empty file list"
-    (create-session! {:id "empty-filter" :project "p" :branch "b" :target-branch "main" :repo-path "/tmp"})
-    (create-comment! {:session-id "empty-filter" :file "a.cljs" :line 1 :line-content-hash "h" :text "t" :author "a"})
-    (is (= 0 (count-unresolved-comments "empty-filter" []))))
-
-  (testing "filters by single file"
-    (create-session! {:id "single-filter" :project "p" :branch "b" :target-branch "main" :repo-path "/tmp"})
-    (create-comment! {:session-id "single-filter" :file "a.cljs" :line 1 :line-content-hash "h" :text "t" :author "a"})
-    (create-comment! {:session-id "single-filter" :file "b.cljs" :line 1 :line-content-hash "h" :text "t" :author "a"})
-    (is (= 1 (count-unresolved-comments "single-filter" ["a.cljs"])))
-    (is (= 1 (count-unresolved-comments "single-filter" ["b.cljs"]))))
-
-  (testing "filters by multiple files using IN clause"
-    (create-session! {:id "multi-filter" :project "p" :branch "b" :target-branch "main" :repo-path "/tmp"})
-    (create-comment! {:session-id "multi-filter" :file "a.cljs" :line 1 :line-content-hash "h" :text "t" :author "a"})
-    (create-comment! {:session-id "multi-filter" :file "b.cljs" :line 1 :line-content-hash "h" :text "t" :author "a"})
-    (create-comment! {:session-id "multi-filter" :file "c.cljs" :line 1 :line-content-hash "h" :text "t" :author "a"})
-    (is (= 2 (count-unresolved-comments "multi-filter" ["a.cljs" "b.cljs"])))
-    (is (= 3 (count-unresolved-comments "multi-filter" ["a.cljs" "b.cljs" "c.cljs"]))))
-
   (testing "excludes resolved comments"
-    (create-session! {:id "resolved-filter" :project "p" :branch "b" :target-branch "main" :repo-path "/tmp"})
-    (let [c1 (create-comment! {:session-id "resolved-filter" :file "a.cljs" :line 1 :line-content-hash "h" :text "t" :author "a"})
-          _ (create-comment! {:session-id "resolved-filter" :file "a.cljs" :line 2 :line-content-hash "h" :text "t" :author "a"})]
+    (create-session! {:id "resolved-test" :project "p" :branch "b" :target-branch "main" :repo-path "/tmp"})
+    (let [c1 (create-comment! {:session-id "resolved-test" :file "a.cljs" :line 1 :line-content-hash "h" :text "t" :author "a"})
+          _ (create-comment! {:session-id "resolved-test" :file "a.cljs" :line 2 :line-content-hash "h" :text "t" :author "a"})]
       (resolve-comment! (:id c1))
-      (is (= 1 (count-unresolved-comments "resolved-filter" ["a.cljs"])))))
+      (is (= 1 (count-unresolved-comments "resolved-test")))))
 
-  (testing "excludes reply comments (only counts top-level)"
-    (create-session! {:id "reply-filter" :project "p" :branch "b" :target-branch "main" :repo-path "/tmp"})
-    (let [parent (create-comment! {:session-id "reply-filter" :file "a.cljs" :line 1 :line-content-hash "h" :text "parent" :author "a"})]
-      (create-comment! {:session-id "reply-filter" :parent-id (:id parent) :file "a.cljs" :line 1 :line-content-hash "h" :text "reply" :author "a"})
-      (is (= 1 (count-unresolved-comments "reply-filter" ["a.cljs"]))))))
+  (testing "includes reply comments (counts all unresolved)"
+    (create-session! {:id "reply-test" :project "p" :branch "b" :target-branch "main" :repo-path "/tmp"})
+    (let [parent (create-comment! {:session-id "reply-test" :file "a.cljs" :line 1 :line-content-hash "h" :text "parent" :author "a"})]
+      (create-comment! {:session-id "reply-test" :parent-id (:id parent) :file "a.cljs" :line 1 :line-content-hash "h" :text "reply" :author "a"})
+      ;; Now counts both parent and reply (2 total)
+      (is (= 2 (count-unresolved-comments "reply-test"))))))

@@ -22,11 +22,25 @@
              :remaining remaining
              :reset-at (* reset-at 1000)))))
 
-(defn- check-rate-limit!
-  "Throw if rate limited."
+(defn- try-consume-rate-limit!
+  "Atomically check and consume one rate limit slot.
+   Returns true if request can proceed, false if rate limited.
+   Uses swap! returning the decision in state to avoid race conditions."
   []
-  (let [{:keys [remaining reset-at]} @rate-limit-state]
-    (when (and (zero? remaining) reset-at (< (js/Date.now) reset-at))
+  (let [result (swap! rate-limit-state
+                      (fn [{:keys [remaining reset-at] :as state}]
+                        (if (and (zero? remaining) reset-at (< (js/Date.now) reset-at))
+                          (assoc state :allowed false)
+                          (-> state
+                              (update :remaining dec)
+                              (assoc :allowed true)))))]
+    (:allowed result)))
+
+(defn- check-rate-limit!
+  "Throw if rate limited. Uses atomic check-and-consume to prevent races."
+  []
+  (when-not (try-consume-rate-limit!)
+    (let [{:keys [reset-at]} @rate-limit-state]
       (throw (ex-info "GitHub API rate limit exceeded"
                       {:type :rate-limit
                        :reset-at reset-at
@@ -64,6 +78,10 @@
     (catch :default e
       (js/Promise.reject e))))
 
+(def ^:private default-max-items
+  "Default maximum number of items to fetch during pagination to prevent OOM."
+  5000)
+
 (defn paginate-graphql
   "Fetch all pages of a paginated GraphQL query.
    Args:
@@ -71,30 +89,46 @@
      query - GraphQL query string with $cursor variable
      params - Query parameters (without cursor)
      path-to-connection - Vector path to the connection object (e.g., [:repository :pullRequest :files])
-   Returns a Promise resolving to all accumulated nodes."
-  [token query params path-to-connection]
-  (let [fetch-page (fn fetch-page [cursor accumulated]
-                     (-> (graphql-request token query (assoc params :cursor cursor))
-                         (.then (fn [data]
-                                  (let [connection (get-in data path-to-connection)
-                                        nodes (:nodes connection)
-                                        page-info (:pageInfo connection)
-                                        all-nodes (into accumulated nodes)]
-                                    (if (:hasNextPage page-info)
-                                      (fetch-page (:endCursor page-info) all-nodes)
-                                      all-nodes))))))]
-    (fetch-page nil [])))
+     opts - Optional map with :max-items (default 5000) to limit total items fetched
+   Returns a Promise resolving to a vector of nodes with metadata:
+     {:truncated boolean} - true if max-items limit was reached
+   Callers can use (meta result) to check truncation status."
+  ([token query params path-to-connection]
+   (paginate-graphql token query params path-to-connection {}))
+  ([token query params path-to-connection opts]
+   (let [max-items (or (:max-items opts) default-max-items)
+         fetch-page (fn fetch-page [cursor accumulated]
+                      (-> (graphql-request token query (assoc params :cursor cursor))
+                          (.then (fn [data]
+                                   (let [connection (get-in data path-to-connection)
+                                         nodes (:nodes connection)
+                                         page-info (:pageInfo connection)
+                                         all-nodes (into accumulated nodes)]
+                                     (if (>= (count all-nodes) max-items)
+                                       (do
+                                         (js/console.warn
+                                          (str "Pagination limit reached: " (count all-nodes)
+                                               " items (max: " max-items "). "
+                                               "Results may be incomplete."))
+                                         (with-meta (vec all-nodes) {:truncated true}))
+                                       (if (:hasNextPage page-info)
+                                         (fetch-page (:endCursor page-info) all-nodes)
+                                         (with-meta (vec all-nodes) {:truncated false}))))))))]
+     (fetch-page nil []))))
 
 (defn rest-request
   "Make a REST API request to GitHub.
-   Returns a Promise resolving to the response text or JSON based on Accept header."
+   Returns a Promise resolving to the response text or JSON based on Accept header.
+   Supports :method, :accept, and :body options."
   [token url opts]
   (let [accept (or (:accept opts) "application/vnd.github.v3+json")
-        return-text? (str/includes? accept ".diff")]
-    (-> (js/fetch url
-                  #js {:method (or (:method opts) "GET")
-                       :headers #js {"Authorization" (str "Bearer " token)
-                                     "Accept" accept}})
+        return-text? (str/includes? accept ".diff")
+        fetch-opts (cond-> {:method (or (:method opts) "GET")
+                            :headers {"Authorization" (str "Bearer " token)
+                                      "Accept" accept
+                                      "Content-Type" "application/json"}}
+                     (:body opts) (assoc :body (js/JSON.stringify (clj->js (:body opts)))))]
+    (-> (js/fetch url (clj->js fetch-opts))
         (.then (fn [response]
                  (update-rate-limit! (.-headers response))
                  (if (.-ok response)

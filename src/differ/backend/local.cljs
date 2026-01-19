@@ -13,21 +13,20 @@
 
 ;; Git command execution
 
-(defn- exec-sync
-  "Execute command synchronously, return stdout or nil on error."
-  [cmd opts]
-  (try
-    (let [result (cp/execSync cmd (clj->js (merge {:encoding "utf8"} opts)))]
-      (str/trim result))
-    (catch :default e
-      (js/console.warn "[local] Command failed:" cmd (.-message e))
-      nil)))
-
 (defn- exec-git
-  "Execute git command in given directory."
+  "Execute git command in given directory.
+   Uses spawnSync with args array to avoid command injection."
   [repo-path & args]
-  (let [cmd (str "git " (str/join " " args))]
-    (exec-sync cmd {:cwd repo-path})))
+  (try
+    (let [result (cp/spawnSync "git" (clj->js (vec args))
+                               #js {:cwd repo-path
+                                    :encoding "utf8"
+                                    :maxBuffer (* 50 1024 1024)})]  ; 50MB buffer
+      (when (zero? (.-status result))
+        (str/trim (.-stdout result))))
+    (catch :default e
+      (js/console.warn "[local] Git command failed:" (pr-str args) (.-message e))
+      nil)))
 
 ;; Git helpers
 
@@ -67,69 +66,12 @@
 (defn list-branches
   "List all local branches."
   [repo-path]
-  (if-let [output (exec-git repo-path "branch" "--format" "'%(refname:short)'")]
+  (if-let [output (exec-git repo-path "branch" "--format" "%(refname:short)")]
     (->> (str/split-lines output)
-         (map #(str/replace % #"^'|'$" ""))
          (filter seq)
          sort
          vec)
     []))
-
-;; Diff parsing
-
-(defn- parse-diff-header
-  "Parse diff --git header to extract file paths."
-  [diff-line]
-  (or
-   (when-let [[_ file] (re-find #"diff --git a/(.+) b/\1$" diff-line)]
-     [file file])
-   (when-let [[_ rest] (re-find #"diff --git a/(.+)$" diff-line)]
-     (let [parts (str/split rest #" b/")]
-       (when (>= (count parts) 2)
-         (let [file-b (last parts)
-               file-a (str/join " b/" (butlast parts))]
-           [file-a file-b]))))))
-
-(defn parse-diff-hunks
-  "Parse unified diff into structured format."
-  [diff-text]
-  (when (and diff-text (seq diff-text))
-    (let [lines (str/split-lines diff-text)
-          file-sections (reduce
-                         (fn [acc line]
-                           (if (str/starts-with? line "diff --git")
-                             (conj acc [line])
-                             (if (seq acc)
-                               (update acc (dec (count acc)) conj line)
-                               acc)))
-                         []
-                         lines)]
-      (mapv
-       (fn [section]
-         (let [diff-line (first section)
-               [file-a file-b] (parse-diff-header diff-line)
-               hunk-lines (drop-while #(not (str/starts-with? % "@@")) section)
-               hunks (loop [remaining hunk-lines
-                            result []]
-                       (if (empty? remaining)
-                         result
-                         (let [hunk-header (first remaining)
-                               [_ old-start old-count new-start new-count]
-                               (re-find #"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@" hunk-header)
-                               hunk-content (take-while #(not (str/starts-with? % "@@"))
-                                                        (rest remaining))
-                               hunk {:old-start (js/parseInt old-start)
-                                     :old-count (js/parseInt (or old-count "1"))
-                                     :new-start (js/parseInt new-start)
-                                     :new-count (js/parseInt (or new-count "1"))
-                                     :header hunk-header
-                                     :lines (vec hunk-content)}]
-                           (recur (drop (inc (count hunk-content)) remaining)
-                                  (conj result hunk)))))]
-           {:file-a file-a
-            :file-b file-b
-            :hunks hunks}))
-       file-sections))))
 
 ;; Comment staleness helpers
 
@@ -338,7 +280,7 @@
     (js/Promise.resolve
      (let [{:keys [path limit since]} opts
            limit (or limit 50)
-           args (cond-> ["log" (str "--max-count=" limit) "'--format=%H|%s|%an|%aI'"]
+           args (cond-> ["log" (str "--max-count=" limit) "--format=%H|%s|%an|%aI"]
                   path (conj "--" path)
                   since (conj (str "--since=" since)))]
        (if-let [output (apply exec-git repo-path args)]
@@ -436,13 +378,18 @@
                  (if (:error result)
                    (throw (ex-info (:error result)
                                    {:code (or (:code result) :unknown)}))
-                   (let [{:keys [pr-url pr-number]} result
+                   (let [{:keys [pr-url pr-number pr-state]} result
                          ;; Parse owner/repo from the PR URL
-                         [_ owner repo] (re-find #"github\.com/([^/]+)/([^/]+)/pull" pr-url)
-                         github-session-id (str "github:" owner "/" repo ":" pr-number)]
-                     {:review-url pr-url
-                      :review-session-id github-session-id
-                      :status (if (:created result) :created :existing)})))))))
+                         parsed (re-find #"github\.com/([^/]+)/([^/]+)/pull" pr-url)]
+                     (if-not parsed
+                       (throw (ex-info (str "Invalid PR URL format: " pr-url)
+                                       {:code :invalid-pr-url :pr-url pr-url}))
+                       (let [[_ owner repo] parsed
+                             github-session-id (str "github:" owner "/" repo ":" pr-number)]
+                         {:review-url pr-url
+                          :review-session-id github-session-id
+                          :state (pr/normalize-pr-state pr-state)
+                          :status (if (:created result) :created :existing)})))))))))
 
 ;; Constructor
 

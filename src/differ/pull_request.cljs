@@ -30,6 +30,17 @@
   (let [cmd (str "git " (str/join " " args))]
     (exec-sync cmd {:cwd repo-path})))
 
+(defn normalize-pr-state
+  "Normalize PR state to lowercase string, defaulting to 'open'.
+   Examples: 'OPEN' -> 'open', 'Merged' -> 'merged', nil -> 'open', '' -> 'open'"
+  [state]
+  (str/lower-case (if (seq state) state "open")))
+
+(defn pr-terminal-state?
+  "Check if PR state indicates the PR is closed or merged."
+  [state]
+  (contains? #{"closed" "merged"} (normalize-pr-state state)))
+
 (defn- git-repo?
   "Check if directory is a git repository."
   [dir]
@@ -101,6 +112,7 @@
           number
           url
           title
+          state
           baseRefName
           headRefName
         }
@@ -122,11 +134,29 @@
         number
         url
         title
+        state
         baseRefName
         headRefName
       }
     }
   }")
+
+;; Subscription
+
+(defn- subscribe-to-pr!
+  "Subscribe to a PR to receive notifications for all activity.
+   Uses GitHub's subscription API to explicitly subscribe the token owner.
+   Returns Promise that resolves on success or logs warning on failure."
+  [token owner repo pr-number]
+  (let [url (str "https://api.github.com/repos/" owner "/" repo "/issues/" pr-number "/subscription")]
+    (-> (gh-api/rest-request token url {:method "PUT"
+                                        :body {:subscribed true
+                                               :ignored false}})
+        (.then (fn [_] true))
+        (.catch (fn [err]
+                  ;; Log but don't fail - subscription is nice-to-have
+                  (js/console.warn "Failed to subscribe to PR:" (ex-message err))
+                  false)))))
 
 ;; Core functions
 
@@ -234,6 +264,7 @@
                  ;; Return existing PR
                  {:pr-url (:url existing-pr)
                   :pr-number (:number existing-pr)
+                  :pr-state (normalize-pr-state (:state existing-pr))
                   :created false
                   :branch branch
                   :base-branch (:baseRefName existing-pr)
@@ -250,13 +281,17 @@
                                            :head branch
                                            :draft draft})))
                      (.then (fn [result]
-                              (let [pr (get-in result [:createPullRequest :pullRequest])]
-                                {:pr-url (:url pr)
-                                 :pr-number (:number pr)
-                                 :created true
-                                 :branch (:headRefName pr)
-                                 :base-branch (:baseRefName pr)
-                                 :title (:title pr)})))))))))
+                              (let [pr (get-in result [:createPullRequest :pullRequest])
+                                    pr-data {:pr-url (:url pr)
+                                             :pr-number (:number pr)
+                                             :pr-state (normalize-pr-state (:state pr))
+                                             :created true
+                                             :branch (:headRefName pr)
+                                             :base-branch (:baseRefName pr)
+                                             :title (:title pr)}]
+                                ;; Subscribe to PR for notifications, then return result
+                                (-> (subscribe-to-pr! token owner repo-name (:number pr))
+                                    (.then (fn [_] pr-data))))))))))))
 
 (defn create-pull-request!
   "Main entry point: validate permissions, push, and create PR.

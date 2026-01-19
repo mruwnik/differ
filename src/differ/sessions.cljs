@@ -29,17 +29,22 @@
 
 (defn parse-session-id
   "Parse session ID to determine type and components.
-   Returns {:type :local|:github, ...} with type-specific keys."
+   Returns {:type :local|:github, ...} with type-specific keys.
+   Throws on malformed session IDs (e.g., github: prefix with invalid PR number)."
   [session-id]
   (cond
     (str/starts-with? session-id "github:")
     (let [rest (subs session-id 7)  ; After "github:"
           [owner-repo pr-str] (str/split rest #":" 2)
-          [owner repo] (str/split owner-repo #"/" 2)]
-      {:type :github
-       :owner owner
-       :repo repo
-       :pr-number (js/parseInt pr-str 10)})
+          [owner repo] (str/split owner-repo #"/" 2)
+          pr-num (js/parseInt pr-str 10)]
+      (if (js/isNaN pr-num)
+        (throw (ex-info "Invalid GitHub session ID: PR number must be numeric"
+                        {:session-id session-id :pr-str pr-str}))
+        {:type :github
+         :owner owner
+         :repo repo
+         :pr-number pr-num}))
 
     (str/starts-with? session-id "local:")
     {:type :local
@@ -112,10 +117,12 @@
              {:requires-auth true
               :message "GitHub authentication required."
               :auth-url (str base "/oauth/github?return_to=/session/" session-id)}))
-          ;; Try tokens with fallback (same logic as session creation)
+          ;; Try tokens with fallback - the returned backend already has
+          ;; the working token stored and will use it for all operations
           (-> (try-tokens-sequentially owner repo pr-number tokens)
               (.then (fn [result]
                        (if (:success result)
+                         ;; Return the backend that was created with the working token
                          {:backend (:backend result)}
                          (if (:oauth-restricted result)
                            (let [base (config/base-url)]
@@ -262,7 +269,10 @@
 
 (defn- try-token-for-pr
   "Try to fetch PR context with a single token.
-   Returns promise of {:success backend :context ctx} or {:error msg :oauth-restricted bool}."
+   Returns promise of:
+   - On success: {:success true :backend <GitHubBackend> :context <map>}
+     The backend has the working token stored and will use it for all operations.
+   - On failure: {:success false :error <string> :oauth-restricted <bool>}"
   [owner repo pr-number token-record]
   (let [backend (github/create-github-backend
                  owner repo pr-number (:access-token token-record))]
@@ -278,29 +288,29 @@
 (defn- try-tokens-sequentially
   "Try tokens one by one until success. Returns promise.
    Returns {:success ... :context ...} or {:all-failed true :last-error ... :oauth-restricted bool}.
-   Always tries remaining tokens on failure (token might be revoked, rate limited, etc.)."
+   Always tries remaining tokens on failure (token might be revoked, rate limited, etc.).
+
+   Note: While reduce iterates through all tokens, the Promise chain achieves
+   early exit via short-circuit: once :success is true, subsequent iterations
+   just pass through the successful result without attempting more tokens."
   [owner repo pr-number tokens]
-  (if (empty? tokens)
-    (js/Promise.resolve {:all-failed true :last-error "No tokens available"})
-    (let [[token & remaining] tokens]
-      (-> (try-token-for-pr owner repo pr-number token)
-          (.then (fn [result]
-                   (if (:success result)
-                     result
-                     ;; Token failed - try remaining tokens if any
-                     (if (seq remaining)
-                       (-> (try-tokens-sequentially owner repo pr-number remaining)
-                           (.then (fn [next-result]
-                                    ;; Propagate oauth-restricted flag if any token hit it
-                                    (if (and (:all-failed next-result)
-                                             (:oauth-restricted result)
-                                             (not (:oauth-restricted next-result)))
-                                      (assoc next-result :oauth-restricted true)
-                                      next-result))))
-                       ;; No more tokens
-                       {:all-failed true
-                        :last-error (:error result)
-                        :oauth-restricted (:oauth-restricted result)}))))))))
+  (reduce
+   (fn [prev-promise token]
+     (-> prev-promise
+         (.then (fn [prev-result]
+                  (if (:success prev-result)
+                    ;; Previous succeeded - pass through
+                    prev-result
+                    ;; Previous failed - try this token
+                    (-> (try-token-for-pr owner repo pr-number token)
+                        (.then (fn [result]
+                                 (if (:success result)
+                                   result
+                                   ;; Propagate oauth-restricted flag from any failure
+                                   (update result :oauth-restricted
+                                           #(or % (:oauth-restricted prev-result))))))))))))
+   (js/Promise.resolve {:all-failed true :last-error "No tokens available"})
+   tokens))
 
 (defn- get-or-create-github-session
   "Get or create a GitHub PR session.
@@ -450,8 +460,7 @@
           git-files (git/get-changed-files repo-path (:target-branch session) source-branch)
           untracked (git/get-untracked-files repo-path)
           files (compute-file-set session git-files untracked)
-          ;; Only count unresolved comments on files currently in review
-          unresolved-count (db/count-unresolved-comments session-id files)]
+          comments (db/list-comments session-id)]
       {:session-id session-id
        :project (:project session)
        :branch (:branch session)
@@ -459,10 +468,39 @@
        :repo-path (:repo-path session)
        :files files
        :excluded-files (:manual-removals session)
-       :comments (db/list-comments session-id)
-       :unresolved-count unresolved-count})))
+       :comments comments
+       ;; Count all unresolved including replies - consistent with GitHub sessions
+       :unresolved-count (count (remove :resolved comments))})))
 
 (defn archive-session!
   "Archive/delete a session and all its data."
   [session-id]
   (db/delete-session! session-id))
+
+(defn request-review!
+  "Request external review for a session.
+   Creates backend, calls request-review!, and ensures session exists for new PRs.
+   Returns Promise of review result or error."
+  [session opts]
+  (-> (create-backend session)
+      (.then (fn [result]
+               (if (:error result)
+                 (throw (js/Error. (:error result)))
+                 (proto/request-review! (:backend result) opts))))
+      (.then (fn [review-result]
+               ;; When a new PR was created, ensure session exists in DB
+               (if (= :created (:status review-result))
+                 (let [new-session-id (:review-session-id review-result)
+                       parsed (parse-session-id new-session-id)]
+                   (-> (get-or-create-session
+                        {:owner (:owner parsed)
+                         :repo (:repo parsed)
+                         :pr-number (:pr-number parsed)})
+                       (.then (fn [session-result]
+                                (if (:error session-result)
+                                  ;; Log but don't fail - PR was created successfully
+                                  (do (js/console.warn "Failed to create session for new PR:"
+                                                       (:error session-result))
+                                      review-result)
+                                  review-result)))))
+                 review-result)))))
