@@ -176,10 +176,12 @@
                   :required ["session_id"]}}
 
    {:name "request_review"
-    :description "Request external review of changes. Pushes branch and makes changes reviewable. For local sessions, creates a GitHub PR. For GitHub sessions, returns existing PR. Returns a review session ID for collaborative review."
+    :description "Request external review of changes. Pushes branch and makes changes reviewable. For local sessions, creates a GitHub PR. For GitHub sessions, optionally pushes local commits (if repo_path provided) and returns existing PR info. Returns a review session ID for collaborative review."
     :inputSchema {:type "object"
                   :properties {:session_id {:type "string"
                                             :description "Session ID for the review"}
+                               :repo_path {:type "string"
+                                           :description "Local repo path (optional; enables pushing local commits for GitHub sessions)"}
                                :title {:type "string"
                                        :description "PR title (defaults to last commit message, local sessions only)"}
                                :body {:type "string"
@@ -477,10 +479,10 @@
           (-> result (.then (fn [entries] {:entries entries})))
           {:entries result})))))
 
-(defmethod handle-tool "request_review" [_ {:keys [session-id title body draft]}]
+(defmethod handle-tool "request_review" [_ {:keys [session-id repo-path title body draft]}]
   (with-backend session-id
     (fn [backend]
-      (proto/request-review! backend {:title title :body body :draft draft}))))
+      (proto/request-review! backend {:repo-path repo-path :title title :body body :draft draft}))))
 
 (defmethod handle-tool :default [tool-name _]
   (throw (ex-info "Unknown tool" {:tool tool-name})))

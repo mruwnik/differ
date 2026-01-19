@@ -257,7 +257,7 @@
       (-> (sessions/create-backend session)
           (.then (fn [result]
                    (if (:error result)
-                     (error-response res 400 (:error result))
+                     (throw (js/Error. (:error result)))
                      (proto/request-review! (:backend result) body))))
           (.then (fn [review-result]
                    (json-response res review-result)))
@@ -273,11 +273,21 @@
   (let [session-id (.. req -params -id)
         file (.. req -query -file)]
     (if-let [session (db/get-session session-id)]
-      (let [threaded (if file
-                       (comments/get-comments-for-file session-id file)
-                       (comments/get-all-comments session-id))
-            with-staleness (comments/annotate-comments-with-staleness threaded (:repo-path session))]
-        (json-response res {:comments with-staleness}))
+      (-> (sessions/create-backend session)
+          (.then (fn [result]
+                   (if (:error result)
+                     (throw (js/Error. (:error result)))
+                     (proto/get-comments (:backend result)))))
+          (.then (fn [comments]
+                   ;; Filter by file if specified
+                   (let [filtered (if file
+                                    (filter #(= file (:file %)) comments)
+                                    comments)]
+                     ;; LocalBackend.get-comments already annotates staleness,
+                     ;; so we don't need to annotate again here
+                     (json-response res {:comments filtered}))))
+          (.catch (fn [err]
+                    (error-response res 500 (or (.-message err) (str err))))))
       (error-response res 404 "Session not found"))))
 
 (defn get-pending-handler
@@ -286,9 +296,17 @@
   (let [session-id (.. req -params -id)
         since (.. req -query -since)]
     (if-let [session (db/get-session session-id)]
-      (let [pending (comments/get-pending-feedback session-id since)
-            with-staleness (comments/annotate-comments-with-staleness pending (:repo-path session))]
-        (json-response res {:comments with-staleness}))
+      (-> (sessions/create-backend session)
+          (.then (fn [result]
+                   (if (:error result)
+                     (throw (js/Error. (:error result)))
+                     (proto/get-pending-comments (:backend result) {:since since}))))
+          (.then (fn [comments]
+                   ;; LocalBackend.get-pending-comments already annotates staleness,
+                   ;; so we don't need to annotate again here
+                   (json-response res {:comments comments})))
+          (.catch (fn [err]
+                    (error-response res 500 (or (.-message err) (str err))))))
       (error-response res 404 "Session not found"))))
 
 (defn add-comment-handler
@@ -297,33 +315,69 @@
   (let [session-id (.. req -params -id)
         body (get-body req)]
     (if-let [session (db/get-session session-id)]
-      (let [comment (comments/add-comment!
-                     (assoc body
-                            :session-id session-id
-                            :repo-path (:repo-path session)))]
-        (sse/emit-comment-added! session-id comment)
-        (json-response res {:comment comment}))
+      (-> (sessions/create-backend session)
+          (.then (fn [result]
+                   (if (:error result)
+                     (throw (js/Error. (:error result)))
+                     (proto/add-comment! (:backend result) body))))
+          (.then (fn [comment]
+                   (sse/emit-comment-added! session-id comment)
+                   (json-response res {:comment comment})))
+          (.catch (fn [err]
+                    (error-response res 500 (or (.-message err) (str err))))))
       (error-response res 404 "Session not found"))))
 
 (defn resolve-comment-handler
-  "PATCH /api/comments/:id/resolve"
+  "PATCH /api/comments/:id/resolve
+   Body: {:session-id string, :author string}"
   [^js req res]
   (let [comment-id (.. req -params -id)
-        {:keys [author]} (get-body req)
-        comment (comments/resolve-comment! comment-id author)]
-    (when-let [session-id (:session-id comment)]
-      (sse/emit-comment-resolved! session-id comment-id))
-    (json-response res {:success true})))
+        {:keys [session-id author]} (get-body req)]
+    (if-not session-id
+      ;; Fallback for backwards compatibility with local sessions
+      (let [comment (comments/resolve-comment! comment-id author)]
+        (when-let [sid (:session-id comment)]
+          (sse/emit-comment-resolved! sid comment-id))
+        (json-response res {:success true}))
+      ;; Use backend protocol when session-id is provided
+      (if-let [session (db/get-session session-id)]
+        (-> (sessions/create-backend session)
+            (.then (fn [result]
+                     (if (:error result)
+                       (throw (js/Error. (:error result)))
+                       (proto/resolve-comment! (:backend result) comment-id author))))
+            (.then (fn [_]
+                     (sse/emit-comment-resolved! session-id comment-id)
+                     (json-response res {:success true})))
+            (.catch (fn [err]
+                      (error-response res 500 (or (.-message err) (str err))))))
+        (error-response res 404 "Session not found")))))
 
 (defn unresolve-comment-handler
-  "PATCH /api/comments/:id/unresolve"
+  "PATCH /api/comments/:id/unresolve
+   Body: {:session-id string, :author string}"
   [^js req res]
   (let [comment-id (.. req -params -id)
-        {:keys [author]} (get-body req)
-        comment (comments/unresolve-comment! comment-id author)]
-    (when-let [session-id (:session-id comment)]
-      (sse/emit-comment-unresolved! session-id comment-id))
-    (json-response res {:success true})))
+        {:keys [session-id author]} (get-body req)]
+    (if-not session-id
+      ;; Fallback for backwards compatibility with local sessions
+      (let [comment (comments/unresolve-comment! comment-id author)]
+        (when-let [sid (:session-id comment)]
+          (sse/emit-comment-unresolved! sid comment-id))
+        (json-response res {:success true}))
+      ;; Use backend protocol when session-id is provided
+      (if-let [session (db/get-session session-id)]
+        (-> (sessions/create-backend session)
+            (.then (fn [result]
+                     (if (:error result)
+                       (throw (js/Error. (:error result)))
+                       (proto/unresolve-comment! (:backend result) comment-id author))))
+            (.then (fn [_]
+                     (sse/emit-comment-unresolved! session-id comment-id)
+                     (json-response res {:success true})))
+            (.catch (fn [err]
+                      (error-response res 500 (or (.-message err) (str err))))))
+        (error-response res 404 "Session not found")))))
 
 (defn delete-comment-handler
   "DELETE /api/comments/:id"

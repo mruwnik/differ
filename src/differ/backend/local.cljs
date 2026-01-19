@@ -383,11 +383,17 @@
 
   (add-comment! [this comment]
     (js/Promise.resolve
-     (let [{:keys [file line side text author parent-id]} comment
+     (let [{:keys [file line side text author parent-id line-content context-before context-after]} comment
            parent (when parent-id (db/get-comment parent-id))
+           ;; Inherit file/line/side from parent if not provided
            file (or file (when parent (:file parent)))
            line (or line (when parent (:line parent)))
            side (or side (when parent (:side parent)) "new")
+           ;; For replies, inherit content context from parent if not provided
+           line-content (or line-content (when parent (:line-content parent)))
+           context-before (or context-before (when parent (:context-before parent)))
+           context-after (or context-after (when parent (:context-after parent)))
+           ;; Compute line hash for staleness detection
            line-hash (when (and file line)
                        (compute-line-hash repo-path file line))]
        (db/create-comment!
@@ -397,6 +403,9 @@
          :line line
          :line-content-hash line-hash
          :side side
+         :line-content line-content
+         :context-before context-before
+         :context-after context-after
          :text text
          :author author}))))
 
