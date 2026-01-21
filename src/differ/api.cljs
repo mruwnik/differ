@@ -600,7 +600,8 @@
       "authorization_code"
       (let [result (oauth/exchange-authorization-code
                     {:code (:code body)
-                     :client-id (:client-id body)})]
+                     :client-id (:client-id body)
+                     :code-verifier (:code-verifier body)})]
         (if-let [error (:error result)]
           (error-response res 400 error)
           (json-response res result)))
