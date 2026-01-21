@@ -136,6 +136,72 @@ def get_current_branch(repo_path: Path) -> str:
         return ""
 
 
+def get_main_branch(repo_path: Path) -> str:
+    """Get the main/default branch name (usually 'main' or 'master')."""
+    for branch in ["main", "master"]:
+        try:
+            subprocess.check_output(
+                ["git", "rev-parse", "--verify", f"origin/{branch}"],
+                cwd=repo_path,
+                stderr=subprocess.DEVNULL,
+            )
+            return branch
+        except subprocess.CalledProcessError:
+            continue
+    return "main"
+
+
+def check_conflicts_with_main(repo_path: Path, branch: str, main_branch: str) -> list[str]:
+    """Check if merging origin/main_branch would cause conflicts.
+
+    Returns list of conflicting file paths, or empty list if no conflicts.
+    """
+    if branch == main_branch:
+        return []
+
+    try:
+        # Fetch latest
+        subprocess.run(
+            ["git", "fetch", "origin", main_branch],
+            cwd=repo_path,
+            stderr=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            timeout=30,
+        )
+
+        # Check if main is already merged in
+        result = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", f"origin/{main_branch}", "HEAD"],
+            cwd=repo_path,
+        )
+        if result.returncode == 0:
+            return []  # Already up to date
+
+        # Use merge-tree to detect conflicts (Git 2.38+)
+        result = subprocess.run(
+            ["git", "merge-tree", "--write-tree", "HEAD", f"origin/{main_branch}"],
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+        )
+
+        if result.returncode == 0:
+            return []  # No conflicts
+
+        # Parse conflicting files from output
+        # Format includes lines like "CONFLICT (content): Merge conflict in <path>"
+        conflicts = []
+        for line in result.stdout.split("\n"):
+            if line.startswith("CONFLICT") and " in " in line:
+                path = line.split(" in ", 1)[-1].strip()
+                conflicts.append(path)
+
+        return conflicts if conflicts else ["(unable to determine specific files)"]
+
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
+        return []  # Can't check, assume no conflicts
+
+
 def get_uncommitted_changes(repo_path: Path) -> str:
     """Get git status --porcelain output (empty if clean)."""
     try:
@@ -293,6 +359,28 @@ def block_for_ci_failures(
     )
 
 
+def block_for_merge_conflicts(
+    main_branch: str, conflicts: list[str], session_id: str, repo_path: str
+) -> NoReturn:
+    """Block with instructions to resolve merge conflicts with main branch."""
+    conflict_list = "\n".join(f"  • {f}" for f in conflicts[:10])
+    if len(conflicts) > 10:
+        conflict_list += f"\n  ... and {len(conflicts) - 10} more"
+
+    block(
+        f"ACTION REQUIRED: Resolve merge conflicts with {main_branch}.\n\n"
+        f"Conflicting files:\n{conflict_list}\n\n"
+        "Steps to resolve:\n"
+        f"1. Run: `git fetch origin {main_branch}`\n"
+        f"2. Run: `git merge origin/{main_branch}`\n"
+        "3. Resolve conflicts in each file listed above\n"
+        "4. Run: `git add <resolved-files>` for each resolved file\n"
+        "5. Run: `git commit` to complete the merge\n"
+        f"6. {COMMIT_REMINDER}\n"
+        f'7. Call: request_review(session_id="{session_id}", repo_path="{repo_path}")'
+    )
+
+
 def require_clean_working_tree(
     repo_path: Path, branch: str, session_id: str, pr_info: str
 ) -> None:
@@ -420,6 +508,12 @@ def main() -> None:
 
     pr_number = session.get("github-pr-number")
     pr_info = f"PR #{pr_number}" if pr_number else "the PR"
+
+    # Check for merge conflicts with main branch
+    main_branch = get_main_branch(repo_path)
+    conflicts = check_conflicts_with_main(repo_path, branch, main_branch)
+    if conflicts:
+        block_for_merge_conflicts(main_branch, conflicts, session_id, str(repo_path))
 
     require_clean_working_tree(repo_path, branch, session_id, pr_info)
     poll_for_comments(session_id, pr_info, str(repo_path))
