@@ -2,6 +2,7 @@
   "Tests for re-frame event handlers.
    Tests event handler logic by simulating the event handling without re-frame."
   (:require [clojure.test :refer [deftest testing is]]
+            [clojure.string :as str]
             [differ.client.db :as db]))
 
 ;; Note: These tests verify the event handler logic by simulating what the handlers do.
@@ -301,15 +302,16 @@
     (let [file-path "main.cljs"
           from-line 10
           to-line 20
-          response {:lines [{:line 10 :content "line 10"}
-                            {:line 11 :content "line 11"}]}
-          context-lines (mapv (fn [{:keys [line content]}]
-                                {:type :context
-                                 :content content
-                                 :old-num line
-                                 :new-num line
-                                 :file file-path})
-                              (:lines response))
+          response {:lines "line 10\nline 11"}
+          context-lines (into []
+                              (map-indexed
+                               (fn [idx line-content]
+                                 {:type :context
+                                  :content line-content
+                                  :old-num (+ from-line idx)
+                                  :new-num (+ from-line idx)
+                                  :file file-path})
+                               (str/split-lines (:lines response))))
           db (update-in db/default-db [:expanded-context file-path]
                         (fn [existing]
                           (merge (or existing {})

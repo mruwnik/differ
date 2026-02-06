@@ -274,15 +274,17 @@
 (rf/reg-event-db
  :context-lines-loaded
  (fn [db [_ file-path from-line to-line response]]
-   (let [lines (:lines response)
-         ;; Convert to diff line format (context lines with space prefix)
-         context-lines (mapv (fn [{:keys [line content]}]
-                               {:type :context
-                                :content content
-                                :old-num line
-                                :new-num line
-                                :file file-path})
-                             lines)]
+   (let [lines-str (:lines response)
+         ;; Server returns a plain string - split into lines and pair with line numbers
+         context-lines (into []
+                             (map-indexed
+                              (fn [idx line-content]
+                                {:type :context
+                                 :content line-content
+                                 :old-num (+ from-line idx)
+                                 :new-num (+ from-line idx)
+                                 :file file-path})
+                              (str/split-lines lines-str)))]
      ;; Store expanded context in db
      (update-in db [:expanded-context file-path]
                 (fn [existing]
