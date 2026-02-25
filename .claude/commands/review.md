@@ -11,7 +11,8 @@ Additional context from user: $ARGUMENTS
 ## Steps
 
 1. Get or create a review session using `mcp__differ-review__get_or_create_session` with the current repo path
-2. Check for untracked files using `git status --porcelain` (lines starting with `??`)
+2. Generate a reviewer name using `mcp__differ-review__random_name()` — use this as `author` for all comments
+3. Check for untracked files using `git status --porcelain` (lines starting with `??`)
    - Filter by file extension/path to find likely source files (e.g., .cljs, .ts, .py, .js, .go, etc.)
    - Exclude obvious non-review paths: node_modules/, .git/, build/, dist/, target/, __pycache__/, *.log, .DS_Store
    - If there are potentially relevant untracked source files, ask the user if they should be added to the review
@@ -27,7 +28,7 @@ Additional context from user: $ARGUMENTS
    - Security considerations
    - Code style and best practices
 6. Add review comments using `mcp__differ-review__add_comment` for specific issues found
-   - Use whatever you feel like as the author, as long as you'll know it was you
+   - Use the name from step 2 as the author
    - Include file path and line number for specific comments
 7. Submit the review using `mcp__differ-review__submit_review`
    - The body should be **3-4 lines max**: verdict, critical issue count, one-sentence summary
