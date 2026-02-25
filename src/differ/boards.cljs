@@ -59,7 +59,7 @@
   (let [^js stmt (.prepare (db/db)
                            "SELECT depends_on_task_id FROM task_dependencies WHERE task_id = ?")
         rows (.all stmt task-id)]
-    (mapv #(.-depends_on_task_id %) rows)))
+    (mapv (fn [^js row] (.-depends_on_task_id row)) rows)))
 
 (defn get-tasks-blocked-by
   "Get list of task IDs that are blocked by the given task."
@@ -67,7 +67,7 @@
   (let [^js stmt (.prepare (db/db)
                            "SELECT task_id FROM task_dependencies WHERE depends_on_task_id = ?")
         rows (.all stmt task-id)]
-    (mapv #(.-task_id %) rows)))
+    (mapv (fn [^js row] (.-task_id row)) rows)))
 
 (defn- enrich-task
   "Add effective status and blocked-by to a single task."
@@ -78,7 +78,7 @@
                               JOIN tasks t ON t.id = td.depends_on_task_id
                               WHERE td.task_id = ? AND t.status != 'done'")
           rows (.all stmt (:id task))
-          unresolved (mapv #(.-depends_on_task_id %) rows)
+          unresolved (mapv (fn [^js r] (.-depends_on_task_id r)) rows)
           effective-status (if (seq unresolved) "blocked" (:status task))]
       (assoc task
              :status effective-status
@@ -97,9 +97,9 @@
                     WHERE td.task_id IN (" placeholders ") AND t.status != 'done'")
           ^js stmt (.prepare (db/db) sql)
           rows (.all stmt (to-array ids))
-          deps-by-task (group-by #(.-task_id %) rows)]
+          deps-by-task (group-by (fn [^js r] (.-task_id r)) rows)]
       (mapv (fn [task]
-              (let [unresolved (mapv #(.-depends_on_task_id %) (get deps-by-task (:id task) []))
+              (let [unresolved (mapv (fn [^js r] (.-depends_on_task_id r)) (get deps-by-task (:id task) []))
                     effective-status (if (seq unresolved) "blocked" (:status task))]
                 (assoc task :status effective-status :blocked-by unresolved)))
             tasks))))
@@ -172,31 +172,65 @@
       (set-task-dependencies! id blocked-by))
     (get-task id)))
 
+(defn- find-next-available-task-row
+  "Find the first pending task with no unresolved dependencies on a board.
+   Returns raw JS row or nil. Must be called inside a transaction."
+  [board-id]
+  (let [^js stmt (.prepare (db/db)
+                           "SELECT t.* FROM tasks t
+                            WHERE t.board_id = ?
+                            AND t.status = 'pending'
+                            AND NOT EXISTS (
+                              SELECT 1 FROM task_dependencies td
+                              JOIN tasks dep ON dep.id = td.depends_on_task_id
+                              WHERE td.task_id = t.id AND dep.status != 'done'
+                            )
+                            ORDER BY t.created_at ASC
+                            LIMIT 1")]
+    (.get stmt board-id)))
+
 (defn take-task!
   "Atomically claim a pending task. Fails if task is not pending or blocked.
-   Uses better-sqlite3 transaction for atomicity."
-  [{:keys [task-id worker-name worker-id note]}]
+   If task-id is nil, auto-assigns the first available task on the board
+   identified by repo-path. Uses better-sqlite3 transaction for atomicity."
+  [{:keys [task-id repo-path worker-name worker-id note]}]
+  (when (and (nil? task-id) (nil? repo-path))
+    (throw (js/Error. "Either task-id or repo-path is required")))
   (let [txn (.transaction (db/db)
                           (fn []
-                            (let [^js read-stmt (.prepare (db/db) "SELECT * FROM tasks WHERE id = ?")
-                                  ^js row (.get read-stmt task-id)]
-                              (when-not row
-                                (throw (js/Error. (str "Task not found: " task-id))))
-                              (when-not (= "pending" (.-status row))
-                                (throw (js/Error. (str "Task is not pending (status: " (.-status row) ")"))))
-                              ;; Check for unresolved dependencies
-                              (let [^js deps-stmt (.prepare (db/db)
-                                                            "SELECT COUNT(*) as count FROM task_dependencies td
-                                                             JOIN tasks t ON t.id = td.depends_on_task_id
-                                                             WHERE td.task_id = ? AND t.status != 'done'")
-                                    ^js deps-row (.get deps-stmt task-id)]
-                                (when (pos? (.-count deps-row))
-                                  (throw (js/Error. "Task is blocked by unresolved dependencies"))))
-                              (let [now (util/now-iso)
+                            ;; When task-id is provided it takes precedence; repo-path is ignored.
+                            (let [^js row (if task-id
+                                            (let [^js read-stmt (.prepare (db/db) "SELECT * FROM tasks WHERE id = ?")
+                                                  ^js r (.get read-stmt task-id)]
+                                              (when-not r
+                                                (throw (js/Error. (str "Task not found: " task-id))))
+                                              (when-not (= "pending" (.-status r))
+                                                (throw (js/Error. (str "Task is not pending (status: " (.-status r) ")"))))
+                                              r)
+                                           ;; Auto-assign: find next available task on the board
+                                            (let [board (get-board-by-repo repo-path)]
+                                              (when-not board
+                                                (throw (js/Error. (str "No board found for repo: " repo-path))))
+                                              (let [^js r (find-next-available-task-row (:id board))]
+                                                (when-not r
+                                                  (throw (js/Error. "No available tasks on this board")))
+                                                r)))]
+                              ;; Check for unresolved dependencies (only needed for explicit task-id;
+                              ;; auto-assign already filters these out in the SQL query)
+                              (when task-id
+                                (let [^js deps-stmt (.prepare (db/db)
+                                                              "SELECT COUNT(*) as count FROM task_dependencies td
+                                                               JOIN tasks t ON t.id = td.depends_on_task_id
+                                                               WHERE td.task_id = ? AND t.status != 'done'")
+                                      ^js deps-row (.get deps-stmt task-id)]
+                                  (when (pos? (.-count deps-row))
+                                    (throw (js/Error. "Task is blocked by unresolved dependencies")))))
+                              (let [tid (.-id row)
+                                    now (util/now-iso)
                                     ^js update-stmt (.prepare (db/db)
                                                               "UPDATE tasks SET status = 'in_progress', worker_name = ?, worker_id = ?, updated_at = ?
                                                                WHERE id = ?")]
-                                (.run update-stmt worker-name worker-id now task-id)
+                                (.run update-stmt worker-name worker-id now tid)
                                 ;; Update board timestamp
                                 (let [^js board-stmt (.prepare (db/db) "UPDATE boards SET updated_at = ? WHERE id = ?")]
                                   (.run board-stmt now (.-board_id row)))
@@ -206,9 +240,9 @@
                                         ^js note-stmt (.prepare (db/db)
                                                                 "INSERT INTO task_notes (id, task_id, author, content, created_at)
                                                                  VALUES (?, ?, ?, ?, ?)")]
-                                    (.run note-stmt note-id task-id worker-name note now)))))))]
-    (txn)
-    (get-task task-id)))
+                                    (.run note-stmt note-id tid worker-name note now)))
+                                tid))))]
+    (get-task (txn))))
 
 (defn update-task!
   "Update task fields. Validates status against board's allowed statuses.

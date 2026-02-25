@@ -153,7 +153,44 @@
           notes (boards/list-notes (:id task))]
       (is (= 1 (count notes)))
       (is (= "Starting work on this" (:content (first notes))))
-      (is (= "agent-1" (:author (first notes)))))))
+      (is (= "agent-1" (:author (first notes))))))
+
+  (testing "auto-assigns first available task when task-id omitted"
+    (let [t1 (boards/create-task! {:repo-path "/tmp/auto-repo" :title "First task"})
+          _t2 (boards/create-task! {:repo-path "/tmp/auto-repo" :title "Second task"})
+          taken (boards/take-task! {:repo-path "/tmp/auto-repo"
+                                    :worker-name "auto-agent"
+                                    :worker-id "w-auto"})]
+      (is (= (:id t1) (:id taken)))
+      (is (= "in_progress" (:status taken)))
+      (is (= "auto-agent" (:worker-name taken)))))
+
+  (testing "auto-assign skips blocked tasks"
+    (let [blocker (boards/create-task! {:repo-path "/tmp/auto-blocked" :title "Blocker"})
+          _blocked (boards/create-task! {:repo-path "/tmp/auto-blocked" :title "Blocked"
+                                         :blocked-by [(:id blocker)]})
+          _free (boards/create-task! {:repo-path "/tmp/auto-blocked" :title "Free task"})
+          taken (boards/take-task! {:repo-path "/tmp/auto-blocked"
+                                    :worker-name "agent"
+                                    :worker-id "w"})]
+      ;; Should skip the blocked task and take blocker (first pending unblocked)
+      (is (= (:id blocker) (:id taken)))))
+
+  (testing "auto-assign fails when no available tasks"
+    (let [task (boards/create-task! {:repo-path "/tmp/auto-empty" :title "Only task"})
+          _ (boards/take-task! {:task-id (:id task)
+                                :worker-name "agent"
+                                :worker-id "w"})]
+      (is (thrown-with-msg? js/Error #"No available tasks"
+                            (boards/take-task! {:repo-path "/tmp/auto-empty"
+                                                :worker-name "agent-2"
+                                                :worker-id "w2"})))))
+
+  (testing "auto-assign fails when no board exists"
+    (is (thrown-with-msg? js/Error #"No board found"
+                          (boards/take-task! {:repo-path "/tmp/no-board-here"
+                                              :worker-name "agent"
+                                              :worker-id "w"})))))
 
 ;; ============================================================================
 ;; Update Task Tests

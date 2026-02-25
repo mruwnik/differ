@@ -225,17 +225,19 @@
                   :required ["repo_path"]}}
 
    {:name "take_task"
-    :description "Claim a pending task. Sets status to in_progress and assigns you as worker. Fails if task is not pending."
+    :description "Claim a pending task. Sets status to in_progress and assigns you as worker. If task_id is omitted, auto-assigns the first available (pending, unblocked) task on the board. Returns full task details."
     :inputSchema {:type "object"
                   :properties {:task_id {:type "string"
-                                         :description "Task ID to claim"}
+                                         :description "Task ID to claim (optional - omit to auto-assign next available task)"}
+                               :repo_path {:type "string"
+                                           :description "Repo path to find board (required when task_id is omitted)"}
                                :worker_name {:type "string"
                                              :description "Display name of the worker"}
                                :worker_id {:type "string"
                                            :description "Unique worker identifier (optional)"}
                                :note {:type "string"
                                       :description "Optional note to add when claiming"}}
-                  :required ["task_id" "worker_name"]}}
+                  :required ["worker_name"]}}
 
    {:name "update_task"
     :description "Update a task's status, title, description, persist flag, or dependencies. Status is validated against the board's allowed statuses: pending, in_progress, done, rejected, in_review. 'blocked' is a computed status based on dependencies."
@@ -671,9 +673,11 @@
                                 :include-notes include-notes :show-done show-done})}
     {:tasks []}))
 
-(defmethod handle-tool "take_task" [_ {:keys [task-id worker-name worker-id note]}]
-  (let [task (boards/take-task! {:task-id task-id :worker-name worker-name
-                                 :worker-id worker-id :note note})
+(defmethod handle-tool "take_task" [_ {:keys [task-id repo-path worker-name worker-id note]}]
+  (when (and (nil? task-id) (nil? repo-path))
+    (throw (js/Error. "Either task_id or repo_path is required")))
+  (let [task (boards/take-task! {:task-id task-id :repo-path repo-path
+                                 :worker-name worker-name :worker-id worker-id :note note})
         board (boards/get-board (:board-id task))]
     (sse/broadcast-all! :task-updated {:task task :repo-path (:repo-path board)})
     {:task task}))
