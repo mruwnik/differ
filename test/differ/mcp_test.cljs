@@ -458,3 +458,16 @@
     (is (= "array" (#'mcp/get-json-type [1 2 3])))
     (is (= "array" (#'mcp/get-json-type '(1 2 3))))
     (is (= "object" (#'mcp/get-json-type {:a 1})))))
+
+;; ============================================================================
+;; Kanban Board Tool Tests
+;; ============================================================================
+
+(deftest kanban-tools-defined-test
+  (testing "kanban board tools are defined"
+    (let [tool-names (set (map :name mcp/tools))]
+      (is (contains? tool-names "create_task"))
+      (is (contains? tool-names "list_tasks"))
+      (is (contains? tool-names "take_task"))
+      (is (contains? tool-names "update_task"))
+      (is (contains? tool-names "add_note")))))

@@ -198,3 +198,39 @@
    :url (str "/api/github/tokens/" token-id)
    :on-success [:github-token-deleted token-id]
    :on-failure [:api-error]})
+
+;; Board/kanban API calls
+
+(defn fetch-boards []
+  {:method "GET"
+   :url "/api/boards"
+   :on-success [:boards-loaded]
+   :on-failure [:api-error]})
+
+(defn fetch-board-tasks [repo-path & {:keys [show-done]}]
+  {:method "GET"
+   :url (str "/api/boards/" (js/encodeURIComponent repo-path) "/tasks"
+             "?show_done=" (if show-done "true" "false")
+             "&include_notes=true")
+   :on-success [:board-tasks-loaded]
+   :on-failure [:api-error]})
+
+(defn fetch-task [task-id]
+  {:method "GET"
+   :url (str "/api/tasks/" task-id)
+   :on-success [:task-loaded]
+   :on-failure [:api-error]})
+
+(defn update-task [task-id updates]
+  {:method "PATCH"
+   :url (str "/api/tasks/" task-id)
+   :body updates
+   :on-success [:task-updated-response]
+   :on-failure [:api-error]})
+
+(defn add-task-note [task-id content]
+  {:method "POST"
+   :url (str "/api/tasks/" task-id "/notes")
+   :body {:content content :author "user"}
+   :on-success [:task-note-added]
+   :on-failure [:api-error]})

@@ -359,6 +359,17 @@
  (fn [db _]
    (:pat-form db)))
 
+;; Board/Kanban subscriptions
+(rf/reg-sub :boards (fn [db _] (:boards db)))
+(rf/reg-sub :board-tasks (fn [db _] (:board-tasks db)))
+(rf/reg-sub :selected-task (fn [db _] (:selected-task db)))
+(rf/reg-sub :board-show-done (fn [db _] (:board-show-done db)))
+
+(rf/reg-sub
+ :board-repo
+ :<- [:route]
+ (fn [route _] (:board-repo route)))
+
 ;; Review summaries (comments with no file - added when finishing a review)
 (rf/reg-sub
  :review-summaries

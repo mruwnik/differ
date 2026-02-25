@@ -727,6 +727,122 @@
        (assoc-in [:pat-form :submitting] false)
        (assoc-in [:pat-form :error] (or (:error error) "Failed to add token")))))
 
+;; ============================================================================
+;; Board/Kanban events
+;; ============================================================================
+
+;; Navigation
+(rf/reg-event-fx
+ :navigate-boards
+ (fn [{:keys [db]} [_ opts]]
+   (let [replace? (:replace opts)]
+     {:db (-> db
+              (assoc-in [:route :page] :boards)
+              (assoc-in [:route :board-repo] nil)
+              (assoc :selected-task nil))
+      :sse-disconnect true
+      :push-url {:path "/boards" :replace? replace?}
+      :dispatch [:load-boards]})))
+
+(rf/reg-event-fx
+ :navigate-board
+ (fn [{:keys [db]} [_ repo-path opts]]
+   (let [replace? (:replace opts)]
+     {:db (-> db
+              (assoc-in [:route :page] :board)
+              (assoc-in [:route :board-repo] repo-path)
+              (assoc :selected-task nil))
+      ;; nil means connect to the global /events SSE endpoint (no session filter),
+      ;; which receives broadcast events like task-created/task-updated.
+      :sse-connect nil
+      :push-url {:path (str "/boards/" (js/encodeURIComponent repo-path)) :replace? replace?}
+      :dispatch [:load-board-tasks repo-path]})))
+
+;; Data loading
+(rf/reg-event-fx
+ :load-boards
+ (fn [_ _]
+   {:http (api/fetch-boards)}))
+
+(rf/reg-event-db
+ :boards-loaded
+ (fn [db [_ response]]
+   (assoc db :boards (:boards response))))
+
+(rf/reg-event-fx
+ :load-board-tasks
+ (fn [{:keys [db]} [_ repo-path]]
+   {:http (api/fetch-board-tasks repo-path :show-done (:board-show-done db))}))
+
+(rf/reg-event-db
+ :board-tasks-loaded
+ (fn [db [_ response]]
+   (assoc db :board-tasks (:tasks response))))
+
+(rf/reg-event-db
+ :select-task
+ (fn [db [_ task]]
+   (assoc db :selected-task task)))
+
+(rf/reg-event-db
+ :deselect-task
+ (fn [db _]
+   (assoc db :selected-task nil)))
+
+(rf/reg-event-fx
+ :toggle-board-show-done
+ (fn [{:keys [db]} _]
+   (let [new-val (not (:board-show-done db))
+         repo-path (get-in db [:route :board-repo])]
+     {:db (assoc db :board-show-done new-val)
+      :dispatch [:load-board-tasks repo-path]})))
+
+(rf/reg-event-fx
+ :update-task-from-ui
+ (fn [_ [_ task-id updates]]
+   {:http (api/update-task task-id updates)}))
+
+(rf/reg-event-fx
+ :task-updated-response
+ (fn [{:keys [db]} [_ response]]
+   (let [repo-path (get-in db [:route :board-repo])]
+     (if (and (:selected-task db) (= (:id (:selected-task db)) (:id (:task response))))
+       {:dispatch-n [[:load-board-tasks repo-path]
+                     [:select-task (:task response)]]}
+       {:dispatch [:load-board-tasks repo-path]}))))
+
+(rf/reg-event-fx
+ :add-task-note-from-ui
+ (fn [_ [_ task-id content]]
+   {:http (api/add-task-note task-id content)}))
+
+(rf/reg-event-fx
+ :task-note-added
+ (fn [{:keys [db]} _]
+   (let [repo-path (get-in db [:route :board-repo])
+         task (:selected-task db)]
+     {:dispatch-n (cond-> [[:load-board-tasks repo-path]]
+                    task (conj [:load-task (:id task)]))})))
+
+(rf/reg-event-fx
+ :load-task
+ (fn [_ [_ task-id]]
+   {:http (api/fetch-task task-id)}))
+
+(rf/reg-event-db
+ :task-loaded
+ (fn [db [_ response]]
+   (assoc db :selected-task (:task response))))
+
+;; SSE event for task changes
+(rf/reg-event-fx
+ :sse-task-changed
+ (fn [{:keys [db]} [_ data]]
+   (let [current-repo (get-in db [:route :board-repo])
+         event-repo (:repo-path data)]
+     (when (= current-repo event-repo)
+       {:dispatch [:load-board-tasks current-repo]}))))
+
 ;; Error handling
 (rf/reg-event-db
  :api-error

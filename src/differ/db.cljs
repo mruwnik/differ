@@ -15,7 +15,7 @@
   [n]
   (str/join "," (repeat n "?")))
 
-(defn- safe-parse-json
+(defn safe-parse-json
   "Parse JSON string, returning default on error."
   [s default]
   (if (or (nil? s) (= s ""))
@@ -89,6 +89,57 @@
         ALTER TABLE sessions ADD COLUMN github_repo TEXT;
         ALTER TABLE sessions ADD COLUMN github_pr_number INTEGER;
       "))))
+
+(def kanban-ddl
+  "Kanban board DDL. Single source of truth used by create-tables, migrate-kanban-tables,
+   and test_helpers. All three locations reference this constant so schema changes only
+   need to happen in one place."
+  "CREATE TABLE IF NOT EXISTS boards (
+      id TEXT PRIMARY KEY,
+      repo_path TEXT NOT NULL UNIQUE,
+      statuses TEXT NOT NULL DEFAULT '[\"pending\",\"in_progress\",\"done\",\"rejected\",\"in_review\"]',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS tasks (
+      id TEXT PRIMARY KEY,
+      board_id TEXT NOT NULL REFERENCES boards(id) ON DELETE CASCADE,
+      title TEXT NOT NULL,
+      description TEXT,
+      status TEXT NOT NULL DEFAULT 'pending',
+      worker_name TEXT,
+      worker_id TEXT,
+      persist INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_tasks_board_status ON tasks(board_id, status);
+    CREATE INDEX IF NOT EXISTS idx_tasks_worker ON tasks(worker_id);
+
+    CREATE TABLE IF NOT EXISTS task_notes (
+      id TEXT PRIMARY KEY,
+      task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      author TEXT,
+      content TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_task_notes_task ON task_notes(task_id);
+
+    CREATE TABLE IF NOT EXISTS task_dependencies (
+      task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      depends_on_task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      PRIMARY KEY (task_id, depends_on_task_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_task_deps_depends_on ON task_dependencies(depends_on_task_id);")
+
+(defn- migrate-kanban-tables
+  "Add kanban board tables for existing databases."
+  [db]
+  (.exec db kanban-ddl))
 
 (defn- create-tables [db]
   (.exec db "
@@ -225,7 +276,10 @@
       expires_at TEXT NOT NULL,
       created_at TEXT NOT NULL
     );
-  "))
+
+  ")
+  ;; Kanban board tables - uses shared DDL constant (see kanban-ddl)
+  (.exec db kanban-ddl))
 
 (defn init!
   "Initialize database connection."
@@ -240,6 +294,7 @@
       (migrate-comments-table db)
       (migrate-sessions-table db)
       (migrate-github-tokens-table db)
+      (migrate-kanban-tables db)
       (reset! db-instance db)))
   @db-instance)
 

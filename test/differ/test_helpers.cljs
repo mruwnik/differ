@@ -5,7 +5,8 @@
             ["fs" :as fs]
             ["os" :as os]
             ["path" :as path]
-            [clojure.string :as str]))
+            [clojure.string :as str]
+            [differ.db :as db]))
 
 ;; ============================================================================
 ;; Temp Directory Utilities
@@ -43,6 +44,7 @@
         db-path (path/join dir "test.db")
         db (Database db-path)]
     (.pragma db "journal_mode = WAL")
+    (.pragma db "foreign_keys = ON")
     ;; Create tables (same as main db.cljs)
     (.exec db "
       CREATE TABLE IF NOT EXISTS sessions (
@@ -122,6 +124,8 @@
         created_at TEXT NOT NULL
       );
     ")
+    ;; Kanban board tables - uses shared DDL constant from differ.db
+    (.exec db db/kanban-ddl)
     (reset! test-db-atom db)
     (reset! test-db-path-atom db-path)
     db))
@@ -145,6 +149,10 @@
   "Clear all data from test database tables."
   []
   (when-let [db @test-db-atom]
+    (.exec db "DELETE FROM task_dependencies")
+    (.exec db "DELETE FROM task_notes")
+    (.exec db "DELETE FROM tasks")
+    (.exec db "DELETE FROM boards")
     (.exec db "DELETE FROM oauth_refresh_tokens")
     (.exec db "DELETE FROM oauth_access_tokens")
     (.exec db "DELETE FROM oauth_state")

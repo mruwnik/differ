@@ -7,6 +7,7 @@
             [differ.schema-test]
             [differ.git-test]
             [differ.db-test]
+            [differ.boards-test]
             [differ.sessions-test]
             [differ.comments-test]
             [differ.api-test]
@@ -37,6 +38,7 @@
    'differ.schema-test
    'differ.git-test
    'differ.db-test
+   'differ.boards-test
    'differ.sessions-test
    'differ.comments-test
    'differ.api-test

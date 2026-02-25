@@ -66,6 +66,16 @@
                          (let [data (js->clj (js/JSON.parse (.-data e)) :keywordize-keys true)]
                            (rf/dispatch [:sse-diff-changed (:session-id data)]))))
 
+    (.addEventListener es "task-created"
+                       (fn [e]
+                         (let [data (js->clj (js/JSON.parse (.-data e)) :keywordize-keys true)]
+                           (rf/dispatch [:sse-task-changed data]))))
+
+    (.addEventListener es "task-updated"
+                       (fn [e]
+                         (let [data (js->clj (js/JSON.parse (.-data e)) :keywordize-keys true)]
+                           (rf/dispatch [:sse-task-changed data]))))
+
     (reset! event-source es)))
 
 (defn disconnect! []

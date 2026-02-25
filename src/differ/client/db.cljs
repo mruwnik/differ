@@ -8,7 +8,7 @@
    :context-expand-size 15})       ;; Lines to expand at a time
 
 (def default-db
-  {:route {:page :sessions}  ;; :sessions or :session
+  {:route {:page :sessions :board-repo nil}  ;; :sessions, :session, :boards, :board
    :sessions []
    :current-session nil
    :diff {:raw nil
@@ -30,7 +30,12 @@
                   :parent-id nil
                   :text ""}
    :user {:author "user"}  ;; Default author for human comments
-   :config default-config})
+   :config default-config
+   ;; Board/kanban state
+   :boards []
+   :board-tasks []
+   :board-show-done false
+   :selected-task nil})
 
 ;; Route helpers
 (defn sessions-page? [db]

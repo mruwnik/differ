@@ -1,9 +1,13 @@
 (ns differ.mcp
   "MCP (Model Context Protocol) JSON-RPC handler over HTTP."
-  (:require [differ.sessions :as sessions]
+  (:require ["fs" :as fs]
+            ["path" :as path]
+            [clojure.edn :as edn]
+            [differ.sessions :as sessions]
             [differ.db :as db]
             [differ.git :as git]
             [differ.backend.protocol :as proto]
+            [differ.boards :as boards]
             [differ.sse :as sse]
             [differ.util :as util]
             [differ.oauth :as oauth]
@@ -188,7 +192,91 @@
                                       :description "PR description/body (local sessions only)"}
                                :draft {:type "boolean"
                                        :description "Create as draft PR (default: false, local sessions only)"}}
-                  :required ["session_id"]}}])
+                  :required ["session_id"]}}
+
+   {:name "create_task"
+    :description "Create a task on a repo's kanban board. Auto-creates the board if needed."
+    :inputSchema {:type "object"
+                  :properties {:repo_path {:type "string"
+                                           :description "Absolute path to the repo directory"}
+                               :title {:type "string"
+                                       :description "Task title"}
+                               :description {:type "string"
+                                             :description "Task description (optional)"}
+                               :blocked_by {:type "array"
+                                            :items {:type "string"}
+                                            :description "Array of task IDs this task depends on (optional)"}}
+                  :required ["repo_path" "title"]}}
+
+   {:name "list_tasks"
+    :description "List tasks on a repo's kanban board. By default hides done/rejected tasks."
+    :inputSchema {:type "object"
+                  :properties {:repo_path {:type "string"
+                                           :description "Absolute path to the repo directory"}
+                               :status {:type "array"
+                                        :items {:type "string"}
+                                        :description "Filter by status (e.g. [\"pending\", \"in_progress\"])"}
+                               :worker_id {:type "string"
+                                           :description "Filter by worker ID"}
+                               :include_notes {:type "boolean"
+                                               :description "Include notes on each task"}
+                               :show_done {:type "boolean"
+                                           :description "Include done/rejected tasks"}}
+                  :required ["repo_path"]}}
+
+   {:name "take_task"
+    :description "Claim a pending task. Sets status to in_progress and assigns you as worker. Fails if task is not pending."
+    :inputSchema {:type "object"
+                  :properties {:task_id {:type "string"
+                                         :description "Task ID to claim"}
+                               :worker_name {:type "string"
+                                             :description "Display name of the worker"}
+                               :worker_id {:type "string"
+                                           :description "Unique worker identifier (optional)"}
+                               :note {:type "string"
+                                      :description "Optional note to add when claiming"}}
+                  :required ["task_id" "worker_name"]}}
+
+   {:name "update_task"
+    :description "Update a task's status, title, description, persist flag, or dependencies. Status is validated against the board's allowed statuses: pending, in_progress, done, rejected, in_review. 'blocked' is a computed status based on dependencies."
+    :inputSchema {:type "object"
+                  :properties {:task_id {:type "string"
+                                         :description "Task ID to update"}
+                               :status {:type "string"
+                                        :description "New status"}
+                               :title {:type "string"
+                                       :description "New title"}
+                               :description {:type "string"
+                                             :description "New description"}
+                               :persist {:type "boolean"
+                                         :description "Whether task persists across board resets"}
+                               :blocked_by {:type "array"
+                                            :items {:type "string"}
+                                            :description "Array of task IDs this task depends on"}
+                               :note {:type "string"
+                                      :description "Optional note to add with the update"}
+                               :author {:type "string"
+                                        :description "Author of the note"}}
+                  :required ["task_id"]}}
+
+   {:name "add_note"
+    :description "Add a note to a task without changing its state."
+    :inputSchema {:type "object"
+                  :properties {:task_id {:type "string"
+                                         :description "Task ID to add note to"}
+                               :author {:type "string"
+                                        :description "Note author"}
+                               :content {:type "string"
+                                         :description "Note content"}}
+                  :required ["task_id" "content"]}}
+
+   {:name "random_name"
+    :description "Choose a random name from SF, fantasy, mythology, and D&D pantheons. Returns a name with source and note."
+    :inputSchema {:type "object"
+                  :properties {:source {:type "string"
+                                        :description "Filter by source (e.g., 'Culture', 'Dune', 'Greek')"}
+                               :category {:type "string"
+                                          :description "Filter by category: sf, fantasy, mythology, or dnd"}}}}])
 
 ;; Error codes
 (def parse-error -32700)
@@ -201,6 +289,39 @@
 (def tools-by-name
   "Map of tool name -> tool definition for schema lookup."
   (into {} (map (fn [t] [(:name t) t]) tools)))
+
+;; Names data (lazy-loaded from resources/names.edn)
+(defonce ^:private names-cache (atom nil))
+
+(defn- load-names []
+  (or @names-cache
+      (let [dir (path/dirname js/__dirname)
+            names-path (path/join dir "resources" "names.edn")
+            names (-> (fs/readFileSync names-path "utf8")
+                      edn/read-string)]
+        (reset! names-cache names)
+        names)))
+
+(def ^:private category-patterns
+  {"sf"        ["culture" "dune" "earthsea" "hainish" "vinge" "ender"
+                "vorkosigan" "contact" "murderbot" "ancillary" "memory called"
+                "diamond age" "startide" "uplift" "windup" "three-body"
+                "dark forest" "parable" "foundation" "robot" "2001"
+                "neuromancer"]
+   "fantasy"   ["tolkien" "silmarillion" "lord of the rings" "name of the wind"
+                "wise man" "mistborn" "way of kings" "stormlight" "dresden"
+                "american gods" "graveyard book" "stardust" "sandman"
+                "locke lamora" "red sister" "gideon" "kushiel" "lightbringer"
+                "thrones" "warbreaker" "elantris" "alloy" "edgedancer"
+                "cosmere" "words of radiance" "rhythm of war"
+                "wheel of time" "malazan" "discworld"
+                "realm of the elderlings" "liveship"]
+   "mythology" ["mythology" "kalevala" "sumerian" "babylonian" "greek"
+                "roman" "polynesian" "aztec" "mayan" "zoroastrian" "persian"
+                "akan" "yoruba" "fon" "slavic" "finnish" "hawaiian"
+                "native american" "navajo" "lakota" "inuit" "algonquin"
+                "ojibwe" "iroquois"]
+   "dnd"       ["d&d"]})
 
 ;; Input validation
 
@@ -534,6 +655,62 @@
   (if-let [session (db/get-session session-id)]
     (sessions/request-review! session {:repo-path repo-path :title title :body body :draft draft})
     (throw (ex-info "Session not found" {:code :invalid-params :session-id session-id}))))
+
+;; Kanban board tool handlers
+
+(defmethod handle-tool "create_task" [_ {:keys [repo-path title description blocked-by]}]
+  (let [task (boards/create-task! {:repo-path repo-path :title title :description description
+                                   :blocked-by blocked-by})]
+    (sse/broadcast-all! :task-created {:task task :repo-path repo-path})
+    {:task task}))
+
+(defmethod handle-tool "list_tasks" [_ {:keys [repo-path status worker-id include-notes show-done]}]
+  (if-let [board (boards/get-board-by-repo repo-path)]
+    {:tasks (boards/list-tasks (:id board)
+                               {:status status :worker-id worker-id
+                                :include-notes include-notes :show-done show-done})}
+    {:tasks []}))
+
+(defmethod handle-tool "take_task" [_ {:keys [task-id worker-name worker-id note]}]
+  (let [task (boards/take-task! {:task-id task-id :worker-name worker-name
+                                 :worker-id worker-id :note note})
+        board (boards/get-board (:board-id task))]
+    (sse/broadcast-all! :task-updated {:task task :repo-path (:repo-path board)})
+    {:task task}))
+
+(defmethod handle-tool "update_task" [_ {:keys [task-id] :as params}]
+  (let [task (boards/update-task! task-id (select-keys (dissoc params :task-id) boards/update-task-allowed-keys))
+        board (boards/get-board (:board-id task))]
+    (sse/broadcast-all! :task-updated {:task task :repo-path (:repo-path board)})
+    {:task task}))
+
+(defmethod handle-tool "add_note" [_ {:keys [task-id author content]}]
+  (let [note (boards/add-note! {:task-id task-id :author author :content content})
+        task (boards/get-task task-id)
+        board (boards/get-board (:board-id task))]
+    (sse/broadcast-all! :task-updated {:task task :repo-path (:repo-path board)})
+    {:note note}))
+
+;; Random name tool handler
+
+(defmethod handle-tool "random_name" [_ {:keys [source category]}]
+  (let [names (load-names)
+        candidates (cond->> names
+                     source
+                     (filter (fn [n]
+                               (str/includes? (str/lower-case (:source n))
+                                              (str/lower-case source))))
+
+                     category
+                     (filter (fn [n]
+                               (let [src (str/lower-case (:source n))
+                                     patterns (get category-patterns (str/lower-case category))]
+                                 (some #(str/includes? src %) patterns)))))
+        candidates (if (seq candidates) candidates names)
+        chosen (nth candidates (rand-int (count candidates)))]
+    {:name (:name chosen)
+     :source (:source chosen)
+     :note (:note chosen)}))
 
 (defmethod handle-tool :default [tool-name _]
   (throw (ex-info "Unknown tool" {:tool tool-name})))

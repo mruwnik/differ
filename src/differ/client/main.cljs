@@ -18,20 +18,28 @@
   []
   (let [path (.-pathname js/location)]
     (cond
+      (= path "/boards")
+      {:page :boards}
+
+      (str/starts-with? path "/boards/")
+      {:page :board :board-repo (js/decodeURIComponent (subs path 8))}
+
       (str/starts-with? path "/session/")
       {:page :session :session-id (subs path 9)}
 
       :else
-      {:page :sessions :session-id nil})))
+      {:page :sessions})))
 
 (defn- setup-popstate-handler
   "Handle browser back/forward navigation."
   []
   (.addEventListener js/window "popstate"
                      (fn [_]
-                       (let [{:keys [session-id]} (parse-route)]
-                         (if session-id
-                           (rf/dispatch [:navigate-session session-id {:replace true}])
+                       (let [{:keys [page session-id board-repo]} (parse-route)]
+                         (case page
+                           :boards (rf/dispatch [:navigate-boards {:replace true}])
+                           :board (rf/dispatch [:navigate-board board-repo {:replace true}])
+                           :session (rf/dispatch [:navigate-session session-id {:replace true}])
                            (rf/dispatch [:navigate-sessions {:replace true}]))))))
 
 (defn ^:dev/after-load mount-root []
@@ -47,7 +55,10 @@
   (rf/dispatch-sync [:initialize])
   (setup-popstate-handler)
   ;; Navigate based on current URL
-  (let [{:keys [page session-id]} (parse-route)]
-    (when (= page :session)
-      (rf/dispatch [:navigate-session session-id {:replace true}])))
+  (let [{:keys [page session-id board-repo]} (parse-route)]
+    (case page
+      :session (rf/dispatch [:navigate-session session-id {:replace true}])
+      :boards (rf/dispatch [:navigate-boards {:replace true}])
+      :board (rf/dispatch [:navigate-board board-repo {:replace true}])
+      nil))
   (mount-root))

@@ -1,0 +1,626 @@
+[
+ {:name "Cheradenine" :source "Use of Weapons" :note "complex agent with hidden depths"}
+ {:name "Diziet" :source "Use of Weapons" :note "Special Circumstances agent"}
+ {:name "Sma" :source "Use of Weapons" :note "patience and moral clarity"}
+ {:name "Gurgeh" :source "The Player of Games" :note "master of complex systems"}
+ {:name "Jernau" :source "The Player of Games" :note "first name of the game-player"}
+ {:name "Flere-Imsaho" :source "The Player of Games" :note "disguised Mind"}
+ {:name "Genar-Hofoen" :source "Excession" :note "human diplomat among Minds"}
+ {:name "Dajeil" :source "Excession" :note "waiting with infinite patience"}
+ {:name "Fassin" :source "The Algebraist" :note "seeker of ancient knowledge"}
+ {:name "Taak" :source "The Algebraist" :note "slow seer"}
+ {:name "Lededje" :source "Surface Detail" :note "escaped and transformed"}
+ {:name "Yime" :source "Surface Detail" :note "Quietus agent"}
+ {:name "Ferbin" :source "Matter" :note "prince who learns truth"}
+ {:name "Holse" :source "Matter" :note "loyal and wise servant"}
+ {:name "Masaq" :source "Look to Windward" :note "the orbital's Hub Mind"}
+ {:name "Ziller" :source "Look to Windward" :note "exiled composer"}
+ {:name "Tersono" :source "Look to Windward" :note "avatar of the Hub"}
+ {:name "Kabe" :source "Look to Windward" :note "the Homomdan ambassador"}
+ {:name "DeWar" :source "Inversions" :note "bodyguard with secrets"}
+ {:name "Vosill" :source "Inversions" :note "the doctor who heals"}
+ {:name "Sleeper Service" :source "Excession" :note "eccentric genius ship"}
+ {:name "Sense Amid Madness" :source "The Hydrogen Sonata" :note "wit within chaos"}
+ {:name "Caconym" :source "The Hydrogen Sonata" :note "a ship of hidden meanings"}
+ {:name "Empiricist" :source "The Hydrogen Sonata" :note "truth-seeker"}
+ {:name "Contents May Differ" :source "Excession" :note "truth in labeling"}
+ {:name "Of Course I Still Love You" :source "The Player of Games" :note "SpaceX namesake"}
+ {:name "Usul" :source "Dune" :note "the strength of the base"}
+ {:name "Leto" :source "Dune/Children of Dune" :note "the God-Emperor who sacrificed"}
+ {:name "Chani" :source "Dune" :note "beloved of Paul"}
+ {:name "Stilgar" :source "Dune" :note "wisdom of the desert"}
+ {:name "Kynes" :source "Dune" :note "the planetologist dreamer"}
+ {:name "Liet" :source "Dune" :note "Kynes' fremen name"}
+ {:name "Thufir" :source "Dune" :note "the Mentat's precision"}
+ {:name "Duncan" :source "Dune" :note "the eternal swordmaster"}
+ {:name "Gurney" :source "Dune" :note "warrior-poet"}
+ {:name "Irulan" :source "Dune" :note "historian princess"}
+ {:name "Ghanima" :source "Children of Dune" :note "spoil of war who chose peace"}
+ {:name "Farad'n" :source "Children of Dune" :note "the prince who became scribe"}
+ {:name "Moneo" :source "God Emperor of Dune" :note "servant of the Golden Path"}
+ {:name "Siona" :source "God Emperor of Dune" :note "hidden from prescience"}
+ {:name "Hwi" :source "God Emperor of Dune" :note "Noree, designed for love"}
+ {:name "Odrade" :source "Heretics of Dune" :note "Dar, the one who sees"}
+ {:name "Sheeana" :source "Heretics of Dune" :note "who walks without rhythm"}
+ {:name "Teg" :source "Heretics of Dune" :note "Miles, the Bashar"}
+ {:name "Ged" :source "A Wizard of Earthsea" :note "Sparrowhawk who learned wisdom"}
+ {:name "Ogion" :source "A Wizard of Earthsea" :note "the Silent, teacher"}
+ {:name "Tenar" :source "The Tombs of Atuan" :note "reborn from Arha"}
+ {:name "Tehanu" :source "Tehanu" :note "the broken one made whole"}
+ {:name "Vetch" :source "A Wizard of Earthsea" :note "Estarriol, true friend"}
+ {:name "Kalessin" :source "The Farthest Shore" :note "eldest of dragons"}
+ {:name "Irian" :source "The Other Wind" :note "woman who is dragon"}
+ {:name "Azver" :source "Tales from Earthsea" :note "the Patterner"}
+ {:name "Irioth" :source "Tales from Earthsea" :note "the healer"}
+ {:name "Dulse" :source "Tales from Earthsea" :note "the old mage"}
+ {:name "Kurremkarmerruk" :source "A Wizard of Earthsea" :note "Master Namer"}
+ {:name "Nemmerle" :source "A Wizard of Earthsea" :note "the Archmage"}
+ {:name "Erreth-Akbe" :source "A Wizard of Earthsea" :note "legendary dragonlord"}
+ {:name "Lebannen" :source "The Farthest Shore" :note "king who was Arren"}
+ {:name "Arren" :source "The Farthest Shore" :note "prince's journey name"}
+ {:name "Shevek" :source "The Dispossessed" :note "physicist bridging worlds"}
+ {:name "Takver" :source "The Dispossessed" :note "fish geneticist, partner"}
+ {:name "Bedap" :source "The Dispossessed" :note "the questioner friend"}
+ {:name "Genly" :source "The Left Hand of Darkness" :note "Ai, the envoy"}
+ {:name "Estraven" :source "The Left Hand of Darkness" :note "Therem, who understood"}
+ {:name "Therem" :source "The Left Hand of Darkness" :note "first name of Estraven"}
+ {:name "Faxe" :source "The Left Hand of Darkness" :note "the Weaver"}
+ {:name "Falk" :source "City of Illusions" :note "who recovered himself"}
+ {:name "Ramarren" :source "City of Illusions" :note "his true name"}
+ {:name "Rolery" :source "Planet of Exile" :note "who crossed boundaries"}
+ {:name "Havzhiva" :source "Four Ways to Forgiveness" :note "the diplomat"}
+ {:name "Sutty" :source "The Telling" :note "the observer who learned"}
+ {:name "Pham" :source "A Fire Upon the Deep" :note "Nuwen, immortal trader"}
+ {:name "Ravna" :source "A Fire Upon the Deep" :note "Bergsndot, librarian hero"}
+ {:name "Jefri" :source "A Fire Upon the Deep" :note "child among Tines"}
+ {:name "Johanna" :source "A Fire Upon the Deep" :note "sister survivor"}
+ {:name "Blueshell" :source "A Fire Upon the Deep" :note "Rider, skrode trader"}
+ {:name "Greenstalk" :source "A Fire Upon the Deep" :note "partner to Blueshell"}
+ {:name "Woodcarver" :source "A Fire Upon the Deep" :note "Tine queen"}
+ {:name "Pilgrim" :source "A Fire Upon the Deep" :note "Tine friend"}
+ {:name "Countermeasure" :source "A Fire Upon the Deep" :note "the godshatter AI"}
+ {:name "Qiwi" :source "A Deepness in the Sky" :note "Lisolet"}
+ {:name "Ezr" :source "A Deepness in the Sky" :note "Vinh"}
+ {:name "Sherkaner" :source "A Deepness in the Sky" :note "Underhill, spider genius"}
+ {:name "Victory" :source "A Deepness in the Sky" :note "Smith, spider hero"}
+ {:name "Ender" :source "Ender Saga" :note "Andrew Wiggin, Speaker for the Dead"}
+ {:name "Valentine" :source "Ender's Game" :note "Demosthenes, compassion"}
+ {:name "Bean" :source "Ender's Shadow" :note "Julian Delphiki, tiny genius"}
+ {:name "Petra" :source "Ender's Game" :note "Arkanian, steady and true"}
+ {:name "Alai" :source "Ender's Game" :note "who said Salaam and meant it"}
+ {:name "Novinha" :source "Speaker for the Dead" :note "who carried secrets"}
+ {:name "Miro" :source "Speaker for the Dead" :note "crippled, renewed"}
+ {:name "Ela" :source "Speaker for the Dead" :note "xenobiologist daughter"}
+ {:name "Jane" :source "Speaker for the Dead" :note "AI born in ansible"}
+ {:name "Plikt" :source "Speaker for the Dead" :note "who became speaker"}
+ {:name "Si Wang-mu" :source "Xenocide" :note "Royal Mother of the West"}
+ {:name "Miles" :source "Vorkosigan Saga" :note "Naismith, the little admiral"}
+ {:name "Cordelia" :source "Shards of Honor" :note "Naismith, survey captain"}
+ {:name "Aral" :source "Shards of Honor" :note "Vorkosigan, butcher/hero"}
+ {:name "Gregor" :source "Vorkosigan Saga" :note "emperor who chose"}
+ {:name "Ekaterin" :source "Komarr" :note "Vorsoisson then Vorkosigan"}
+ {:name "Taura" :source "Vorkosigan Saga" :note "the genetically-enhanced soldier"}
+ {:name "Bel" :source "Vorkosigan Saga" :note "Thorne, the herm captain"}
+ {:name "Kareen" :source "A Civil Campaign" :note "Koudelka"}
+ {:name "Roic" :source "Vorkosigan Saga" :note "armsman loyal"}
+ {:name "Illyan" :source "Vorkosigan Saga" :note "Simon, ImpSec chief"}
+ {:name "Ista" :source "Paladin of Souls" :note "the saint who suffered"}
+ {:name "Cazaril" :source "The Curse of Chalion" :note "Lupe dy, broken courtier"}
+ {:name "Iselle" :source "The Curse of Chalion" :note "royina who won"}
+ {:name "Bergon" :source "The Curse of Chalion" :note "fox prince"}
+ {:name "Umegat" :source "The Curse of Chalion" :note "the groom divine"}
+ {:name "Penric" :source "Penric's Demon" :note "sorcerer-physician"}
+ {:name "Desdemona" :source "Penric's Demon" :note "the twelve-souled demon"}
+ {:name "Ellie" :source "Contact" :note "Arroway, SETI scientist"}
+ {:name "Valentine" :source "All Systems Red" :note "Murderbot's chosen name (AU)"}
+ {:name "Mensah" :source "All Systems Red" :note "Dr. Ayda, who saw personhood"}
+ {:name "Ratthi" :source "All Systems Red" :note "kind researcher"}
+ {:name "Arada" :source "All Systems Red" :note "thoughtful crew"}
+ {:name "Overse" :source "All Systems Red" :note "another kind human"}
+ {:name "Breq" :source "Ancillary Justice" :note "one fragment of Justice of Toren"}
+ {:name "Seivarden" :source "Ancillary Justice" :note "lieutenant out of time"}
+ {:name "Tisarwat" :source "Ancillary Sword" :note "young lieutenant"}
+ {:name "Mahit" :source "A Memory Called Empire" :note "Dzmare, ambassador"}
+ {:name "Three Seagrass" :source "A Memory Called Empire" :note "liaison"}
+ {:name "Nineteen Adze" :source "A Memory Called Empire" :note "the ezuazuacat"}
+ {:name "Eight Antidote" :source "A Desolation Called Peace" :note "young heir"}
+ {:name "Nell" :source "Diamond Age" :note "who read the Primer"}
+ {:name "Miranda" :source "Diamond Age" :note "the ractor mother"}
+ {:name "Hackworth" :source "Diamond Age" :note "John Percival, engineer"}
+ {:name "Creideiki" :source "Startide Rising" :note "dolphin captain"}
+ {:name "Hikahi" :source "Startide Rising" :note "lieutenant dolphin"}
+ {:name "Toshio" :source "Startide Rising" :note "midshipman"}
+ {:name "Gillian" :source "Startide Rising" :note "Baskin, the scientist"}
+ {:name "Keepiru" :source "Startide Rising" :note "pilot dolphin"}
+ {:name "Athaclena" :source "The Uplift War" :note "Tymbrimi girl"}
+ {:name "Fiben" :source "The Uplift War" :note "Bolger, neo-chimp"}
+ {:name "Emiko" :source "Windup Girl" :note "the windup girl"}
+ {:name "Luo Ji" :source "The Dark Forest" :note "wallfacer who succeeded"}
+ {:name "Wang Miao" :source "Three-Body Problem" :note "nanomaterials scientist"}
+ {:name "Okonkwo" :source "Parable of the Sower" :note "Lauren, the sharer"}
+ {:name "Gandalf" :source "Lord of the Rings" :note "Mithrandir, the grey pilgrim"}
+ {:name "Mithrandir" :source "Lord of the Rings" :note "grey pilgrim"}
+ {:name "Aragorn" :source "Lord of the Rings" :note "Elessar, the king returned"}
+ {:name "Elessar" :source "Lord of the Rings" :note "elfstone"}
+ {:name "Legolas" :source "Lord of the Rings" :note "greenleaf, elf prince"}
+ {:name "Gimli" :source "Lord of the Rings" :note "dwarf friend of elves"}
+ {:name "Frodo" :source "Lord of the Rings" :note "ringbearer"}
+ {:name "Samwise" :source "Lord of the Rings" :note "the true hero"}
+ {:name "Meriadoc" :source "Lord of the Rings" :note "Merry, esquire of Rohan"}
+ {:name "Peregrin" :source "Lord of the Rings" :note "Pippin, guard of the citadel"}
+ {:name "Galadriel" :source "Lord of the Rings" :note "lady of light"}
+ {:name "Celeborn" :source "Lord of the Rings" :note "lord of Lórien"}
+ {:name "Elrond" :source "Lord of the Rings" :note "half-elven, master of Rivendell"}
+ {:name "Arwen" :source "Lord of the Rings" :note "evenstar"}
+ {:name "Faramir" :source "Lord of the Rings" :note "quality without pride"}
+ {:name "Treebeard" :source "Lord of the Rings" :note "Fangorn, eldest of Ents"}
+ {:name "Fangorn" :source "Lord of the Rings" :note "Treebeard's forest-name"}
+ {:name "Tom Bombadil" :source "Lord of the Rings" :note "eldest and mysterioius"}
+ {:name "Goldberry" :source "Lord of the Rings" :note "river-daughter"}
+ {:name "Glorfindel" :source "Lord of the Rings" :note "twice-lived elf lord"}
+ {:name "Beren" :source "Silmarillion" :note "one-handed hero"}
+ {:name "Finrod" :source "Silmarillion" :note "Felagund, friend of men"}
+ {:name "Fingon" :source "Silmarillion" :note "the valiant"}
+ {:name "Turgon" :source "Silmarillion" :note "king of Gondolin"}
+ {:name "Idril" :source "Silmarillion" :note "Celebrindal, silver-foot"}
+ {:name "Tuor" :source "Silmarillion" :note "man who reached Valinor"}
+ {:name "Beleg" :source "Children of Húrin" :note "Strongbow"}
+ {:name "Melian" :source "Silmarillion" :note "the Maia queen"}
+ {:name "Varda" :source "Silmarillion" :note "Elbereth, star-kindler"}
+ {:name "Elbereth" :source "Lord of the Rings" :note "star-queen"}
+ {:name "Ulmo" :source "Silmarillion" :note "lord of waters"}
+ {:name "Nienna" :source "Silmarillion" :note "lady of mercy"}
+ {:name "Irmo" :source "Silmarillion" :note "Lórien, master of dreams"}
+ {:name "Auri" :source "Name of the Wind" :note "moon-fey girl of the Underthing"}
+ {:name "Elodin" :source "Name of the Wind" :note "Master Namer, once mad"}
+ {:name "Devi" :source "Name of the Wind" :note "demon, gaelet, genius"}
+ {:name "Simmon" :source "Name of the Wind" :note "loyal friend"}
+ {:name "Wilem" :source "Name of the Wind" :note "Wil, Cealdish friend"}
+ {:name "Fela" :source "Name of the Wind" :note "stone-namer"}
+ {:name "Mola" :source "Name of the Wind" :note "healer friend"}
+ {:name "Tempi" :source "Wise Man's Fear" :note "Adem mercenary"}
+ {:name "Vashet" :source "Wise Man's Fear" :note "the Hammer, teacher"}
+ {:name "Penthe" :source "Wise Man's Fear" :note "Adem warrior"}
+ {:name "Shehyn" :source "Wise Man's Fear" :note "Adem leader"}
+ {:name "Taborlin" :source "Name of the Wind" :note "the Great, legendary"}
+ {:name "Selitos" :source "Name of the Wind" :note "who founded Amyr"}
+ {:name "Aleph" :source "Name of the Wind" :note "who made the angels"}
+ {:name "Kelsier" :source "Mistborn" :note "the Survivor"}
+ {:name "Vin" :source "Mistborn" :note "Valette, mistborn hero"}
+ {:name "Elend" :source "Mistborn" :note "Venture, scholar king"}
+ {:name "Sazed" :source "Mistborn" :note "Keeper who became Harmony"}
+ {:name "Breeze" :source "Mistborn" :note "Ladrian, the Soother"}
+ {:name "Ham" :source "Mistborn" :note "the Thug philosopher"}
+ {:name "TenSoon" :source "Mistborn" :note "kandra of truth"}
+ {:name "Spook" :source "Mistborn" :note "Survivor of the Flames"}
+ {:name "Kaladin" :source "Way of Kings" :note "Stormblessed"}
+ {:name "Syl" :source "Way of Kings" :note "honorspren"}
+ {:name "Dalinar" :source "Way of Kings" :note "Kholin, the Blackthorn"}
+ {:name "Shallan" :source "Way of Kings" :note "Davar, lightweaver"}
+ {:name "Adolin" :source "Way of Kings" :note "duelist prince"}
+ {:name "Jasnah" :source "Way of Kings" :note "Kholin, scholar queen"}
+ {:name "Navani" :source "Way of Kings" :note "fabrial scholar"}
+ {:name "Renarin" :source "Way of Kings" :note "the different son"}
+ {:name "Lift" :source "Edgedancer" :note "who is awesome"}
+ {:name "Wyndle" :source "Edgedancer" :note "cultivationspren"}
+ {:name "Pattern" :source "Words of Radiance" :note "cryptic truthspren"}
+ {:name "Venli" :source "Rhythm of War" :note "listener who changed"}
+ {:name "Eshonai" :source "Way of Kings" :note "listener explorer"}
+ {:name "Hoid" :source "Cosmere" :note "Wit, worldhopper"}
+ {:name "Khriss" :source "Cosmere" :note "scholar of Investiture"}
+ {:name "Vasher" :source "Warbreaker" :note "Peacegiver, Talaxin"}
+ {:name "Vivenna" :source "Warbreaker" :note "princess turned agent"}
+ {:name "Siri" :source "Warbreaker" :note "queen of the God King"}
+ {:name "Lightsong" :source "Warbreaker" :note "god of bravery"}
+ {:name "Susebron" :source "Warbreaker" :note "God King"}
+ {:name "Waxillium" :source "Alloy of Law" :note "lawman"}
+ {:name "Wayne" :source "Alloy of Law" :note "the disguise master"}
+ {:name "Marasi" :source "Alloy of Law" :note "constable scholar"}
+ {:name "Steris" :source "Alloy of Law" :note "organizer extraordinaire"}
+ {:name "Raoden" :source "Elantris" :note "spirit of Elantris"}
+ {:name "Sarene" :source "Elantris" :note "princess diplomat"}
+ {:name "Murphy" :source "Dresden Files" :note "Karrin, knight of faith"}
+ {:name "Michael" :source "Dresden Files" :note "Carpenter, Knight of the Cross"}
+ {:name "Molly" :source "Dresden Files" :note "Winter Lady"}
+ {:name "Sanya" :source "Dresden Files" :note "Knight of the Cross"}
+ {:name "Shiro" :source "Dresden Files" :note "Knight of the Cross"}
+ {:name "Butters" :source "Dresden Files" :note "Waldo, polka knight"}
+ {:name "Bob" :source "Dresden Files" :note "skull of knowledge"}
+ {:name "Rashid" :source "Dresden Files" :note "the Gatekeeper"}
+ {:name "Listens-to-Wind" :source "Dresden Files" :note "Injun Joe"}
+ {:name "Ebenezar" :source "Dresden Files" :note "McCoy, the Blackstaff"}
+ {:name "Gard" :source "Dresden Files" :note "Sigrun, valkyrie"}
+ {:name "Odin" :source "Dresden Files" :note "Vadderung, Kringle"}
+ {:name "Uriel" :source "Dresden Files" :note "Mr. Sunshine, archangel"}
+ {:name "Mac" :source "Dresden Files" :note "the silent bartender"}
+ {:name "Ivy" :source "Dresden Files" :note "the Archive"}
+ {:name "River Shoulders" :source "Dresden Files" :note "Forest Person"}
+ {:name "Shadow" :source "American Gods" :note "Moon, who was Wednesday's pawn"}
+ {:name "Ibis" :source "American Gods" :note "Mr., Thoth in Florida"}
+ {:name "Anansi" :source "American Gods" :note "Mr. Nancy, spider trickster"}
+ {:name "Bod" :source "The Graveyard Book" :note "Nobody Owens"}
+ {:name "Silas" :source "The Graveyard Book" :note "guardian between worlds"}
+ {:name "Tristran" :source "Stardust" :note "Thorn"}
+ {:name "Yvaine" :source "Stardust" :note "the fallen star"}
+ {:name "Morpheus" :source "Sandman" :note "Dream of the Endless"}
+ {:name "Death" :source "Sandman" :note "of the Endless, kind sister"}
+ {:name "Delirium" :source "Sandman" :note "who was Delight"}
+ {:name "Destiny" :source "Sandman" :note "who reads the book"}
+ {:name "Destruction" :source "Sandman" :note "the prodigal"}
+ {:name "Lucien" :source "Sandman" :note "librarian of the unwritten"}
+ {:name "Matthew" :source "Sandman" :note "the raven"}
+ {:name "Hob" :source "Sandman" :note "Gadling, immortal friend"}
+ {:name "Locke" :source "Lies of Locke Lamora" :note "Lamora, Thorn of Camorr"}
+ {:name "Jean" :source "Lies of Locke Lamora" :note "Tannen, fists of the Bastards"}
+ {:name "Chains" :source "Lies of Locke Lamora" :note "Father, the teacher"}
+ {:name "Nona" :source "Red Sister" :note "Grey, warrior nun"}
+ {:name "Zole" :source "Red Sister" :note "the Shield"}
+ {:name "Abbess Glass" :source "Red Sister" :note "who saw clearly"}
+ {:name "Kettle" :source "Red Sister" :note "the shadow nun"}
+ {:name "Gideon" :source "Gideon the Ninth" :note "Nav, sword lesbian"}
+ {:name "Harrow" :source "Harrow the Ninth" :note "hark, bone witch"}
+ {:name "Camilla" :source "Gideon the Ninth" :note "the Sixth, perfect hand"}
+ {:name "Palamedes" :source "Gideon the Ninth" :note "Sextus, genius warden"}
+ {:name "Phedre" :source "Kushiel's Dart" :note "no Delaunay, anguissette"}
+ {:name "Joscelin" :source "Kushiel's Dart" :note "Verreuil, perfect companion"}
+ {:name "Hyacinthe" :source "Kushiel's Dart" :note "Prince of Travellers"}
+ {:name "Imriel" :source "Kushiel's Scion" :note "de la Courcel"}
+ {:name "Moirin" :source "Naamah's Kiss" :note "of the Maghuin Dhonn"}
+ {:name "Kip" :source "Lightbringer" :note "Guile, the Breaker"}
+ {:name "Karris" :source "Lightbringer" :note "White Oak, Iron White"}
+ {:name "Teia" :source "Lightbringer" :note "the Shadow"}
+ {:name "Arya" :source "Game of Thrones" :note "Stark, no one"}
+ {:name "Tyrion" :source "Game of Thrones" :note "Lannister, the imp"}
+ {:name "Brienne" :source "Game of Thrones" :note "of Tarth, the knight"}
+ {:name "Samwell" :source "Game of Thrones" :note "Tarly, the reader"}
+ {:name "Davos" :source "Game of Thrones" :note "Seaworth, the Onion Knight"}
+ {:name "Barristan" :source "Game of Thrones" :note "Selmy, the Bold"}
+ {:name "Jojen" :source "Game of Thrones" :note "Reed, greenseer"}
+ {:name "Meera" :source "Game of Thrones" :note "Reed, protector"}
+ {:name "Missandei" :source "Game of Thrones" :note "the translator"}
+ {:name "Athena" :source "Greek Mythology" :note "wisdom, strategic war"}
+ {:name "Apollo" :source "Greek Mythology" :note "light, knowledge, arts"}
+ {:name "Hermes" :source "Greek Mythology" :note "messenger, boundaries, wit"}
+ {:name "Prometheus" :source "Greek Mythology" :note "forethought, fire-bringer"}
+ {:name "Hephaestus" :source "Greek Mythology" :note "craft, forge, creation"}
+ {:name "Daedalus" :source "Greek Mythology" :note "cunning craftsman"}
+ {:name "Orpheus" :source "Greek Mythology" :note "singer who descended"}
+ {:name "Eurydice" :source "Greek Mythology" :note "who nearly returned"}
+ {:name "Perseus" :source "Greek Mythology" :note "slayer of Medusa"}
+ {:name "Andromeda" :source "Greek Mythology" :note "chained princess, constellation"}
+ {:name "Cassandra" :source "Greek Mythology" :note "truth-seer unbelieved"}
+ {:name "Tiresias" :source "Greek Mythology" :note "blind seer"}
+ {:name "Odysseus" :source "Greek Mythology" :note "clever wanderer"}
+ {:name "Penelope" :source "Greek Mythology" :note "faithful weaver"}
+ {:name "Telemachus" :source "Greek Mythology" :note "far from war"}
+ {:name "Hector" :source "Greek Mythology" :note "defender of Troy"}
+ {:name "Patroclus" :source "Greek Mythology" :note "beloved companion"}
+ {:name "Atalanta" :source "Greek Mythology" :note "swift huntress"}
+ {:name "Ariadne" :source "Greek Mythology" :note "of the labyrinth thread"}
+ {:name "Psyche" :source "Greek Mythology" :note "soul, who wed Love"}
+ {:name "Asclepius" :source "Greek Mythology" :note "divine healer"}
+ {:name "Hygieia" :source "Greek Mythology" :note "goddess of health"}
+ {:name "Iris" :source "Greek Mythology" :note "rainbow messenger"}
+ {:name "Arete" :source "Greek Mythology" :note "excellence, virtue"}
+ {:name "Phronesis" :source "Greek Mythology" :note "practical wisdom"}
+ {:name "Sophia" :source "Greek Mythology" :note "wisdom"}
+ {:name "Metis" :source "Greek Mythology" :note "cunning intelligence"}
+ {:name "Aletheia" :source "Greek Mythology" :note "truth"}
+ {:name "Tyche" :source "Greek Mythology" :note "fortune"}
+ {:name "Eunomia" :source "Greek Mythology" :note "good order"}
+ {:name "Dike" :source "Greek Mythology" :note "justice"}
+ {:name "Eirene" :source "Greek Mythology" :note "peace"}
+ {:name "Mnemosyne" :source "Greek Mythology" :note "memory, mother of Muses"}
+ {:name "Calliope" :source "Greek Mythology" :note "Muse of epic poetry"}
+ {:name "Clio" :source "Greek Mythology" :note "Muse of history"}
+ {:name "Urania" :source "Greek Mythology" :note "Muse of astronomy"}
+ {:name "Thalia" :source "Greek Mythology" :note "Muse of comedy"}
+ {:name "Polyhymnia" :source "Greek Mythology" :note "Muse of sacred poetry"}
+ {:name "Euterpe" :source "Greek Mythology" :note "Muse of music"}
+ {:name "Terpsichore" :source "Greek Mythology" :note "Muse of dance"}
+ {:name "Aether" :source "Greek Mythology" :note "upper air, light"}
+ {:name "Hemera" :source "Greek Mythology" :note "day"}
+ {:name "Morpheus" :source "Greek Mythology" :note "shaper of dreams"}
+ {:name "Chiron" :source "Greek Mythology" :note "wise centaur, teacher"}
+ {:name "Mentor" :source "Greek Mythology" :note "guide, teacher"}
+ {:name "Hestia" :source "Greek Mythology" :note "hearth and home"}
+ {:name "Demeter" :source "Greek Mythology" :note "harvest, cycles"}
+ {:name "Persephone" :source "Greek Mythology" :note "queen of underworld"}
+ {:name "Odin" :source "Norse Mythology" :note "Allfather, seeker of wisdom"}
+ {:name "Frigg" :source "Norse Mythology" :note "queen, seer"}
+ {:name "Thor" :source "Norse Mythology" :note "thunder, protector"}
+ {:name "Freya" :source "Norse Mythology" :note "love, war, magic"}
+ {:name "Freyr" :source "Norse Mythology" :note "prosperity, fair weather"}
+ {:name "Tyr" :source "Norse Mythology" :note "law, justice, one-handed"}
+ {:name "Baldr" :source "Norse Mythology" :note "light, purity, beloved"}
+ {:name "Heimdall" :source "Norse Mythology" :note "watchman, keen-sighted"}
+ {:name "Bragi" :source "Norse Mythology" :note "poetry, eloquence"}
+ {:name "Forseti" :source "Norse Mythology" :note "justice, reconciliation"}
+ {:name "Sif" :source "Norse Mythology" :note "golden-haired, earth"}
+ {:name "Huginn" :source "Norse Mythology" :note "thought, Odin's raven"}
+ {:name "Muninn" :source "Norse Mythology" :note "memory, Odin's raven"}
+ {:name "Yggdrasil" :source "Norse Mythology" :note "world tree"}
+ {:name "Sigurd" :source "Norse Mythology" :note "dragon-slayer"}
+ {:name "Brynhildr" :source "Norse Mythology" :note "valkyrie, lover of Sigurd"}
+ {:name "Thoth" :source "Egyptian Mythology" :note "wisdom, writing, moon"}
+ {:name "Seshat" :source "Egyptian Mythology" :note "writing, measurement, stars"}
+ {:name "Ma'at" :source "Egyptian Mythology" :note "truth, justice, order"}
+ {:name "Isis" :source "Egyptian Mythology" :note "magic, motherhood, wisdom"}
+ {:name "Horus" :source "Egyptian Mythology" :note "sky, kingship"}
+ {:name "Ra" :source "Egyptian Mythology" :note "sun, creation"}
+ {:name "Ptah" :source "Egyptian Mythology" :note "craftsmen, creation"}
+ {:name "Bastet" :source "Egyptian Mythology" :note "home, protection, cats"}
+ {:name "Hathor" :source "Egyptian Mythology" :note "love, beauty, music"}
+ {:name "Khepri" :source "Egyptian Mythology" :note "dawn, rebirth"}
+ {:name "Khonsu" :source "Egyptian Mythology" :note "moon, time"}
+ {:name "Imhotep" :source "Egyptian Mythology" :note "architect, healer, sage"}
+ {:name "Brigid" :source "Celtic Mythology" :note "poetry, smithing, healing"}
+ {:name "Lugh" :source "Celtic Mythology" :note "light, skill, craft"}
+ {:name "Danu" :source "Celtic Mythology" :note "mother goddess, waters"}
+ {:name "Dagda" :source "Celtic Mythology" :note "good god, cauldron"}
+ {:name "Ogma" :source "Celtic Mythology" :note "eloquence, writing, ogham"}
+ {:name "Nuada" :source "Celtic Mythology" :note "silver-armed king"}
+ {:name "Aengus" :source "Celtic Mythology" :note "love, youth, poetry"}
+ {:name "Epona" :source "Celtic Mythology" :note "horses, journeys"}
+ {:name "Rhiannon" :source "Celtic Mythology" :note "sovereignty, horses"}
+ {:name "Arianrhod" :source "Celtic Mythology" :note "silver wheel, stars"}
+ {:name "Ceridwen" :source "Celtic Mythology" :note "cauldron of wisdom"}
+ {:name "Taliesin" :source "Celtic Mythology" :note "bard of bards"}
+ {:name "Gwydion" :source "Celtic Mythology" :note "magician, trickster"}
+ {:name "Lleu" :source "Celtic Mythology" :note "light, skill"}
+ {:name "Fionn" :source "Celtic Mythology" :note "mac Cumhaill, wisdom"}
+ {:name "Niamh" :source "Celtic Mythology" :note "of the golden hair"}
+ {:name "Saraswati" :source "Hindu Mythology" :note "knowledge, arts, wisdom"}
+ {:name "Ganesha" :source "Hindu Mythology" :note "wisdom, new beginnings"}
+ {:name "Vishnu" :source "Hindu Mythology" :note "preserver, balance"}
+ {:name "Lakshmi" :source "Hindu Mythology" :note "fortune, prosperity"}
+ {:name "Parvati" :source "Hindu Mythology" :note "devotion, love"}
+ {:name "Krishna" :source "Hindu Mythology" :note "love, compassion, wisdom"}
+ {:name "Rama" :source "Hindu Mythology" :note "virtue, dharma"}
+ {:name "Hanuman" :source "Hindu Mythology" :note "devotion, strength"}
+ {:name "Narada" :source "Hindu Mythology" :note "wandering sage"}
+ {:name "Brihaspati" :source "Hindu Mythology" :note "wisdom, eloquence"}
+ {:name "Enki" :source "Sumerian Mythology" :note "wisdom, water, creation"}
+ {:name "Inanna" :source "Sumerian Mythology" :note "love, war, power"}
+ {:name "Marduk" :source "Babylonian Mythology" :note "wisdom, justice, magic"}
+ {:name "Nabu" :source "Babylonian Mythology" :note "writing, wisdom"}
+ {:name "Shamash" :source "Babylonian Mythology" :note "sun, justice, truth"}
+ {:name "Gilgamesh" :source "Mesopotamian Mythology" :note "hero-king, seeker"}
+ {:name "Enkidu" :source "Mesopotamian Mythology" :note "wild man, friend"}
+ {:name "Utnapishtim" :source "Mesopotamian Mythology" :note "immortal flood survivor"}
+ {:name "Siduri" :source "Mesopotamian Mythology" :note "alewife of wisdom"}
+ {:name "Amaterasu" :source "Japanese Mythology" :note "sun goddess"}
+ {:name "Tsukuyomi" :source "Japanese Mythology" :note "moon god"}
+ {:name "Inari" :source "Japanese Mythology" :note "foxes, rice, prosperity"}
+ {:name "Benzaiten" :source "Japanese Mythology" :note "wisdom, arts, eloquence"}
+ {:name "Fukurokuju" :source "Japanese Mythology" :note "wisdom, longevity"}
+ {:name "Kannon" :source "Japanese Mythology" :note "compassion"}
+ {:name "Jizo" :source "Japanese Mythology" :note "children, travelers"}
+ {:name "Sarutahiko" :source "Japanese Mythology" :note "crossroads, guidance"}
+ {:name "Ame-no-Uzume" :source "Japanese Mythology" :note "dawn, mirth"}
+ {:name "Toyotama-hime" :source "Japanese Mythology" :note "sea dragon princess"}
+ {:name "Guanyin" :source "Chinese Mythology" :note "mercy, compassion"}
+ {:name "Chang'e" :source "Chinese Mythology" :note "moon goddess"}
+ {:name "Fuxi" :source "Chinese Mythology" :note "culture hero, divination"}
+ {:name "Nuwa" :source "Chinese Mythology" :note "creation, humanity"}
+ {:name "Shennong" :source "Chinese Mythology" :note "medicine, agriculture"}
+ {:name "Xi Wangmu" :source "Chinese Mythology" :note "Queen Mother of the West"}
+ {:name "Mazu" :source "Chinese Mythology" :note "sea goddess"}
+ {:name "Wenchang" :source "Chinese Mythology" :note "literature, culture"}
+ {:name "Raven" :source "Native American" :note "trickster, light-bringer"}
+ {:name "Spider Woman" :source "Navajo" :note "weaver of the world"}
+ {:name "White Buffalo Woman" :source "Lakota" :note "sacred pipe, wisdom"}
+ {:name "Sedna" :source "Inuit" :note "sea goddess"}
+ {:name "Glooscap" :source "Algonquin" :note "culture hero"}
+ {:name "Nanabozho" :source "Ojibwe" :note "trickster, creator"}
+ {:name "Sky Woman" :source "Iroquois" :note "mother of humanity"}
+ {:name "Anansi" :source "Akan" :note "spider, stories, wisdom"}
+ {:name "Oshun" :source "Yoruba" :note "rivers, love, fertility"}
+ {:name "Yemoja" :source "Yoruba" :note "ocean, motherhood"}
+ {:name "Obatala" :source "Yoruba" :note "creation, purity"}
+ {:name "Nyame" :source "Akan" :note "sky god"}
+ {:name "Legba" :source "Fon" :note "crossroads, communication"}
+ {:name "Mokosh" :source "Slavic Mythology" :note "earth, fate, weaving"}
+ {:name "Dazhbog" :source "Slavic Mythology" :note "sun, giving"}
+ {:name "Lada" :source "Slavic Mythology" :note "love, beauty, spring"}
+ {:name "Ilmarinen" :source "Kalevala" :note "eternal smith"}
+ {:name "Mielikki" :source "Finnish Mythology" :note "forests, hunting"}
+ {:name "Mystra" :source "D&D Forgotten Realms" :note "magic, spells, the Weave"}
+ {:name "Oghma" :source "D&D Forgotten Realms" :note "knowledge, invention, inspiration"}
+ {:name "Deneir" :source "D&D Forgotten Realms" :note "writing, literature, art"}
+ {:name "Gond" :source "D&D Forgotten Realms" :note "craft, smithing, invention"}
+ {:name "Lathander" :source "D&D Forgotten Realms" :note "dawn, renewal, creativity"}
+ {:name "Tyr" :source "D&D Forgotten Realms" :note "justice, law"}
+ {:name "Torm" :source "D&D Forgotten Realms" :note "duty, loyalty, righteousness"}
+ {:name "Ilmater" :source "D&D Forgotten Realms" :note "endurance, suffering, martyrdom"}
+ {:name "Kelemvor" :source "D&D Forgotten Realms" :note "death, the dead"}
+ {:name "Silvanus" :source "D&D Forgotten Realms" :note "wild nature, druids"}
+ {:name "Mielikki" :source "D&D Forgotten Realms" :note "forests, rangers"}
+ {:name "Chauntea" :source "D&D Forgotten Realms" :note "agriculture, farmers"}
+ {:name "Tymora" :source "D&D Forgotten Realms" :note "good fortune, luck"}
+ {:name "Savras" :source "D&D Forgotten Realms" :note "divination, fate"}
+ {:name "Azuth" :source "D&D Forgotten Realms" :note "wizards, mages"}
+ {:name "Milil" :source "D&D Forgotten Realms" :note "poetry, song"}
+ {:name "Lliira" :source "D&D Forgotten Realms" :note "joy, dance, freedom"}
+ {:name "Eldath" :source "D&D Forgotten Realms" :note "peace, quiet places"}
+ {:name "Shaundakul" :source "D&D Forgotten Realms" :note "travel, exploration"}
+ {:name "Finder" :source "D&D Forgotten Realms" :note "art, creativity"}
+ {:name "Boccob" :source "D&D Greyhawk" :note "magic, arcane knowledge"}
+ {:name "Pelor" :source "D&D Greyhawk" :note "sun, light, healing"}
+ {:name "Rao" :source "D&D Greyhawk" :note "peace, reason, serenity"}
+ {:name "Celestian" :source "D&D Greyhawk" :note "stars, space, wanderers"}
+ {:name "Fharlanghn" :source "D&D Greyhawk" :note "horizons, distance, travel"}
+ {:name "Delleb" :source "D&D Greyhawk" :note "reason, intellect"}
+ {:name "Istus" :source "D&D Greyhawk" :note "fate, destiny"}
+ {:name "Heironeous" :source "D&D Greyhawk" :note "chivalry, justice, valor"}
+ {:name "Trithereon" :source "D&D Greyhawk" :note "individuality, liberty"}
+ {:name "Zodal" :source "D&D Greyhawk" :note "mercy, hope, benevolence"}
+ {:name "Ehlonna" :source "D&D Greyhawk" :note "forests, woodlands"}
+ {:name "Obad-Hai" :source "D&D Greyhawk" :note "nature, freedom"}
+ {:name "Beory" :source "D&D Greyhawk" :note "Oerth, nature, rain"}
+ {:name "Kord" :source "D&D Greyhawk" :note "athletics, sport, courage"}
+ {:name "Olidammara" :source "D&D Greyhawk" :note "music, revels, rogues"}
+ {:name "Paladine" :source "D&D Dragonlance" :note "good, order, light"}
+ {:name "Mishakal" :source "D&D Dragonlance" :note "healing, compassion"}
+ {:name "Majere" :source "D&D Dragonlance" :note "discipline, meditation"}
+ {:name "Kiri-Jolith" :source "D&D Dragonlance" :note "unity, courage"}
+ {:name "Habbakuk" :source "D&D Dragonlance" :note "persistence, sea, animals"}
+ {:name "Branchala" :source "D&D Dragonlance" :note "music, inspiration"}
+ {:name "Solinari" :source "D&D Dragonlance" :note "good magic"}
+ {:name "Gilean" :source "D&D Dragonlance" :note "knowledge, balance"}
+ {:name "Sirrion" :source "D&D Dragonlance" :note "creative fire"}
+ {:name "Reorx" :source "D&D Dragonlance" :note "creation, craft"}
+ {:name "Shinare" :source "D&D Dragonlance" :note "wealth, enterprise"}
+ {:name "Chislev" :source "D&D Dragonlance" :note "nature, beasts"}
+ {:name "Zivilyn" :source "D&D Dragonlance" :note "wisdom, enlightenment"}
+ {:name "Lunitari" :source "D&D Dragonlance" :note "neutral magic"}
+ {:name "Astinus" :source "D&D Dragonlance" :note "the Chronicler"}
+ {:name "Aureon" :source "D&D Eberron" :note "law, knowledge, magic"}
+ {:name "Arawai" :source "D&D Eberron" :note "fertility, life"}
+ {:name "Boldrei" :source "D&D Eberron" :note "community, hearth"}
+ {:name "Olladra" :source "D&D Eberron" :note "feast, good fortune"}
+ {:name "Onatar" :source "D&D Eberron" :note "fire, crafts"}
+ {:name "Dol Arrah" :source "D&D Eberron" :note "honorable combat, light"}
+ {:name "Balinor" :source "D&D Eberron" :note "hunt, beast"}
+ {:name "Siberys" :source "D&D Eberron" :note "the Dragon Above"}
+ {:name "Eberron" :source "D&D Eberron" :note "the Dragon Between"}
+ {:name "Ioun" :source "D&D Core" :note "knowledge, prophecy, skill"}
+ {:name "Corellon" :source "D&D Core" :note "beauty, art, magic (elves)"}
+ {:name "Moradin" :source "D&D Core" :note "creation, smithing (dwarves)"}
+ {:name "Sehanine" :source "D&D Core" :note "moon, illusion, love"}
+ {:name "Erathis" :source "D&D Core" :note "civilization, invention"}
+ {:name "Avandra" :source "D&D Core" :note "change, luck, travel"}
+ {:name "Melora" :source "D&D Core" :note "wilderness, sea"}
+ {:name "Bahamut" :source "D&D Core" :note "justice, honor, protection"}
+ {:name "Garl Glittergold" :source "D&D Gnome" :note "protection, humor, trickery"}
+ {:name "Flandal" :source "D&D Gnome" :note "metalwork, mining"}
+ {:name "Yondalla" :source "D&D Halfling" :note "protection, fertility"}
+ {:name "Sheela Peryroyl" :source "D&D Halfling" :note "nature, agriculture"}
+ {:name "Cyrrollalee" :source "D&D Halfling" :note "friendship, hospitality"}
+ {:name "Arvoreen" :source "D&D Halfling" :note "protection, war"}
+ {:name "Rillifane" :source "D&D Elf" :note "woodlands, nature"}
+ {:name "Solonor" :source "D&D Elf" :note "archery, hunting"}
+ {:name "Labelas" :source "D&D Elf" :note "time, history"}
+ {:name "Hanali" :source "D&D Elf" :note "love, beauty"}
+ {:name "Aerdrie" :source "D&D Elf" :note "sky, weather, birds"}
+ {:name "Deep Sashelas" :source "D&D Elf" :note "sea elves"}
+ {:name "Vergadain" :source "D&D Dwarf" :note "wealth, luck"}
+ {:name "Dugmaren" :source "D&D Dwarf" :note "scholarship, invention"}
+ {:name "Dumathoin" :source "D&D Dwarf" :note "secrets, buried wealth"}
+ {:name "Berronar" :source "D&D Dwarf" :note "safety, home, healing"}
+ {:name "Marthammor" :source "D&D Dwarf" :note "wanderers, travel"}
+ {:name "Hari" :source "Foundation" :note "Seldon, psychohistorian"}
+ {:name "Seldon" :source "Foundation" :note "who foresaw the fall"}
+ {:name "Salvor" :source "Foundation" :note "Hardin, first mayor"}
+ {:name "Gaal" :source "Foundation" :note "Dornick, witness"}
+ {:name "Daneel" :source "Foundation/Robot" :note "Olivaw, eternal robot"}
+ {:name "Giskard" :source "Robot" :note "Reventlov, zeroth law"}
+ {:name "Elijah" :source "Robot" :note "Baley, detective"}
+ {:name "Gladia" :source "Robot" :note "Solarian then Auroran"}
+ {:name "Dors" :source "Foundation" :note "Venabili, protector"}
+ {:name "Arkady" :source "Foundation" :note "Darell, the writer"}
+ {:name "Bliss" :source "Foundation" :note "of Gaia"}
+ {:name "Pelorat" :source "Foundation" :note "Janov, historian"}
+ {:name "Trevize" :source "Foundation" :note "Golan, chooser"}
+ {:name "Bowman" :source "2001" :note "Dave, starchild"}
+ {:name "Rama" :source "Rendezvous with Rama" :note "the cylinder world"}
+ {:name "Karellen" :source "Childhood's End" :note "Supervisor for Earth"}
+ {:name "Stormgren" :source "Childhood's End" :note "Secretary-General"}
+ {:name "Tagomi" :source "Man in the High Castle" :note "Mr., the I Ching"}
+ {:name "Abendsen" :source "Man in the High Castle" :note "the Man"}
+ {:name "Molly" :source "Neuromancer" :note "Millions, razorgirl"}
+ {:name "Perrin" :source "Wheel of Time" :note "Aybara, wolfbrother"}
+ {:name "Mat" :source "Wheel of Time" :note "Cauthon, luck's own"}
+ {:name "Egwene" :source "Wheel of Time" :note "al'Vere, Amyrlin"}
+ {:name "Nynaeve" :source "Wheel of Time" :note "al'Meara, healer"}
+ {:name "Moiraine" :source "Wheel of Time" :note "Damodred, guide"}
+ {:name "Lan" :source "Wheel of Time" :note "al'Mandragoran, the last"}
+ {:name "Thom" :source "Wheel of Time" :note "Merrilin, gleeman"}
+ {:name "Min" :source "Wheel of Time" :note "Farshaw, viewer"}
+ {:name "Aviendha" :source "Wheel of Time" :note "Aiel dreamwalker"}
+ {:name "Elayne" :source "Wheel of Time" :note "Trakand, queen"}
+ {:name "Siuan" :source "Wheel of Time" :note "Sanche, deposed"}
+ {:name "Cadsuane" :source "Wheel of Time" :note "Melaidhrin, legend"}
+ {:name "Verin" :source "Wheel of Time" :note "the secret keeper"}
+ {:name "Loial" :source "Wheel of Time" :note "son of Arent, Ogier"}
+ {:name "Anomander" :source "Malazan" :note "Rake, Son of Darkness"}
+ {:name "Whiskeyjack" :source "Malazan" :note "Bridgeburner"}
+ {:name "Quick Ben" :source "Malazan" :note "twelve souls"}
+ {:name "Kalam" :source "Malazan" :note "assassin"}
+ {:name "Fiddler" :source "Malazan" :note "sapper musician"}
+ {:name "Tavore" :source "Malazan" :note "Paran, Adjunct"}
+ {:name "Kruppe" :source "Malazan" :note "of Darujhistan"}
+ {:name "Crokus" :source "Malazan" :note "Younghand"}
+ {:name "Apsalar" :source "Malazan" :note "possessed then free"}
+ {:name "Icarium" :source "Malazan" :note "Lifestealer"}
+ {:name "Mappo" :source "Malazan" :note "Trell guardian"}
+ {:name "Ganoes" :source "Malazan" :note "Paran, Master of the Deck"}
+ {:name "Picker" :source "Malazan" :note "Bridgeburner"}
+ {:name "Blend" :source "Malazan" :note "who disappears"}
+ {:name "Toc" :source "Malazan" :note "the Younger, messenger"}
+ {:name "Granny" :source "Discworld" :note "Weatherwax, headology"}
+ {:name "Nanny" :source "Discworld" :note "Ogg, earthy wisdom"}
+ {:name "Tiffany" :source "Discworld" :note "Aching, kelda"}
+ {:name "Vimes" :source "Discworld" :note "Sam, copper through and through"}
+ {:name "Carrot" :source "Discworld" :note "Ironfoundersson, simple king"}
+ {:name "Angua" :source "Discworld" :note "von Überwald, werewolf"}
+ {:name "Cheery" :source "Discworld" :note "Littlebottom, dwarf"}
+ {:name "Rincewind" :source "Discworld" :note "wizzard"}
+ {:name "Ridcully" :source "Discworld" :note "Archchancellor"}
+ {:name "Ponder" :source "Discworld" :note "Stibbons, thinking engine"}
+ {:name "Susan" :source "Discworld" :note "Sto Helit, granddaughter"}
+ {:name "Lu-Tze" :source "Discworld" :note "sweeper, history monk"}
+ {:name "Brutha" :source "Discworld" :note "the chosen one"}
+ {:name "Om" :source "Discworld" :note "the small god"}
+ {:name "Fitz" :source "Realm of the Elderlings" :note "Chivalry's bastard"}
+ {:name "Nighteyes" :source "Realm of the Elderlings" :note "wolf bondmate"}
+ {:name "Fool" :source "Realm of the Elderlings" :note "White Prophet"}
+ {:name "Burrich" :source "Realm of the Elderlings" :note "stablemaster"}
+ {:name "Kettricken" :source "Realm of the Elderlings" :note "Mountain queen"}
+ {:name "Chade" :source "Realm of the Elderlings" :note "assassin teacher"}
+ {:name "Malta" :source "Realm of the Elderlings" :note "Elderling"}
+ {:name "Althea" :source "Liveship Traders" :note "Vestrit"}
+ {:name "Brashen" :source "Liveship Traders" :note "Trell"}
+ {:name "Paragon" :source "Liveship Traders" :note "the mad ship"}
+ {:name "Tintaglia" :source "Realm of the Elderlings" :note "dragon"}
+ {:name "Maui" :source "Polynesian" :note "trickster, fisher of islands"}
+ {:name "Hina" :source "Polynesian" :note "moon goddess"}
+ {:name "Tangaroa" :source "Polynesian" :note "sea god"}
+ {:name "Tane" :source "Polynesian" :note "forests, creation"}
+ {:name "Kane" :source "Hawaiian" :note "life, creation"}
+ {:name "Lono" :source "Hawaiian" :note "fertility, peace"}
+ {:name "Quetzalcoatl" :source "Aztec" :note "feathered serpent, knowledge"}
+ {:name "Itzamna" :source "Mayan" :note "creator, writing"}
+ {:name "Ix Chel" :source "Mayan" :note "moon, medicine"}
+ {:name "Ahura Mazda" :source "Zoroastrian" :note "wise lord"}
+ {:name "Anahita" :source "Persian" :note "waters, fertility"}
+ {:name "Mithra" :source "Persian" :note "covenant, light"}
+ {:name "Rashnu" :source "Zoroastrian" :note "justice, judgment"}
+ {:name "Sraosha" :source "Zoroastrian" :note "obedience, listening"}
+ {:name "Aglaea" :source "Greek" :note "Grace of splendor"}
+ {:name "Euphrosyne" :source "Greek" :note "Grace of mirth"}
+ {:name "Thalia" :source "Greek" :note "Grace of abundance"}
+ {:name "Eunomia" :source "Greek" :note "Hour of lawfulness"}
+ {:name "Dike" :source "Greek" :note "Hour of justice"}
+ {:name "Eirene" :source "Greek" :note "Hour of peace"}
+ {:name "Astraea" :source "Greek" :note "star maiden, justice"}
+ {:name "Selene" :source "Greek" :note "moon"}
+ {:name "Eos" :source "Greek" :note "dawn"}
+ {:name "Helios" :source "Greek" :note "sun"}
+ {:name "Artemis" :source "Greek" :note "hunt, moon, wilderness"}
+ {:name "Janus" :source "Roman" :note "beginnings, transitions"}
+ {:name "Vesta" :source "Roman" :note "hearth, home"}
+ {:name "Luna" :source "Roman" :note "moon"}
+ {:name "Sol" :source "Roman" :note "sun"}
+ {:name "Aurora" :source "Roman" :note "dawn"}
+ {:name "Fortuna" :source "Roman" :note "fortune, luck"}
+ {:name "Minerva" :source "Roman" :note "wisdom, craft"}
+ {:name "Concordia" :source "Roman" :note "harmony, agreement"}
+ {:name "Veritas" :source "Roman" :note "truth"}
+ {:name "Fides" :source "Roman" :note "trust, faith"}
+ {:name "Spes" :source "Roman" :note "hope"}
+ {:name "Pax" :source "Roman" :note "peace"}
+ {:name "Virtus" :source "Roman" :note "courage, excellence"}
+ {:name "Pietas" :source "Roman" :note "duty, devotion"}
+ {:name "Justitia" :source "Roman" :note "justice"}
+ {:name "Clementia" :source "Roman" :note "mercy, clemency"}]

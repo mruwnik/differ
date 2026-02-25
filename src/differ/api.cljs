@@ -8,6 +8,7 @@
             [differ.db :as db]
             [differ.oauth :as oauth]
             [differ.github-oauth :as github-oauth]
+            [differ.boards :as boards]
             [differ.sse :as sse]
             [differ.util :as util]
             [differ.config :as config]
@@ -738,6 +739,72 @@
                         :connected (some? token)
                         :username (when token (:github-username token))})))
 
+;; Board / Kanban endpoints
+
+(defn list-boards-handler
+  "GET /api/boards"
+  [^js _req res]
+  (json-response res {:boards (boards/list-boards-with-summary)}))
+
+(defn get-board-handler
+  "GET /api/boards/:id"
+  [^js req res]
+  (let [repo-path (js/decodeURIComponent (.. req -params -id))]
+    (if-let [board (boards/get-board-by-repo repo-path)]
+      (json-response res {:board (boards/board-summary (:id board))})
+      (error-response res 404 "Board not found"))))
+
+(defn list-board-tasks-handler
+  "GET /api/boards/:id/tasks"
+  [^js req res]
+  (let [repo-path (js/decodeURIComponent (.. req -params -id))
+        show-done (= "true" (.. req -query -show_done))
+        include-notes (= "true" (.. req -query -include_notes))]
+    (if-let [board (boards/get-board-by-repo repo-path)]
+      (json-response res {:tasks (boards/list-tasks (:id board)
+                                                    {:show-done show-done
+                                                     :include-notes include-notes})})
+      (json-response res {:tasks []}))))
+
+(defn get-task-handler
+  "GET /api/tasks/:id"
+  [^js req res]
+  (let [task-id (.. req -params -id)]
+    (if-let [task (boards/get-task task-id)]
+      (json-response res {:task (assoc task :notes (boards/list-notes task-id))})
+      (error-response res 404 "Task not found"))))
+
+(defn update-task-api-handler
+  "PATCH /api/tasks/:id"
+  [^js req res]
+  (let [task-id (.. req -params -id)
+        body (select-keys (get-body req) boards/update-task-allowed-keys)]
+    (try
+      (let [task (boards/update-task! task-id body)
+            board (boards/get-board (:board-id task))]
+        (sse/broadcast-all! :task-updated {:task task :repo-path (:repo-path board)})
+        (json-response res {:task task}))
+      (catch :default e
+        (error-response res 400 (or (ex-message e) (.-message e)))))))
+
+(defn add-task-note-handler
+  "POST /api/tasks/:id/notes"
+  [^js req res]
+  (let [task-id (.. req -params -id)
+        {:keys [content author]} (get-body req)]
+    (if (str/blank? content)
+      (error-response res 400 "Note content is required")
+      (try
+        (let [note (boards/add-note! {:task-id task-id
+                                      :author (or author "user")
+                                      :content content})
+              task (boards/get-task task-id)
+              board (boards/get-board (:board-id task))]
+          (sse/broadcast-all! :task-updated {:task task :repo-path (:repo-path board)})
+          (json-response res {:note note}))
+        (catch :default e
+          (error-response res 400 (or (ex-message e) (.-message e))))))))
+
 ;; Route setup
 
 (defn setup-routes [^js app]
@@ -782,6 +849,17 @@
   (.patch app "/api/comments/:id/resolve" resolve-comment-handler)
   (.patch app "/api/comments/:id/unresolve" unresolve-comment-handler)
   (.delete app "/api/comments/:id" delete-comment-handler)
+
+  ;; Boards / Kanban
+  ;; ORDERING DEPENDENCY: /api/boards/:id/tasks must be registered before /api/boards/:id
+  ;; because Express matches routes in registration order. If the :id route came first,
+  ;; requests to /api/boards/:id/tasks would match it with :id = "<repo>/tasks".
+  (.get app "/api/boards" list-boards-handler)
+  (.get app "/api/boards/:id/tasks" list-board-tasks-handler)
+  (.get app "/api/boards/:id" get-board-handler)
+  (.get app "/api/tasks/:id" get-task-handler)
+  (.patch app "/api/tasks/:id" update-task-api-handler)
+  (.post app "/api/tasks/:id/notes" add-task-note-handler)
 
   ;; OAuth
   (.get app "/.well-known/oauth-authorization-server" oauth-metadata-handler)

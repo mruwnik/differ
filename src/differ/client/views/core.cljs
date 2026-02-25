@@ -2,7 +2,8 @@
   "Root component and routing."
   (:require [re-frame.core :as rf]
             [differ.client.views.sessions :as sessions]
-            [differ.client.views.diff :as diff]))
+            [differ.client.views.diff :as diff]
+            [differ.client.views.board :as board]))
 
 (defn- session-selector []
   (let [sessions @(rf/subscribe [:sessions])
@@ -14,17 +15,16 @@
                       (when (seq id)
                         (rf/dispatch [:navigate-session id])))
         :style {:background "transparent"
-                :border "1px solid #30363d"
+                :border "1px solid #e1e4e8"
                 :border-radius "6px"
-                :color "#c9d1d9"
+                :color "#24292e"
                 :padding "4px 8px"
                 :font-size "14px"
                 :cursor "pointer"
                 :max-width "300px"}}
        (for [s sessions]
          ^{:key (:id s)}
-         [:option {:value (:id s)
-                   :style {:background "#0d1117"}}
+         [:option {:value (:id s)}
           (str (:project s) " / " (:branch s)
                (when (pos? (:unresolved-count s 0))
                  (str " (" (:unresolved-count s) ")")))])])))
@@ -37,6 +37,12 @@
       [:h1 {:style {:cursor "pointer"}
             :on-click #(rf/dispatch [:navigate-sessions])}
        "Differ"]
+      [:span {:style {:cursor "pointer"
+                      :color (if (#{:boards :board} page) "#24292e" "#6a737d")
+                      :font-size "14px"
+                      :font-weight (if (#{:boards :board} page) "600" "400")}
+              :on-click #(rf/dispatch [:navigate-boards])}
+       "Boards"]
       (when (= page :session)
         [session-selector])]
      [:div {:style {:display "flex" :align-items "center" :gap "12px"}}
@@ -78,6 +84,8 @@
     (case page
       :sessions [sessions/session-list]
       :session [diff/diff-view]
+      :boards [board/boards-list]
+      :board [board/board-view]
       [:div.empty-state
        [:h2 "Welcome to Differ"]
        [:p "Select a session to start reviewing"]])))
