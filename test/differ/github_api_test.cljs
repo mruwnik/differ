@@ -124,3 +124,95 @@
                   [:viewer :repositories])]
       ;; Should be a promise
       (is (fn? (.-then result))))))
+
+;; ============================================================================
+;; list-pull-requests tests
+;; ============================================================================
+
+(deftest state->states-test
+  (testing "maps 'open' to [OPEN]"
+    (is (= ["OPEN"] (gh-api/state->states "open"))))
+
+  (testing "maps 'closed' to [CLOSED MERGED]"
+    (is (= ["CLOSED" "MERGED"] (gh-api/state->states "closed"))))
+
+  (testing "maps 'all' to [OPEN CLOSED MERGED]"
+    (is (= ["OPEN" "CLOSED" "MERGED"] (gh-api/state->states "all"))))
+
+  (testing "defaults to [OPEN] for unknown input"
+    (is (= ["OPEN"] (gh-api/state->states "bogus"))))
+
+  (testing "defaults to [OPEN] for nil"
+    (is (= ["OPEN"] (gh-api/state->states nil)))))
+
+(deftest list-pull-requests-clamps-limit-test
+  (testing "limit over 100 is clamped to 100"
+    (let [captured-variables (atom nil)]
+      (with-redefs [gh-api/graphql-request
+                    (fn [_token _query variables]
+                      (reset! captured-variables variables)
+                      (js/Promise.resolve
+                       {:repository
+                        {:pullRequests
+                         {:totalCount 0
+                          :pageInfo {:hasNextPage false}
+                          :nodes []}}}))]
+        (-> (gh-api/list-pull-requests "tok" "owner" "repo" {:state "open" :limit 500})
+            (.then (fn [_]
+                     (is (= 100 (:first @captured-variables))))))))))
+
+(deftest list-pull-requests-default-limit-test
+  (testing "missing limit defaults to 30"
+    (let [captured-variables (atom nil)]
+      (with-redefs [gh-api/graphql-request
+                    (fn [_token _query variables]
+                      (reset! captured-variables variables)
+                      (js/Promise.resolve
+                       {:repository
+                        {:pullRequests
+                         {:totalCount 0
+                          :pageInfo {:hasNextPage false}
+                          :nodes []}}}))]
+        (-> (gh-api/list-pull-requests "tok" "owner" "repo" {:state "open"})
+            (.then (fn [_]
+                     (is (= 30 (:first @captured-variables))))))))))
+
+(deftest list-pull-requests-normalizes-nodes-test
+  (testing "converts GraphQL nodes into flat PR maps"
+    (with-redefs [gh-api/graphql-request
+                  (fn [_token _query _variables]
+                    (js/Promise.resolve
+                     {:repository
+                      {:pullRequests
+                       {:totalCount 2
+                        :pageInfo {:hasNextPage true}
+                        :nodes [{:number 42
+                                 :title "Add auth"
+                                 :isDraft false
+                                 :author {:login "dan"}
+                                 :baseRefName "main"
+                                 :headRefName "feature/auth"
+                                 :updatedAt "2026-04-05T14:23:00Z"
+                                 :url "https://github.com/owner/repo/pull/42"}
+                                {:number 43
+                                 :title "Fix bug"
+                                 :isDraft true
+                                 :author nil
+                                 :baseRefName "main"
+                                 :headRefName "fix/bug"
+                                 :updatedAt "2026-04-06T10:00:00Z"
+                                 :url "https://github.com/owner/repo/pull/43"}]}}}))]
+      (-> (gh-api/list-pull-requests "tok" "owner" "repo" {:state "open" :limit 30})
+          (.then (fn [result]
+                   (is (true? (:truncated result)))
+                   (is (= 2 (count (:prs result))))
+                   (let [pr (first (:prs result))]
+                     (is (= 42 (:number pr)))
+                     (is (= "Add auth" (:title pr)))
+                     (is (= "dan" (:author pr)))
+                     (is (false? (:draft pr)))
+                     (is (= "main" (:base-branch pr)))
+                     (is (= "feature/auth" (:head-branch pr))))
+                   (let [pr2 (second (:prs result))]
+                     (is (nil? (:author pr2))
+                         "deleted author should produce nil"))))))))

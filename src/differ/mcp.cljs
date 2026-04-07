@@ -278,7 +278,18 @@
                   :properties {:source {:type "string"
                                         :description "Filter by source (e.g., 'Culture', 'Dune', 'Greek')"}
                                :category {:type "string"
-                                          :description "Filter by category: sf, fantasy, mythology, or dnd"}}}}])
+                                          :description "Filter by category: sf, fantasy, mythology, or dnd"}}}}
+
+   {:name "list_github_prs"
+    :description "List open GitHub PRs for a repo, annotated with whether each already has a differ session. Use to discover PRs to review."
+    :inputSchema {:type "object"
+                  :properties {:project {:type "string"
+                                         :description "Repository in 'owner/repo' format (required)"}
+                               :state {:type "string"
+                                       :description "PR state: 'open' (default), 'closed', or 'all'"}
+                               :limit {:type "number"
+                                       :description "Max PRs to return (default 30, max 100)"}}
+                  :required ["project"]}}])
 
 ;; Error codes
 (def parse-error -32700)
@@ -715,6 +726,25 @@
     {:name (:name chosen)
      :source (:source chosen)
      :note (:note chosen)}))
+
+(def ^:private valid-pr-states #{"open" "closed" "all"})
+
+(defmethod handle-tool "list_github_prs" [_ params]
+  (let [{:keys [project state limit]} params]
+    (cond
+      (nil? project)
+      {:error "project is required (format: owner/repo)"}
+
+      (and (some? state) (not (contains? valid-pr-states state)))
+      {:error "Invalid state: must be 'open', 'closed', or 'all'"}
+
+      (and (some? limit) (< limit 1))
+      {:error "limit must be between 1 and 100"}
+
+      :else
+      (if-let [parsed (sessions/parse-project project)]
+        (sessions/list-github-prs (assoc parsed :state state :limit limit))
+        {:error (str "Invalid project format: " project)}))))
 
 (defmethod handle-tool :default [tool-name _]
   (throw (ex-info "Unknown tool" {:tool tool-name})))

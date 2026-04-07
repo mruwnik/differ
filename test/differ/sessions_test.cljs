@@ -5,6 +5,9 @@
             [differ.test-helpers :as helpers]
             [differ.util :as util]
             [differ.sessions :as sessions]
+            [differ.github-oauth]
+            [differ.db]
+            [differ.github-api :as gh-api]
             ["path" :as path]))
 
 ;; ============================================================================
@@ -217,3 +220,140 @@
   (testing "different branches produce different ids"
     (is (not= (util/session-id "project" "main")
               (util/session-id "project" "feature")))))
+
+;; ============================================================================
+;; annotate-prs-with-sessions tests (pure join logic)
+;; ============================================================================
+
+(deftest annotate-prs-with-sessions-test
+  (testing "PRs with a matching session get has-session true plus metadata"
+    (let [prs [{:number 10 :title "A"}
+               {:number 20 :title "B"}
+               {:number 30 :title "C"}]
+          sessions [{:id "github:owner/repo:10"
+                     :github-pr-number 10
+                     :unresolved-count 3}
+                    {:id "github:owner/repo:30"
+                     :github-pr-number 30
+                     :unresolved-count 0}]
+          annotated (sessions/annotate-prs-with-sessions prs sessions)]
+      (is (= 3 (count annotated)))
+      (let [pr10 (first (filter #(= 10 (:number %)) annotated))
+            pr20 (first (filter #(= 20 (:number %)) annotated))
+            pr30 (first (filter #(= 30 (:number %)) annotated))]
+        (is (true? (:has-session pr10)))
+        (is (= "github:owner/repo:10" (:session-id pr10)))
+        (is (= 3 (:unresolved-count pr10)))
+        (is (false? (:has-session pr20)))
+        (is (nil? (:session-id pr20)))
+        (is (nil? (:unresolved-count pr20)))
+        (is (true? (:has-session pr30)))
+        (is (= 0 (:unresolved-count pr30))))))
+
+  (testing "sessions without a github-pr-number are ignored"
+    (let [prs [{:number 10 :title "A"}]
+          sessions [{:id "local:foo:bar" :github-pr-number nil}]
+          annotated (sessions/annotate-prs-with-sessions prs sessions)]
+      (is (false? (:has-session (first annotated)))))))
+
+;; ============================================================================
+;; parse-project tests
+;; ============================================================================
+
+(deftest parse-project-test
+  (testing "splits owner/repo"
+    (is (= {:owner "foo" :repo "bar"}
+           (sessions/parse-project "foo/bar"))))
+
+  (testing "returns nil for missing slash"
+    (is (nil? (sessions/parse-project "foobar"))))
+
+  (testing "returns nil for too many slashes"
+    (is (nil? (sessions/parse-project "a/b/c"))))
+
+  (testing "returns nil for empty owner or repo"
+    (is (nil? (sessions/parse-project "/bar")))
+    (is (nil? (sessions/parse-project "foo/"))))
+
+  (testing "returns nil for nil input"
+    (is (nil? (sessions/parse-project nil)))))
+
+;; ============================================================================
+;; list-github-prs tests
+;; ============================================================================
+
+(deftest list-github-prs-no-tokens-test
+  (testing "returns requires-auth when no GitHub tokens are available"
+    (with-redefs [differ.github-oauth/get-all-tokens (fn [] [])]
+      (-> (sessions/list-github-prs {:owner "foo" :repo "bar" :state "open" :limit 30})
+          (.then (fn [result]
+                   (is (true? (:requires-auth result)))
+                   (is (string? (:auth-url result)))
+                   (is (string? (:message result)))))))))
+
+(deftest list-github-prs-happy-path-test
+  (testing "returns PRs annotated with sessions on successful token"
+    (with-redefs [differ.github-oauth/get-all-tokens
+                  (fn [] [{:access-token "tok1"}])
+                  sessions/list-sessions
+                  (fn [_project]
+                    [{:id "github:foo/bar:42"
+                      :session-type "github"
+                      :project "foo/bar"
+                      :github-pr-number 42
+                      :unresolved-count 7}])
+                  gh-api/list-pull-requests
+                  (fn [_tok _o _r _opts]
+                    (js/Promise.resolve
+                     {:prs [{:number 42 :title "A" :author "dan"
+                             :draft false :base-branch "main"
+                             :head-branch "feature/x"
+                             :updated-at "2026-04-05T00:00:00Z"
+                             :url "https://github.com/foo/bar/pull/42"}
+                            {:number 43 :title "B" :author "eve"
+                             :draft false :base-branch "main"
+                             :head-branch "feature/y"
+                             :updated-at "2026-04-06T00:00:00Z"
+                             :url "https://github.com/foo/bar/pull/43"}]
+                      :truncated false}))]
+      (-> (sessions/list-github-prs {:owner "foo" :repo "bar"
+                                     :state "open" :limit 30})
+          (.then (fn [result]
+                   (is (false? (:truncated result)))
+                   (is (= 2 (count (:prs result))))
+                   (let [pr42 (first (filter #(= 42 (:number %)) (:prs result)))
+                         pr43 (first (filter #(= 43 (:number %)) (:prs result)))]
+                     (is (true? (:has-session pr42)))
+                     (is (= "github:foo/bar:42" (:session-id pr42)))
+                     (is (= 7 (:unresolved-count pr42))
+                         "unresolved-count from the session should propagate to the annotated PR")
+                     (is (false? (:has-session pr43)))
+                     (is (nil? (:unresolved-count pr43))))))))))
+
+(deftest list-github-prs-oauth-restricted-test
+  (testing "returns requires-pat when all tokens hit OAuth restriction"
+    (with-redefs [differ.github-oauth/get-all-tokens
+                  (fn [] [{:access-token "tok1"}])
+                  gh-api/list-pull-requests
+                  (fn [_tok _o _r _opts]
+                    (js/Promise.reject
+                     (js/Error. "Resource not accessible by integration")))]
+      (-> (sessions/list-github-prs {:owner "foo" :repo "bar"
+                                     :state "open" :limit 30})
+          (.then (fn [result]
+                   (is (true? (:requires-pat result)))
+                   (is (string? (:github-pat-url result)))
+                   (is (string? (:settings-url result)))))))))
+
+(deftest list-github-prs-generic-error-test
+  (testing "returns :error when GitHub call fails with a non-OAuth-restriction error"
+    (with-redefs [differ.github-oauth/get-all-tokens
+                  (fn [] [{:access-token "tok1"}])
+                  gh-api/list-pull-requests
+                  (fn [_tok _o _r _opts]
+                    (js/Promise.reject (js/Error. "network down")))]
+      (-> (sessions/list-github-prs {:owner "foo" :repo "bar"
+                                     :state "open" :limit 30})
+          (.then (fn [result]
+                   (is (contains? result :error))
+                   (is (re-find #"network down" (:error result)))))))))

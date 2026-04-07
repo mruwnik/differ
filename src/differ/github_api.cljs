@@ -140,3 +140,70 @@
         (.catch (fn [err]
                   (throw (ex-info (str "GitHub request failed: " (or (.-message err) (ex-message err) (str err)))
                                   {:original-error err})))))))
+
+;; ============================================================================
+;; Pull request listing
+;; ============================================================================
+
+(defn state->states
+  "Map user-facing state string to GraphQL PullRequestState enum values."
+  [state]
+  (case state
+    "closed" ["CLOSED" "MERGED"]
+    "all"    ["OPEN" "CLOSED" "MERGED"]
+    ["OPEN"]))
+
+(def ^:private list-prs-query
+  "query ListPRs($owner: String!, $repo: String!, $first: Int!, $states: [PullRequestState!]) {
+     repository(owner: $owner, name: $repo) {
+       pullRequests(first: $first, states: $states,
+                    orderBy: {field: UPDATED_AT, direction: DESC}) {
+         totalCount
+         pageInfo { hasNextPage }
+         nodes {
+           number
+           title
+           isDraft
+           author { login }
+           baseRefName
+           headRefName
+           updatedAt
+           url
+         }
+       }
+     }
+   }")
+
+(defn- clamp-limit [n]
+  (cond
+    (nil? n)   30
+    (< n 1)    1
+    (> n 100)  100
+    :else      n))
+
+(defn- normalize-pr-node
+  "Convert a GraphQL PR node into differ's flat PR shape."
+  [node]
+  {:number       (:number node)
+   :title        (:title node)
+   :author       (get-in node [:author :login])
+   :draft        (:isDraft node)
+   :base-branch  (:baseRefName node)
+   :head-branch  (:headRefName node)
+   :updated-at   (:updatedAt node)
+   :url          (:url node)})
+
+(defn list-pull-requests
+  "Fetch PRs for a GitHub repo via GraphQL.
+   opts: {:state \"open\"|\"closed\"|\"all\" :limit int}
+   Returns a Promise of {:prs [...] :truncated bool}."
+  [token owner repo {:keys [state limit]}]
+  (let [variables {:owner  owner
+                   :repo   repo
+                   :first  (clamp-limit limit)
+                   :states (state->states state)}]
+    (-> (graphql-request token list-prs-query variables)
+        (.then (fn [data]
+                 (let [conn (get-in data [:repository :pullRequests])]
+                   {:prs       (mapv normalize-pr-node (:nodes conn))
+                    :truncated (boolean (get-in conn [:pageInfo :hasNextPage]))}))))))

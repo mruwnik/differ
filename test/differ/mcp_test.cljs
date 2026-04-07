@@ -2,7 +2,8 @@
   "Tests for MCP (Model Context Protocol) JSON-RPC handlers."
   (:require [clojure.test :refer [deftest testing is use-fixtures]]
             [differ.test-helpers :as helpers]
-            [differ.mcp :as mcp]))
+            [differ.mcp :as mcp]
+            [differ.sessions :as sessions]))
 
 ;; ============================================================================
 ;; Test Setup
@@ -77,7 +78,22 @@
       (is (contains? tool-names "get_session_diff"))
       (is (contains? tool-names "get_file_versions"))
       ;; PR creation/review request
-      (is (contains? tool-names "request_review")))))
+      (is (contains? tool-names "request_review"))
+      ;; GitHub discovery
+      (is (contains? tool-names "list_github_prs")))))
+
+(deftest list-github-prs-schema-test
+  (testing "list_github_prs tool has correct schema"
+    (let [tool (first (filter #(= "list_github_prs" (:name %)) mcp/tools))]
+      (is (some? tool))
+      (is (string? (:description tool)))
+      (let [schema (:inputSchema tool)
+            props (:properties schema)]
+        (is (= "object" (:type schema)))
+        (is (contains? props :project))
+        (is (contains? props :state))
+        (is (contains? props :limit))
+        (is (= ["project"] (:required schema)))))))
 
 (deftest tool-schema-test
   (testing "get_or_create_session has repo_path and github_pr options"
@@ -458,6 +474,58 @@
     (is (= "array" (#'mcp/get-json-type [1 2 3])))
     (is (= "array" (#'mcp/get-json-type '(1 2 3))))
     (is (= "object" (#'mcp/get-json-type {:a 1})))))
+
+;; ============================================================================
+;; list_github_prs handler tests
+;; ============================================================================
+
+(deftest list-github-prs-missing-project-test
+  (testing "returns error when project is missing"
+    (let [result (mcp/handle-tool "list_github_prs" {})]
+      ;; Handler may return a map or a Promise; accept a sync map for this case
+      ;; since validation should happen before any async work.
+      (is (contains? result :error))
+      (is (re-find #"project" (:error result))))))
+
+(deftest list-github-prs-malformed-project-test
+  (testing "returns error when project format is invalid"
+    (let [result (mcp/handle-tool "list_github_prs" {:project "not-a-slash"})]
+      (is (contains? result :error))
+      (is (re-find #"Invalid project format" (:error result))))))
+
+(deftest list-github-prs-invalid-state-test
+  (testing "returns error when state is not open/closed/all"
+    (let [result (mcp/handle-tool "list_github_prs"
+                                  {:project "foo/bar" :state "bogus"})]
+      (is (contains? result :error))
+      (is (re-find #"Invalid state" (:error result))))))
+
+(deftest list-github-prs-invalid-limit-test
+  (testing "returns error when limit is below 1"
+    (let [result (mcp/handle-tool "list_github_prs"
+                                  {:project "foo/bar" :limit 0})]
+      (is (contains? result :error))
+      (is (re-find #"limit" (:error result))))
+
+    (let [result (mcp/handle-tool "list_github_prs"
+                                  {:project "foo/bar" :limit -5})]
+      (is (contains? result :error))
+      (is (re-find #"limit" (:error result))))))
+
+(deftest list-github-prs-dispatches-to-sessions-test
+  (testing "valid project is parsed and forwarded to sessions/list-github-prs"
+    (let [captured (atom nil)]
+      (with-redefs [sessions/list-github-prs
+                    (fn [opts]
+                      (reset! captured opts)
+                      (js/Promise.resolve {:prs [] :truncated false}))]
+        (mcp/handle-tool "list_github_prs" {:project "foo/bar"
+                                            :state "open"
+                                            :limit 10})
+        (is (= "foo" (:owner @captured)))
+        (is (= "bar" (:repo @captured)))
+        (is (= "open" (:state @captured)))
+        (is (= 10 (:limit @captured)))))))
 
 ;; ============================================================================
 ;; Kanban Board Tool Tests
