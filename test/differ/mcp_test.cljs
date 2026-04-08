@@ -443,13 +443,70 @@
     (is (thrown-with-msg? js/Error #"expected array but got"
                           (#'mcp/validate-tool-args "register_files" {:session-id "s1" :paths "not-an-array" :agent-id "agent1"}))))
 
-  (testing "wrong type for integer field throws error"
+  (testing "non-numeric string for integer field throws error after coercion fails"
     (is (thrown-with-msg? js/Error #"expected integer but got"
                           (#'mcp/validate-tool-args "get_session_diff" {:session-id "s1" :from "not-a-number"}))))
 
   (testing "wrong type for boolean field throws error"
     (is (thrown-with-msg? js/Error #"expected boolean but got"
                           (#'mcp/validate-tool-args "request_review" {:session-id "s1" :draft "true"})))))
+
+(deftest validate-tool-args-coerces-numeric-strings-test
+  ;; Some MCP clients (notably the Claude Code parameter encoder)
+  ;; serialize integer arguments as JSON strings. The validator now
+  ;; coerces clean numeric strings to actual numbers before checking
+  ;; the type, so `{"line": "41"}` round-trips as `{:line 41}` and the
+  ;; downstream handler sees a real integer. Only clean integer literals
+  ;; are accepted — `"3.14"` for integer is still rejected.
+  (testing "integer field accepts numeric string and coerces it"
+    (let [result (#'mcp/validate-tool-args "add_comment"
+                                           {:session-id "s1"
+                                            :text "hello"
+                                            :author "alice"
+                                            :line "41"})]
+      (is (= 41 (:line result)))
+      (is (integer? (:line result)))))
+
+  (testing "negative integer string also coerces"
+    (let [result (#'mcp/validate-tool-args "get_session_diff"
+                                           {:session-id "s1" :from "-3"})]
+      (is (= -3 (:from result)))
+      (is (integer? (:from result)))))
+
+  (testing "wait_for_event timeout_ms accepts numeric string"
+    (let [result (#'mcp/validate-tool-args "wait_for_event"
+                                           {:scope "github:o/r"
+                                            :since-seq "5"
+                                            :timeout-ms "1000"
+                                            :max-events "25"})]
+      (is (= 5 (:since-seq result)))
+      (is (= 1000 (:timeout-ms result)))
+      (is (= 25 (:max-events result)))))
+
+  (testing "fractional string for integer field is rejected (no silent truncation)"
+    (is (thrown-with-msg? js/Error #"expected integer but got"
+                          (#'mcp/validate-tool-args "add_comment"
+                                                    {:session-id "s1"
+                                                     :text "hi"
+                                                     :author "a"
+                                                     :line "3.14"}))))
+
+  (testing "string with junk after digits is rejected"
+    (is (thrown-with-msg? js/Error #"expected integer but got"
+                          (#'mcp/validate-tool-args "add_comment"
+                                                    {:session-id "s1"
+                                                     :text "hi"
+                                                     :author "a"
+                                                     :line "41junk"}))))
+
+  (testing "real integer values still pass through unchanged"
+    (let [result (#'mcp/validate-tool-args "add_comment"
+                                           {:session-id "s1"
+                                            :text "hi"
+                                            :author "a"
+                                            :line 41})]
+      (is (= 41 (:line result)))
+      (is (integer? (:line result))))))
 
 (deftest validate-tool-args-optional-fields-test
   (testing "optional fields can be omitted"

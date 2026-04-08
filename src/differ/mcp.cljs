@@ -368,6 +368,34 @@
     (map? v) "object"
     :else nil))
 
+(defn- coerce-numeric-string
+  "Some MCP clients send numeric arguments as JSON strings (e.g.
+   `{\"line\": \"41\"}` instead of `{\"line\": 41}`). When the schema
+   says we want an integer/number and we got a string that parses
+   cleanly, coerce it. Returns the coerced value or the original.
+
+   `clean` here means: optional sign, all digits, no whitespace, no
+   junk after — and (for integer) no fractional part. We deliberately
+   reject `\"3.14\"` as an integer rather than truncating, because the
+   silent truncation would mask client bugs."
+  [value expected-type]
+  (cond
+    (not (string? value))
+    value
+
+    (and (= expected-type "integer")
+         (re-matches #"-?\d+" value))
+    (let [n (js/parseInt value 10)]
+      (if (js/Number.isNaN n) value n))
+
+    (and (= expected-type "number")
+         (re-matches #"-?\d+(\.\d+)?" value))
+    (let [n (js/parseFloat value)]
+      (if (js/Number.isNaN n) value n))
+
+    :else
+    value))
+
 (defn- validate-type
   "Validate that a value matches the expected JSON schema type.
    Returns nil if valid, error message if invalid."
@@ -385,6 +413,23 @@
   [field]
   (let [field-str (if (keyword? field) (name field) field)]
     (keyword (util/snake->kebab field-str))))
+
+(defn- coerce-args
+  "Walk the args map and coerce numeric-string values for any field
+   whose schema type is integer/number. Returns the (possibly updated)
+   args map. No validation here — coercion only. Validation happens
+   afterwards on the coerced map."
+  [args properties]
+  (reduce
+   (fn [acc [field-name field-schema]]
+     (let [field-kw (schema-key->arg-key field-name)
+           expected-type (get field-schema :type)]
+       (if (and (contains? acc field-kw)
+                (#{"integer" "number"} expected-type))
+         (update acc field-kw coerce-numeric-string expected-type)
+         acc)))
+   args
+   properties))
 
 (defn- validate-required-fields
   "Validate that all required fields are present and have correct types.
@@ -417,12 +462,17 @@
                            :actual (get-json-type value)})))))))
 
 (defn- validate-tool-args
-  "Validate arguments for a tool call. Returns args if valid, throws on error."
+  "Validate arguments for a tool call. Returns the (possibly coerced)
+   args if valid, throws on error. Numeric-string coercion happens
+   first so clients that send `{\"line\": \"41\"}` instead of
+   `{\"line\": 41}` round-trip cleanly."
   [tool-name args]
   (if-let [tool (get tools-by-name tool-name)]
-    (let [schema (:inputSchema tool)]
-      (validate-required-fields tool-name args schema)
-      args)
+    (let [schema (:inputSchema tool)
+          properties (get schema :properties {})
+          coerced (coerce-args args properties)]
+      (validate-required-fields tool-name coerced schema)
+      coerced)
     ;; Unknown tool - let handle-tool :default handle it
     args))
 
@@ -886,9 +936,11 @@
         ;; Normalize incoming args: snake_case -> kebab-case
         arguments (util/keys->kebab (or (:arguments params) {}))]
     (try
-      ;; Validate required fields and types before dispatch
-      (validate-tool-args tool-name arguments)
-      (let [result (handle-tool tool-name arguments)]
+      ;; Validate required fields and types before dispatch.
+      ;; `validate-tool-args` returns the (possibly coerced) args —
+      ;; numeric-string fields like `{"line": "41"}` become real ints.
+      (let [coerced (validate-tool-args tool-name arguments)
+            result (handle-tool tool-name coerced)]
         ;; Normalize to Promise for consistent handling
         (-> (ensure-promise result)
             (.then format-tool-result)
