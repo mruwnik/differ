@@ -27,6 +27,17 @@
    ;; Watcher settings (server)
    :watcher-debounce-ms 300         ;; Debounce file change events
 
+   ;; Event stream — central ring buffer used by both github: and
+   ;; session: scopes. Poll interval / grace are github-specific; the
+   ;; buffer size is shared across all scopes.
+   :event-stream
+   {:buffer-size 10000}
+
+   ;; GitHub poller (wait_for_event MCP tool, github: scope)
+   :github-poller
+   {:poll-interval-ms 30000
+    :poller-grace-ms 300000}
+
    ;; Push whitelist - controls which repos/branches can be pushed
    ;; Empty map = all repos/branches allowed
    ;; Example: {"owner/repo" ["feature/*" "fix/*"], "myorg/*" ["*"]}
@@ -183,6 +194,47 @@
   []
   (reset! config-cache nil)
   (get-config))
+
+;; Hot-reload hook: `config-cache` is `defonce` and survives hot-reloads,
+;; which means new config keys added during dev (e.g. a renamed config
+;; block) are invisible to the running process until you explicitly
+;; restart it. Force a fresh read after every reload so dev code matches
+;; runtime config. Discovered live: a stale cache from before an
+;; `:event-stream` block rename caused `event-buffer-size` to silently
+;; return nil, which then crashed `trim-to-capacity` and made every
+;; `wait_for_event` look broken with no observable error.
+(defn ^:dev/after-load reload-after-hot-reload! []
+  (reload!))
+
+;; ============================================================================
+;; Event stream / GitHub poller config
+;; ============================================================================
+
+(defn- parse-int-env
+  "Read and parse an env var as an integer. Returns nil if unset or invalid."
+  [var-name]
+  (when-let [raw (env-var var-name)]
+    (let [n (js/parseInt raw 10)]
+      (when-not (js/Number.isNaN n) n))))
+
+(defn- nested-config-value
+  "Read `[block-key config-key]` from the loaded config map, honoring an
+   env-var override (integer)."
+  [block-key config-key env-var-name]
+  (or (parse-int-env env-var-name)
+      (get-in (get-config) [block-key config-key])))
+
+(defn event-buffer-size
+  "Shared ring-buffer capacity for `differ.event-stream`. Applies to
+   every scope (`github:...`, `session:...`, and any future producer)."
+  []
+  (nested-config-value :event-stream :buffer-size "DIFFER_EVENT_BUFFER_SIZE"))
+
+(defn github-poll-interval-ms []
+  (nested-config-value :github-poller :poll-interval-ms "DIFFER_GITHUB_POLL_INTERVAL_MS"))
+
+(defn github-poller-grace-ms []
+  (nested-config-value :github-poller :poller-grace-ms "DIFFER_GITHUB_POLLER_GRACE_MS"))
 
 ;; Client-safe config (values that can be exposed to the browser)
 (def client-config-keys

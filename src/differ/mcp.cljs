@@ -11,6 +11,9 @@
             [differ.sse :as sse]
             [differ.util :as util]
             [differ.oauth :as oauth]
+            [differ.event-stream :as event-stream]
+            [differ.github-events :as github-events]
+            [differ.session-events :as session-events]
             [clojure.string :as str]))
 
 ;; MCP Protocol version
@@ -289,7 +292,20 @@
                                        :description "PR state: 'open' (default), 'closed', or 'all'"}
                                :limit {:type "number"
                                        :description "Max PRs to return (default 30, max 100)"}}
-                  :required ["project"]}}])
+                  :required ["project"]}}
+
+   {:name "wait_for_event"
+    :description "Block until new events arrive for a watched scope, then return them. One tool call covers a long idle stretch — agents use this instead of polling. Scope formats: 'github:owner/repo' for GitHub PR activity (pr-opened, pr-head-changed, pr-feedback-changed, pr-closed — starts an internal poller lazily and stops it after a grace period); 'session:<session-id>' for differ session events (comment-added, comment-resolved, comment-unresolved, files-registered, files-unregistered, review-submitted — push-based, no poller). Use since_seq to resume from a known point, timeout_ms=0 for a non-blocking peek. Owner and repo must match [A-Za-z0-9._-]+ — reserved prefixes (session:, github:) inside the project path are rejected. IMPORTANT: when a GitHub PR has an associated differ session, a single mutating call like add_comment will surface on BOTH scopes — immediately on session:<id> (as :comment-added) and within one poll interval on github:owner/repo (as :pr-feedback-changed, with a :summary like \"1 new comment\"). Two separate events, two scopes, same underlying change. Pick the scope that matches your latency requirement; do NOT subscribe to both expecting deduplication."
+    :inputSchema {:type "object"
+                  :properties {:scope      {:type "string"
+                                            :description "Scope to watch: 'github:owner/repo' or 'session:<session-id>' (required)"}
+                               :since_seq  {:type "integer"
+                                            :description "Return events with seq > this. Default 0 (all buffered)."}
+                               :timeout_ms {:type "integer"
+                                            :description "Max ms to block. Default 300000 (5 min). 0 = peek (return immediately)."}
+                               :max_events {:type "integer"
+                                            :description "Max events to return in one call. Default 50, capped at 500."}}
+                  :required ["scope"]}}])
 
 ;; Error codes
 (def parse-error -32700)
@@ -533,14 +549,30 @@
         :else
         (format-session-result result)))))
 
+;; ---------------------------------------------------------------------------
+;; Dual-bus emit ordering
+;;
+;; Every mutating handler publishes on TWO buses: SSE (for the browser UI)
+;; and session-events (for `wait_for_event` MCP consumers). By convention
+;; we always emit SSE first, then the session-event. This keeps the two
+;; consumers in roughly the same temporal order: an agent that wakes on
+;; a session-event is guaranteed the SSE bus has already been notified,
+;; so any browser-side observer cannot race ahead of the agent.
+;;
+;; If you add a new mutating handler, keep the SSE call before the
+;; session-events call. Do NOT flip the order.
+;; ---------------------------------------------------------------------------
+
 (defmethod handle-tool "register_files" [_ {:keys [session-id paths agent-id]}]
   (let [registered (sessions/register-files! session-id paths agent-id)]
     (sse/emit-files-changed! session-id registered)
+    (session-events/emit-files-registered! session-id registered agent-id)
     {:registered registered}))
 
 (defmethod handle-tool "unregister_files" [_ {:keys [session-id paths agent-id]}]
   (let [unregistered (sessions/unregister-files! session-id paths agent-id)]
     (sse/emit-files-changed! session-id unregistered)
+    (session-events/emit-files-unregistered! session-id unregistered agent-id)
     {:unregistered unregistered}))
 
 (defmethod handle-tool "get_review_state" [_ {:keys [session-id]}]
@@ -580,6 +612,7 @@
       (-> (ensure-promise (proto/add-comment! backend params))
           (.then (fn [comment]
                    (sse/emit-comment-added! session-id comment)
+                   (session-events/emit-comment-added! session-id comment)
                    {:comment-id (:id comment)}))))))
 
 (defmethod handle-tool "resolve_comment" [_ {:keys [session-id comment-id author]}]
@@ -588,6 +621,7 @@
       (-> (ensure-promise (proto/resolve-comment! backend comment-id author))
           (.then (fn [_]
                    (sse/emit-comment-resolved! session-id comment-id)
+                   (session-events/emit-comment-resolved! session-id comment-id author)
                    {:success true}))))))
 
 (defmethod handle-tool "unresolve_comment" [_ {:keys [session-id comment-id author]}]
@@ -596,12 +630,16 @@
       (-> (ensure-promise (proto/unresolve-comment! backend comment-id author))
           (.then (fn [_]
                    (sse/emit-comment-unresolved! session-id comment-id)
+                   (session-events/emit-comment-unresolved! session-id comment-id author)
                    {:success true}))))))
 
 (defmethod handle-tool "submit_review" [_ {:keys [session-id body author model]}]
   (with-backend session-id
     (fn [backend]
-      (ensure-promise (proto/submit-review! backend {:body body :author author :model model})))))
+      (-> (ensure-promise (proto/submit-review! backend {:body body :author author :model model}))
+          (.then (fn [result]
+                   (session-events/emit-review-submitted! session-id author)
+                   result))))))
 
 (defmethod handle-tool "get_session_diff" [_ {:keys [session-id file from to]}]
   (with-backend session-id
@@ -745,6 +783,78 @@
       (if-let [parsed (sessions/parse-project project)]
         (sessions/list-github-prs (assoc parsed :state state :limit limit))
         {:error (str "Invalid project format: " project)}))))
+
+(defn- non-negative-integer?
+  "A value is valid for since-seq / timeout-ms / max-events only if it is
+   nil (use default) or a non-negative integer. Rejects strings, floats,
+   negatives, and booleans (which are technically integers in cljs/JS)."
+  [v]
+  (or (nil? v)
+      (and (number? v)
+           (not (boolean? v))
+           (integer? v)
+           (not (neg? v)))))
+
+(def ^:private max-wait-timeout-ms
+  "Ceiling on wait_for_event's timeout. 10 minutes is already longer than
+   any reasonable agent pause; anything bigger risks holding HTTP sockets
+   open indefinitely."
+  (* 10 60 1000))
+
+(def ^:private github-scope-prefix "github:")
+(def ^:private session-scope-prefix "session:")
+
+(defn- valid-scope?
+  "A scope is valid if it's 'github:<owner>/<repo>' (strict GitHub slug,
+   see `sessions/parse-project`) or 'session:<non-blank>'. Leading
+   `github:` or `session:` prefixes inside the tail are rejected by
+   `parse-project`'s regex, so `github:session:foo/bar` cannot sneak
+   through the dispatcher."
+  [scope]
+  (cond
+    (not (string? scope)) false
+
+    (str/starts-with? scope github-scope-prefix)
+    (let [project (subs scope (count github-scope-prefix))]
+      (some? (sessions/parse-project project)))
+
+    (str/starts-with? scope session-scope-prefix)
+    (let [tail (subs scope (count session-scope-prefix))]
+      (not (str/blank? tail)))
+
+    :else false))
+
+(defmethod handle-tool "wait_for_event" [_ params]
+  (let [{:keys [scope since-seq timeout-ms max-events]} params]
+    (cond
+      (nil? scope)
+      {:error "scope is required (format: 'github:owner/repo' or 'session:<id>')"}
+
+      (not (valid-scope? scope))
+      {:error (str "Invalid scope: " scope)}
+
+      (not (non-negative-integer? since-seq))
+      {:error "since_seq must be a non-negative integer"}
+
+      (not (non-negative-integer? timeout-ms))
+      {:error "timeout_ms must be a non-negative integer"}
+
+      (not (non-negative-integer? max-events))
+      {:error "max_events must be a non-negative integer"}
+
+      (and timeout-ms (> timeout-ms max-wait-timeout-ms))
+      {:error (str "timeout_ms must be <= " max-wait-timeout-ms)}
+
+      :else
+      (let [opts {:since-seq (or since-seq 0)
+                  :timeout-ms (if (nil? timeout-ms) 300000 timeout-ms)
+                  :max-events (or max-events 50)}]
+        (if (str/starts-with? scope github-scope-prefix)
+          ;; GitHub scopes go through github-events so the poller lifecycle
+          ;; runs. Session scopes are passive — nothing to start, just
+          ;; delegate straight to the event stream.
+          (github-events/wait-for-scope! scope opts)
+          (event-stream/wait-for-event (assoc opts :scope scope)))))))
 
 (defmethod handle-tool :default [tool-name _]
   (throw (ex-info "Unknown tool" {:tool tool-name})))

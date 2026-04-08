@@ -7,7 +7,9 @@
             [differ.db :as db]
             [differ.api :as api]
             [differ.mcp :as mcp]
-            [differ.sse :as sse]))
+            [differ.sse :as sse]
+            [differ.event-stream :as event-stream]
+            [differ.github-events :as github-events]))
 
 (defonce ^:private server (atom nil))
 
@@ -68,6 +70,11 @@
 
 (defn start []
   (when-not @server
+    ;; Clear the event-stream shutdown flag first. `defonce` keeps the
+    ;; flag's atom alive across `^:dev/before-load` → `^:dev/after-load`
+    ;; reload cycles, so without this reset the flag would stay true
+    ;; after the first hot-reload and polling would silently break.
+    (event-stream/reset-shutdown!)
     (db/init!)
     (let [^js app (create-app)
           port (get-port)]
@@ -80,6 +87,11 @@
 
 (defn stop []
   (when-let [^js s @server]
+    ;; Shutdown order: flag first (via event-stream), then pollers, so
+    ;; any in-flight startup .then callbacks see the shutdown flag and
+    ;; short-circuit before they install fresh timers.
+    (event-stream/shutdown-all!)
+    (github-events/stop-all-pollers!)
     (.close s)
     (reset! server nil)
     (db/close!)
@@ -88,7 +100,13 @@
 (defn main []
   (start))
 
-;; For shadow-cljs hot reload
+;; For shadow-cljs hot reload.
+;; Note: we don't need to manually clear stale `:cache` entries here.
+;; `run-poll-cycle!` short-circuits on `(shutdown?)` after the fetch
+;; resolves and dissocs its scope, so any poll cycle that overlaps the
+;; shutdown-then-stop sequence cleans up after itself rather than
+;; stranding a populated entry. `start` resets the shutdown flag on
+;; the next reload.
 (defn ^:dev/before-load stop-for-reload []
   (stop))
 

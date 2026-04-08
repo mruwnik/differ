@@ -313,18 +313,23 @@
    (js/Promise.resolve {:all-failed true :last-error "No tokens available"})
    tokens))
 
+(def ^:private github-slug-re
+  "Strict GitHub owner/repo pattern. Owners and repos are GitHub handles:
+   alphanumerics, `-`, `_`, and `.` — no colons, slashes, spaces, or
+   other punctuation. Anchored at both ends so we can't accept
+   `github:session:foo/bar` or `github:owner/repo/extra` downstream."
+  #"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
+
 (defn parse-project
   "Parse an 'owner/repo' string into {:owner ... :repo ...}.
-   Returns nil if the input does not match exactly owner/repo with
-   non-empty parts."
+   Returns nil if the input does not match the strict GitHub slug
+   pattern `[A-Za-z0-9._-]+/[A-Za-z0-9._-]+`. This means: exactly one
+   slash, non-empty parts, and no reserved punctuation (in particular,
+   no `:` so `session:foo/bar` and similar are rejected)."
   [s]
-  (when (string? s)
-    (let [parts (str/split s #"/")]
-      (when (and (= 2 (count parts))
-                 (seq (first parts))
-                 (seq (second parts)))
-        {:owner (first parts)
-         :repo  (second parts)}))))
+  (when (and (string? s) (re-matches github-slug-re s))
+    (let [[owner repo] (str/split s #"/" 2)]
+      {:owner owner :repo repo})))
 
 (defn- get-or-create-github-session
   "Get or create a GitHub PR session.
@@ -500,7 +505,8 @@
                           :github-pat-url "https://github.com/settings/tokens/new?scopes=repo&description=differ-access"})
 
                        :else
-                       {:error (str "Failed to fetch PRs: " (:last-error result))}))))))))
+                       {:error (str "Failed to fetch PRs: "
+                                    (or (:error result) (:last-error result)))}))))))))
 
 (defn get-session
   "Get session by ID with unresolved count."

@@ -18,8 +18,11 @@
             [differ.push-permissions-test]
             [differ.pull-request-test]
             [differ.sse-test]
+            [differ.event-stream-test]
             [differ.github-api-test]
+            [differ.github-events-test]
             [differ.github-oauth-test]
+            [differ.session-events-test]
             [differ.oauth-test]
             ;; Backend tests
             [differ.backend.protocol-test]
@@ -49,8 +52,11 @@
    'differ.push-permissions-test
    'differ.pull-request-test
    'differ.sse-test
+   'differ.event-stream-test
    'differ.github-api-test
+   'differ.github-events-test
    'differ.github-oauth-test
+   'differ.session-events-test
    'differ.oauth-test
    ;; Backend tests
    'differ.backend.protocol-test

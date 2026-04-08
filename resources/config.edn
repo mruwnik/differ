@@ -23,4 +23,17 @@
  :context-expand-size 15          ;; Lines to expand at a time
 
  ;; Watcher settings (server)
- :watcher-debounce-ms 300}        ;; Debounce file change events
+ :watcher-debounce-ms 300         ;; Debounce file change events
+
+ ;; Central event stream — shared by every `wait_for_event` scope
+ ;; (github:, session:, and any future producer).
+ :event-stream
+ {;; Ring buffer capacity per scope (env: DIFFER_EVENT_BUFFER_SIZE)
+  :buffer-size 10000}
+
+ ;; GitHub-specific poller (wait_for_event MCP tool, github: scope)
+ :github-poller
+ {;; Poll interval in ms (env: DIFFER_GITHUB_POLL_INTERVAL_MS)
+  :poll-interval-ms 30000
+  ;; Grace period after last wait call before poller stops (env: DIFFER_GITHUB_POLLER_GRACE_MS)
+  :poller-grace-ms 300000}}

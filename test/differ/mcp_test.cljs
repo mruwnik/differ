@@ -3,7 +3,9 @@
   (:require [clojure.test :refer [deftest testing is use-fixtures]]
             [differ.test-helpers :as helpers]
             [differ.mcp :as mcp]
-            [differ.sessions :as sessions]))
+            [differ.sessions :as sessions]
+            [differ.event-stream]
+            [differ.github-events]))
 
 ;; ============================================================================
 ;; Test Setup
@@ -526,6 +528,148 @@
         (is (= "bar" (:repo @captured)))
         (is (= "open" (:state @captured)))
         (is (= 10 (:limit @captured)))))))
+
+;; ============================================================================
+;; wait_for_event tests
+;; ============================================================================
+
+(deftest wait-for-event-tool-schema-test
+  (testing "wait_for_event is registered with the expected schema"
+    (let [tool (first (filter #(= "wait_for_event" (:name %)) mcp/tools))]
+      (is (some? tool))
+      (is (string? (:description tool)))
+      (let [schema (:inputSchema tool)
+            props (:properties schema)]
+        (is (= "object" (:type schema)))
+        (is (= ["scope"] (:required schema)))
+        (is (contains? props :scope))
+        (is (contains? props :since_seq))
+        (is (contains? props :timeout_ms))
+        (is (contains? props :max_events))))))
+
+(deftest wait-for-event-missing-scope-test
+  (testing "returns error when scope is missing"
+    (let [result (mcp/handle-tool "wait_for_event" {})]
+      (is (string? (:error result)))
+      (is (re-find #"scope is required" (:error result))))))
+
+(deftest wait-for-event-invalid-github-scope-test
+  (testing "returns error for malformed github scope"
+    (let [result (mcp/handle-tool "wait_for_event" {:scope "github:no-slash"})]
+      (is (string? (:error result)))
+      (is (re-find #"Invalid scope" (:error result))))))
+
+(deftest wait-for-event-invalid-scope-prefix-test
+  (testing "returns error for unknown scope prefix"
+    (let [result (mcp/handle-tool "wait_for_event" {:scope "nope:foo"})]
+      (is (string? (:error result)))
+      (is (re-find #"Invalid scope" (:error result))))))
+
+(deftest wait-for-event-empty-session-scope-test
+  (testing "returns error for session scope with empty id"
+    (let [result (mcp/handle-tool "wait_for_event" {:scope "session:"})]
+      (is (string? (:error result)))
+      (is (re-find #"Invalid scope" (:error result))))))
+
+(deftest wait-for-event-dispatches-github-scope-to-github-events-test
+  (testing "github: scope is forwarded to github-events/wait-for-scope!"
+    (let [captured (atom nil)
+          orig differ.github-events/wait-for-scope!]
+      (set! differ.github-events/wait-for-scope!
+            (fn [scope opts]
+              (reset! captured {:scope scope :opts opts})
+              (js/Promise.resolve
+               {:events [] :next-seq 0 :timed-out true})))
+      (try
+        (mcp/handle-tool "wait_for_event"
+                         {:scope "github:owner/repo"
+                          :since-seq 5
+                          :timeout-ms 1000
+                          :max-events 25})
+        (is (= "github:owner/repo" (:scope @captured)))
+        (is (= 5 (get-in @captured [:opts :since-seq])))
+        (is (= 1000 (get-in @captured [:opts :timeout-ms])))
+        (is (= 25 (get-in @captured [:opts :max-events])))
+        (finally
+          (set! differ.github-events/wait-for-scope! orig))))))
+
+(deftest wait-for-event-dispatches-session-scope-to-event-stream-test
+  (testing "session: scope is forwarded directly to event-stream/wait-for-event"
+    (let [captured (atom nil)
+          orig differ.event-stream/wait-for-event]
+      (set! differ.event-stream/wait-for-event
+            (fn [opts]
+              (reset! captured opts)
+              (js/Promise.resolve
+               {:events [] :next-seq 0 :timed-out true})))
+      (try
+        (mcp/handle-tool "wait_for_event"
+                         {:scope "session:local:abc123"
+                          :since-seq 2})
+        (is (= "session:local:abc123" (:scope @captured)))
+        (is (= 2 (:since-seq @captured)))
+        (is (= 300000 (:timeout-ms @captured)))
+        (is (= 50 (:max-events @captured)))
+        (finally
+          (set! differ.event-stream/wait-for-event orig))))))
+
+(deftest wait-for-event-defaults-applied-test
+  (testing "omitted options get default values"
+    (let [captured (atom nil)
+          orig differ.github-events/wait-for-scope!]
+      (set! differ.github-events/wait-for-scope!
+            (fn [_scope opts]
+              (reset! captured opts)
+              (js/Promise.resolve
+               {:events [] :next-seq 0 :timed-out true})))
+      (try
+        (mcp/handle-tool "wait_for_event" {:scope "github:a/b"})
+        (is (= 0 (:since-seq @captured)))
+        (is (= 300000 (:timeout-ms @captured)))
+        (is (= 50 (:max-events @captured)))
+        (finally
+          (set! differ.github-events/wait-for-scope! orig))))))
+
+;; Regression for the `github:session:foo/bar` dispatch confusion. The
+;; old `parse-project` was permissive enough to split `session:foo/bar`
+;; into owner=`session:foo`, repo=`bar`, and the dispatcher then handed
+;; that to the github poller. Tighter slug validation in
+;; `sessions/parse-project` now rejects it at the dispatcher boundary.
+(deftest wait-for-event-rejects-github-session-prefix-test
+  (testing "github:session:foo/bar must NOT slip through valid-scope?"
+    (let [result (mcp/handle-tool "wait_for_event" {:scope "github:session:foo/bar"})]
+      (is (string? (:error result)))
+      (is (re-find #"Invalid scope" (:error result))))))
+
+(deftest wait-for-event-rejects-github-with-extra-segment-test
+  (testing "github:owner/repo/extra has too many slashes — reject"
+    (let [result (mcp/handle-tool "wait_for_event" {:scope "github:owner/repo/extra"})]
+      (is (string? (:error result)))
+      (is (re-find #"Invalid scope" (:error result))))))
+
+(deftest wait-for-event-rejects-github-whitespace-owner-test
+  (testing "github: /repo (leading space owner) is rejected"
+    (let [result (mcp/handle-tool "wait_for_event" {:scope "github: /repo"})]
+      (is (string? (:error result)))
+      (is (re-find #"Invalid scope" (:error result))))))
+
+(deftest wait-for-event-rejects-github-prefix-inside-project-test
+  (testing "github:github:foo/bar is rejected (reserved-prefix impostor)"
+    (let [result (mcp/handle-tool "wait_for_event" {:scope "github:github:foo/bar"})]
+      (is (string? (:error result)))
+      (is (re-find #"Invalid scope" (:error result))))))
+
+;; ============================================================================
+;; Integration: end-to-end dispatcher → session-events → wait_for_event
+;; ============================================================================
+
+;; The end-to-end async integration test for the
+;; dispatcher → session-events → wait_for_event flow lives in
+;; differ.session-events-test, because mcp_test's `with-test-env`
+;; fixture is a synchronous wrapper (closes the test DB before any
+;; async chain finishes — incompatible with `(async done ...)` tests).
+;; The session_events_test fixture uses the :before/:after map form
+;; which waits for done.
 
 ;; ============================================================================
 ;; Kanban Board Tool Tests

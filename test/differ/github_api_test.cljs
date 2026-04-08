@@ -1,16 +1,16 @@
 (ns differ.github-api-test
   "Tests for GitHub API utilities."
-  (:require [clojure.test :refer [deftest testing is use-fixtures]]
+  (:require [clojure.test :refer [deftest testing is use-fixtures async]]
             [differ.github-api :as gh-api]))
 
 ;; ============================================================================
 ;; Test Setup - Reset rate limit state between tests
 ;; ============================================================================
 
-(defn reset-rate-limit-state [f]
-  ;; Reset to default values before each test
-  (reset! gh-api/rate-limit-state {:remaining 5000 :reset-at nil})
-  (f))
+(def reset-rate-limit-state
+  ;; Map-form fixture (required for async tests in cljs.test).
+  {:before (fn [] (reset! gh-api/rate-limit-state {:remaining 5000 :reset-at nil}))
+   :after  (fn [] nil)})
 
 (use-fixtures :each reset-rate-limit-state)
 
@@ -103,13 +103,17 @@
   (testing "graphql-request always returns a promise"
     (let [result (gh-api/graphql-request "token" "query" {})]
       ;; Should be a promise (has .then method)
-      (is (fn? (.-then result))))))
+      (is (fn? (.-then result)))
+      ;; The fake token will cause an auth failure — swallow the rejection
+      ;; so it doesn't become an unhandled rejection that crashes the runner.
+      (.catch result (fn [_])))))
 
 (deftest rest-request-returns-promise-test
   (testing "rest-request always returns a promise"
     (let [result (gh-api/rest-request "token" "https://api.github.com/repos" {})]
       ;; Should be a promise
-      (is (fn? (.-then result))))))
+      (is (fn? (.-then result)))
+      (.catch result (fn [_])))))
 
 ;; ============================================================================
 ;; Pagination Helper Tests
@@ -123,7 +127,8 @@
                   {}
                   [:viewer :repositories])]
       ;; Should be a promise
-      (is (fn? (.-then result))))))
+      (is (fn? (.-then result)))
+      (.catch result (fn [_])))))
 
 ;; ============================================================================
 ;; list-pull-requests tests
@@ -216,3 +221,129 @@
                    (let [pr2 (second (:prs result))]
                      (is (nil? (:author pr2))
                          "deleted author should produce nil"))))))))
+
+;; ============================================================================
+;; list-prs-for-poller tests
+;; ============================================================================
+
+(deftest list-prs-for-poller-normalizes-nodes-test
+  (testing "returns flat PR maps with head-sha, counts, and checks-status"
+    (async done
+           (with-redefs [gh-api/graphql-request
+                         (fn [_token _query _variables]
+                           (js/Promise.resolve
+                            {:repository
+                             {:pullRequests
+                              {:totalCount 1
+                               :pageInfo {:hasNextPage false}
+                               :nodes
+                               [{:number 42
+                                 :title "Add widget"
+                                 :isDraft false
+                                 :author {:login "octocat"}
+                                 :baseRefName "main"
+                                 :headRefName "feature/widget"
+                                 :headRefOid "abc123"
+                                 :updatedAt "2026-04-08T10:00:00Z"
+                                 :url "https://github.com/owner/repo/pull/42"
+                                 :comments {:totalCount 3}
+                                 :reviews {:totalCount 1}
+                                 :reviewThreads {:nodes [{:isResolved false}
+                                                         {:isResolved false}
+                                                         {:isResolved true}]}
+                                 :commits {:nodes [{:commit {:statusCheckRollup {:state "FAILURE"}}}]}}]}}}))]
+             (-> (gh-api/list-prs-for-poller "tok" "owner" "repo" {:limit 30})
+                 (.then (fn [result]
+                          (is (false? (:truncated result)))
+                          (let [pr (first (:prs result))]
+                            (is (= 42 (:number pr)))
+                            (is (= "abc123" (:head-sha pr)))
+                            (is (= 2 (:unresolved-count pr)))
+                            (is (= 1 (:review-count pr)))
+                            (is (= :failure (:checks-status pr)))
+                            (is (= "octocat" (:author pr)))
+                            (is (= "feature/widget" (:head-branch pr))))
+                          (done))))))))
+
+(deftest list-prs-for-poller-handles-missing-rollup-test
+  (testing "nil statusCheckRollup yields nil checks-status"
+    (async done
+           (with-redefs [gh-api/graphql-request
+                         (fn [_token _query _variables]
+                           (js/Promise.resolve
+                            {:repository
+                             {:pullRequests
+                              {:totalCount 1
+                               :pageInfo {:hasNextPage false}
+                               :nodes
+                               [{:number 1 :title "T" :isDraft false
+                                 :author {:login "x"} :baseRefName "main"
+                                 :headRefName "f" :headRefOid "sha"
+                                 :updatedAt "2026-04-08T10:00:00Z"
+                                 :url "u"
+                                 :comments {:totalCount 0}
+                                 :reviews {:totalCount 0}
+                                 :reviewThreads {:nodes []}
+                                 :commits {:nodes [{:commit {:statusCheckRollup nil}}]}}]}}}))]
+             (-> (gh-api/list-prs-for-poller "tok" "owner" "repo" {})
+                 (.then (fn [result]
+                          (let [pr (first (:prs result))]
+                            (is (nil? (:checks-status pr)))
+                            (is (= 0 (:unresolved-count pr)))
+                            (is (= 0 (:review-count pr))))
+                          (done))))))))
+
+(deftest list-prs-for-poller-clamps-limit-test
+  (testing "limit over 100 is clamped to 100"
+    (async done
+           (let [captured (atom nil)]
+             (with-redefs [gh-api/graphql-request
+                           (fn [_token _query variables]
+                             (reset! captured variables)
+                             (js/Promise.resolve
+                              {:repository
+                               {:pullRequests
+                                {:totalCount 0 :pageInfo {:hasNextPage false} :nodes []}}}))]
+               (-> (gh-api/list-prs-for-poller "tok" "o" "r" {:limit 500})
+                   (.then (fn [_]
+                            (is (= 100 (:first @captured)))
+                            (done)))))))))
+
+;; ============================================================================
+;; get-pr-merge-status tests
+;; ============================================================================
+
+(deftest get-pr-merge-status-returns-true-when-merged-test
+  (testing "returns true when merged"
+    (async done
+           (with-redefs [gh-api/graphql-request
+                         (fn [_tok _query _vars]
+                           (js/Promise.resolve
+                            {:repository {:pullRequest {:merged true}}}))]
+             (-> (gh-api/get-pr-merge-status "tok" "owner" "repo" 42)
+                 (.then (fn [result]
+                          (is (true? result))
+                          (done))))))))
+
+(deftest get-pr-merge-status-returns-false-when-closed-test
+  (testing "returns false when closed without merge"
+    (async done
+           (with-redefs [gh-api/graphql-request
+                         (fn [_tok _query _vars]
+                           (js/Promise.resolve
+                            {:repository {:pullRequest {:merged false}}}))]
+             (-> (gh-api/get-pr-merge-status "tok" "owner" "repo" 42)
+                 (.then (fn [result]
+                          (is (false? result))
+                          (done))))))))
+
+(deftest get-pr-merge-status-falls-back-to-false-on-error-test
+  (testing "resolves to false if the GraphQL call throws"
+    (async done
+           (with-redefs [gh-api/graphql-request
+                         (fn [_tok _query _vars]
+                           (js/Promise.reject (js/Error. "boom")))]
+             (-> (gh-api/get-pr-merge-status "tok" "owner" "repo" 42)
+                 (.then (fn [result]
+                          (is (false? result))
+                          (done))))))))
