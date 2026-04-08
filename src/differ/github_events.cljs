@@ -73,7 +73,7 @@
 ;; ============================================================================
 
 (def ^:private cache-entry-keys
-  [:head-sha :unresolved-count :review-count :checks-status
+  [:head-sha :unresolved-count :review-count :comment-count :checks-status
    :updated-at :last-seen])
 
 (defn- pr->cache-entry
@@ -85,6 +85,10 @@
   {:head-sha         (:head-sha pr)
    :unresolved-count (:unresolved-count pr)
    :review-count     (:review-count pr)
+   ;; PR-level conversation comments (issue comments). See
+   ;; `normalize-pr-for-poller` in github_api.cljs — distinct from
+   ;; review-thread comments, which are in :unresolved-count.
+   :comment-count    (:comment-count pr)
    :checks-status    (:checks-status pr)
    :updated-at       (:updated-at pr)
    :last-seen        {:url         (:url pr)
@@ -126,32 +130,63 @@
    :draft       (:draft pr)
    :session-id  (resolve-session-id project (:number pr))})
 
+(defn- count-of
+  "Read a counter from a cache entry. Treats missing as 0 so callers
+   that build cache entries by hand (e.g. tests) don't have to enumerate
+   every counter we might add later."
+  [entry k]
+  (or (get entry k) 0))
+
 (defn- feedback-changed? [old-entry new-entry]
-  (or (not= (:unresolved-count old-entry) (:unresolved-count new-entry))
-      (not= (:review-count old-entry) (:review-count new-entry))
-      (not= (:checks-status old-entry) (:checks-status new-entry))))
+  (or (not= (count-of old-entry :unresolved-count) (count-of new-entry :unresolved-count))
+      (not= (count-of old-entry :review-count)     (count-of new-entry :review-count))
+      (not= (count-of old-entry :comment-count)    (count-of new-entry :comment-count))
+      (not= (:checks-status old-entry)             (:checks-status new-entry))))
+
+(defn- delta-phrase
+  "Build a human-readable phrase for a numeric delta. `singular`/`plural`
+   describe the noun (e.g. 'review' / 'reviews'). `verb-on-decrease` is
+   appended on negative deltas (e.g. 'resolved' for review threads)."
+  [old new singular plural verb-on-decrease]
+  (let [delta (- new old)]
+    (cond
+      (pos? delta)
+      (str delta " new " (if (= delta 1) singular plural))
+      (and (neg? delta) verb-on-decrease)
+      (str (- delta) " " (if (= delta -1) singular plural) " " verb-on-decrease)
+      :else
+      (str (if (= delta 1) singular plural) " count changed"))))
 
 (defn- feedback-summary
-  "Build a short human-readable summary of what changed in the feedback delta."
+  "Build a short human-readable summary of what changed in the feedback delta.
+   Distinguishes review-thread comments (`unresolved-count`) from PR-level
+   conversation comments (`comment-count`) so an agent can tell where the
+   activity happened."
   [old-entry new-entry]
-  (let [parts (cond-> []
-                (not= (:unresolved-count old-entry) (:unresolved-count new-entry))
-                (conj (let [delta (- (:unresolved-count new-entry)
-                                     (:unresolved-count old-entry))]
-                        (cond
-                          (pos? delta)
-                          (str delta " new comment" (when (not= delta 1) "s"))
-                          (neg? delta)
-                          (str (- delta) " comment"
-                               (when (not= delta -1) "s") " resolved")
-                          :else "comment count changed")))
+  (let [old-unresolved (count-of old-entry :unresolved-count)
+        new-unresolved (count-of new-entry :unresolved-count)
+        old-comments   (count-of old-entry :comment-count)
+        new-comments   (count-of new-entry :comment-count)
+        old-reviews    (count-of old-entry :review-count)
+        new-reviews    (count-of new-entry :review-count)
+        parts (cond-> []
+                (not= old-unresolved new-unresolved)
+                (conj (delta-phrase old-unresolved new-unresolved
+                                    "review thread comment"
+                                    "review thread comments"
+                                    "resolved"))
 
-                (not= (:review-count old-entry) (:review-count new-entry))
-                (conj (let [delta (- (:review-count new-entry)
-                                     (:review-count old-entry))]
-                        (if (pos? delta)
-                          (str delta " new review" (when (not= delta 1) "s"))
-                          "review count changed")))
+                (not= old-comments new-comments)
+                (conj (delta-phrase old-comments new-comments
+                                    "conversation comment"
+                                    "conversation comments"
+                                    nil))
+
+                (not= old-reviews new-reviews)
+                (conj (delta-phrase old-reviews new-reviews
+                                    "review"
+                                    "reviews"
+                                    nil))
 
                 (not= (:checks-status old-entry) (:checks-status new-entry))
                 (conj (str "checks now "
@@ -168,10 +203,12 @@
 
 (defn- feedback-changed-event [project pr old-entry new-entry]
   (assoc (envelope project pr :pr-feedback-changed)
-         :details {:unresolved-count          (:unresolved-count new-entry)
-                   :previous-unresolved-count (:unresolved-count old-entry)
-                   :review-count              (:review-count new-entry)
-                   :previous-review-count     (:review-count old-entry)
+         :details {:unresolved-count          (count-of new-entry :unresolved-count)
+                   :previous-unresolved-count (count-of old-entry :unresolved-count)
+                   :review-count              (count-of new-entry :review-count)
+                   :previous-review-count     (count-of old-entry :review-count)
+                   :comment-count             (count-of new-entry :comment-count)
+                   :previous-comment-count    (count-of old-entry :comment-count)
                    :checks-status             (:checks-status new-entry)
                    :previous-checks-status    (:checks-status old-entry)
                    :summary                   (feedback-summary old-entry new-entry)}))

@@ -209,6 +209,7 @@
           databaseId
           body
           createdAt
+          author { login }
         }
       }
     }
@@ -572,6 +573,7 @@
                      (let [c (get-in data [:addComment :commentEdge :node])]
                        {:id (:id c)
                         :text (:body c)
+                        :author (get-in c [:author :login])
                         :created-at (:createdAt c)})))))))
 
   (resolve-comment! [_ thread-id _author]

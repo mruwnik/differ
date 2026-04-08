@@ -300,6 +300,13 @@
      :url              (:url node)
      :unresolved-count (count-unresolved-threads (get-in node [:reviewThreads :nodes] []))
      :review-count     (get-in node [:reviews :totalCount] 0)
+     ;; PR-level conversation comments (issue comments). Distinct from
+     ;; review-thread comments — these are top-level PR discussion.
+     ;; Tracking this lets `pr-feedback-changed` fire when an agent
+     ;; adds a comment via differ's `add_comment` MCP handler against
+     ;; a github session, which posts an issue comment via the GitHub
+     ;; API but does NOT touch reviewThreads.
+     :comment-count    (get-in node [:comments :totalCount] 0)
      :checks-status    (normalize-checks-state (:state rollup))}))
 
 (defn list-prs-for-poller

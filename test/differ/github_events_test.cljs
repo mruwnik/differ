@@ -94,6 +94,7 @@
           :head-sha (str "sha-" n "-a")
           :unresolved-count 0
           :review-count 0
+          :comment-count 0
           :checks-status nil}
          overrides))
 
@@ -153,6 +154,45 @@
       (is (= :pr-feedback-changed (:event-type ev)))
       (is (= :failure (get-in ev [:details :checks-status])))
       (is (= :pending (get-in ev [:details :previous-checks-status]))))))
+
+(deftest detect-events-pr-feedback-changed-conversation-comment-test
+  ;; Regression for live-test bug #5: an `add_comment` MCP call against a
+  ;; github PR session posts a top-level issue comment to GitHub. The
+  ;; poller's old query only watched reviewThreads + reviews + checks,
+  ;; so PR-level conversation comments were invisible to
+  ;; `pr-feedback-changed`. Now they bump `:comment-count` and fire
+  ;; the event with both old and new counts in `:details`.
+  (testing "comment-count change alone triggers :pr-feedback-changed"
+    (let [old {1 {:head-sha "sha-1-a"
+                  :unresolved-count 0 :review-count 0 :comment-count 5
+                  :checks-status nil}}
+          result (ge/detect-events test-project old
+                                   [(pr 1 :comment-count 7)])
+          ev (first (:events result))]
+      (is (= :pr-feedback-changed (:event-type ev)))
+      (is (= 7 (get-in ev [:details :comment-count])))
+      (is (= 5 (get-in ev [:details :previous-comment-count])))
+      (is (re-find #"conversation comment" (get-in ev [:details :summary]))
+          "summary should distinguish conversation comments from review-thread comments"))))
+
+(deftest detect-events-comment-count-distinct-from-unresolved-count-test
+  (testing "review-thread (unresolved) comments and PR conversation
+            comments are tracked independently — bumping one without
+            the other still produces a single :pr-feedback-changed
+            event whose details show only the changed counter."
+    ;; Match the head-sha so we're only testing the feedback path.
+    (let [old {1 {:head-sha "sha-1-a"
+                  :unresolved-count 3 :review-count 0 :comment-count 0
+                  :checks-status nil}}
+          result (ge/detect-events test-project old
+                                   [(pr 1 :unresolved-count 3 :comment-count 1)])
+          ev (first (:events result))]
+      (is (= 1 (count (:events result))))
+      (is (= :pr-feedback-changed (:event-type ev)))
+      (is (= 3 (get-in ev [:details :unresolved-count]))
+          "unresolved-count should still echo the unchanged value")
+      (is (= 1 (get-in ev [:details :comment-count])))
+      (is (= 0 (get-in ev [:details :previous-comment-count]))))))
 
 (deftest detect-events-pr-closed-test
   (testing "PR present in cache but not in new list emits :pr-closed"

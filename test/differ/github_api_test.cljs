@@ -260,6 +260,8 @@
                             (is (= "abc123" (:head-sha pr)))
                             (is (= 2 (:unresolved-count pr)))
                             (is (= 1 (:review-count pr)))
+                            (is (= 3 (:comment-count pr))
+                                "PR-level conversation comments come from comments.totalCount")
                             (is (= :failure (:checks-status pr)))
                             (is (= "octocat" (:author pr)))
                             (is (= "feature/widget" (:head-branch pr))))
@@ -290,7 +292,8 @@
                           (let [pr (first (:prs result))]
                             (is (nil? (:checks-status pr)))
                             (is (= 0 (:unresolved-count pr)))
-                            (is (= 0 (:review-count pr))))
+                            (is (= 0 (:review-count pr)))
+                            (is (= 0 (:comment-count pr))))
                           (done))))))))
 
 (deftest list-prs-for-poller-clamps-limit-test
