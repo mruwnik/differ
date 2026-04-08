@@ -11,6 +11,9 @@
             [differ.sse :as sse]
             [differ.util :as util]
             [differ.oauth :as oauth]
+            [differ.event-stream :as event-stream]
+            [differ.github-events :as github-events]
+            [differ.session-events :as session-events]
             [clojure.string :as str]))
 
 ;; MCP Protocol version
@@ -278,7 +281,31 @@
                   :properties {:source {:type "string"
                                         :description "Filter by source (e.g., 'Culture', 'Dune', 'Greek')"}
                                :category {:type "string"
-                                          :description "Filter by category: sf, fantasy, mythology, or dnd"}}}}])
+                                          :description "Filter by category: sf, fantasy, mythology, or dnd"}}}}
+
+   {:name "list_github_prs"
+    :description "List open GitHub PRs for a repo, annotated with whether each already has a differ session. Use to discover PRs to review."
+    :inputSchema {:type "object"
+                  :properties {:project {:type "string"
+                                         :description "Repository in 'owner/repo' format (required)"}
+                               :state {:type "string"
+                                       :description "PR state: 'open' (default), 'closed', or 'all'"}
+                               :limit {:type "number"
+                                       :description "Max PRs to return (default 30, max 100)"}}
+                  :required ["project"]}}
+
+   {:name "wait_for_event"
+    :description "Block until new events arrive for a watched scope, then return them. One tool call covers a long idle stretch — agents use this instead of polling. Scope formats: 'github:owner/repo' for GitHub PR activity (pr-opened, pr-head-changed, pr-feedback-changed, pr-closed — starts an internal poller lazily and stops it after a grace period); 'session:<session-id>' for differ session events (comment-added, comment-resolved, comment-unresolved, files-registered, files-unregistered, review-submitted — push-based, no poller). Use since_seq to resume from a known point, timeout_ms=0 for a non-blocking peek. Owner and repo must match [A-Za-z0-9._-]+ — reserved prefixes (session:, github:) inside the project path are rejected. IMPORTANT: when a GitHub PR has an associated differ session, a single mutating call like add_comment will surface on BOTH scopes — immediately on session:<id> (as :comment-added) and within one poll interval on github:owner/repo (as :pr-feedback-changed, with a :summary like \"1 new comment\"). Two separate events, two scopes, same underlying change. Pick the scope that matches your latency requirement; do NOT subscribe to both expecting deduplication."
+    :inputSchema {:type "object"
+                  :properties {:scope      {:type "string"
+                                            :description "Scope to watch: 'github:owner/repo' or 'session:<session-id>' (required)"}
+                               :since_seq  {:type "integer"
+                                            :description "Return events with seq > this. Default 0 (all buffered)."}
+                               :timeout_ms {:type "integer"
+                                            :description "Max ms to block. Default 300000 (5 min). 0 = peek (return immediately)."}
+                               :max_events {:type "integer"
+                                            :description "Max events to return in one call. Default 50, capped at 500."}}
+                  :required ["scope"]}}])
 
 ;; Error codes
 (def parse-error -32700)
@@ -341,6 +368,34 @@
     (map? v) "object"
     :else nil))
 
+(defn- coerce-numeric-string
+  "Some MCP clients send numeric arguments as JSON strings (e.g.
+   `{\"line\": \"41\"}` instead of `{\"line\": 41}`). When the schema
+   says we want an integer/number and we got a string that parses
+   cleanly, coerce it. Returns the coerced value or the original.
+
+   `clean` here means: optional sign, all digits, no whitespace, no
+   junk after — and (for integer) no fractional part. We deliberately
+   reject `\"3.14\"` as an integer rather than truncating, because the
+   silent truncation would mask client bugs."
+  [value expected-type]
+  (cond
+    (not (string? value))
+    value
+
+    (and (= expected-type "integer")
+         (re-matches #"-?\d+" value))
+    (let [n (js/parseInt value 10)]
+      (if (js/Number.isNaN n) value n))
+
+    (and (= expected-type "number")
+         (re-matches #"-?\d+(\.\d+)?" value))
+    (let [n (js/parseFloat value)]
+      (if (js/Number.isNaN n) value n))
+
+    :else
+    value))
+
 (defn- validate-type
   "Validate that a value matches the expected JSON schema type.
    Returns nil if valid, error message if invalid."
@@ -358,6 +413,23 @@
   [field]
   (let [field-str (if (keyword? field) (name field) field)]
     (keyword (util/snake->kebab field-str))))
+
+(defn- coerce-args
+  "Walk the args map and coerce numeric-string values for any field
+   whose schema type is integer/number. Returns the (possibly updated)
+   args map. No validation here — coercion only. Validation happens
+   afterwards on the coerced map."
+  [args properties]
+  (reduce
+   (fn [acc [field-name field-schema]]
+     (let [field-kw (schema-key->arg-key field-name)
+           expected-type (get field-schema :type)]
+       (if (and (contains? acc field-kw)
+                (#{"integer" "number"} expected-type))
+         (update acc field-kw coerce-numeric-string expected-type)
+         acc)))
+   args
+   properties))
 
 (defn- validate-required-fields
   "Validate that all required fields are present and have correct types.
@@ -390,12 +462,17 @@
                            :actual (get-json-type value)})))))))
 
 (defn- validate-tool-args
-  "Validate arguments for a tool call. Returns args if valid, throws on error."
+  "Validate arguments for a tool call. Returns the (possibly coerced)
+   args if valid, throws on error. Numeric-string coercion happens
+   first so clients that send `{\"line\": \"41\"}` instead of
+   `{\"line\": 41}` round-trip cleanly."
   [tool-name args]
   (if-let [tool (get tools-by-name tool-name)]
-    (let [schema (:inputSchema tool)]
-      (validate-required-fields tool-name args schema)
-      args)
+    (let [schema (:inputSchema tool)
+          properties (get schema :properties {})
+          coerced (coerce-args args properties)]
+      (validate-required-fields tool-name coerced schema)
+      coerced)
     ;; Unknown tool - let handle-tool :default handle it
     args))
 
@@ -522,14 +599,30 @@
         :else
         (format-session-result result)))))
 
+;; ---------------------------------------------------------------------------
+;; Dual-bus emit ordering
+;;
+;; Every mutating handler publishes on TWO buses: SSE (for the browser UI)
+;; and session-events (for `wait_for_event` MCP consumers). By convention
+;; we always emit SSE first, then the session-event. This keeps the two
+;; consumers in roughly the same temporal order: an agent that wakes on
+;; a session-event is guaranteed the SSE bus has already been notified,
+;; so any browser-side observer cannot race ahead of the agent.
+;;
+;; If you add a new mutating handler, keep the SSE call before the
+;; session-events call. Do NOT flip the order.
+;; ---------------------------------------------------------------------------
+
 (defmethod handle-tool "register_files" [_ {:keys [session-id paths agent-id]}]
   (let [registered (sessions/register-files! session-id paths agent-id)]
     (sse/emit-files-changed! session-id registered)
+    (session-events/emit-files-registered! session-id registered agent-id)
     {:registered registered}))
 
 (defmethod handle-tool "unregister_files" [_ {:keys [session-id paths agent-id]}]
   (let [unregistered (sessions/unregister-files! session-id paths agent-id)]
     (sse/emit-files-changed! session-id unregistered)
+    (session-events/emit-files-unregistered! session-id unregistered agent-id)
     {:unregistered unregistered}))
 
 (defmethod handle-tool "get_review_state" [_ {:keys [session-id]}]
@@ -569,6 +662,7 @@
       (-> (ensure-promise (proto/add-comment! backend params))
           (.then (fn [comment]
                    (sse/emit-comment-added! session-id comment)
+                   (session-events/emit-comment-added! session-id comment)
                    {:comment-id (:id comment)}))))))
 
 (defmethod handle-tool "resolve_comment" [_ {:keys [session-id comment-id author]}]
@@ -577,6 +671,7 @@
       (-> (ensure-promise (proto/resolve-comment! backend comment-id author))
           (.then (fn [_]
                    (sse/emit-comment-resolved! session-id comment-id)
+                   (session-events/emit-comment-resolved! session-id comment-id author)
                    {:success true}))))))
 
 (defmethod handle-tool "unresolve_comment" [_ {:keys [session-id comment-id author]}]
@@ -585,12 +680,16 @@
       (-> (ensure-promise (proto/unresolve-comment! backend comment-id author))
           (.then (fn [_]
                    (sse/emit-comment-unresolved! session-id comment-id)
+                   (session-events/emit-comment-unresolved! session-id comment-id author)
                    {:success true}))))))
 
 (defmethod handle-tool "submit_review" [_ {:keys [session-id body author model]}]
   (with-backend session-id
     (fn [backend]
-      (ensure-promise (proto/submit-review! backend {:body body :author author :model model})))))
+      (-> (ensure-promise (proto/submit-review! backend {:body body :author author :model model}))
+          (.then (fn [result]
+                   (session-events/emit-review-submitted! session-id author)
+                   result))))))
 
 (defmethod handle-tool "get_session_diff" [_ {:keys [session-id file from to]}]
   (with-backend session-id
@@ -716,6 +815,97 @@
      :source (:source chosen)
      :note (:note chosen)}))
 
+(def ^:private valid-pr-states #{"open" "closed" "all"})
+
+(defmethod handle-tool "list_github_prs" [_ params]
+  (let [{:keys [project state limit]} params]
+    (cond
+      (nil? project)
+      {:error "project is required (format: owner/repo)"}
+
+      (and (some? state) (not (contains? valid-pr-states state)))
+      {:error "Invalid state: must be 'open', 'closed', or 'all'"}
+
+      (and (some? limit) (< limit 1))
+      {:error "limit must be between 1 and 100"}
+
+      :else
+      (if-let [parsed (sessions/parse-project project)]
+        (sessions/list-github-prs (assoc parsed :state state :limit limit))
+        {:error (str "Invalid project format: " project)}))))
+
+(defn- non-negative-integer?
+  "A value is valid for since-seq / timeout-ms / max-events only if it is
+   nil (use default) or a non-negative integer. Rejects strings, floats,
+   negatives, and booleans (which are technically integers in cljs/JS)."
+  [v]
+  (or (nil? v)
+      (and (number? v)
+           (not (boolean? v))
+           (integer? v)
+           (not (neg? v)))))
+
+(def ^:private max-wait-timeout-ms
+  "Ceiling on wait_for_event's timeout. 10 minutes is already longer than
+   any reasonable agent pause; anything bigger risks holding HTTP sockets
+   open indefinitely."
+  (* 10 60 1000))
+
+(def ^:private github-scope-prefix "github:")
+(def ^:private session-scope-prefix "session:")
+
+(defn- valid-scope?
+  "A scope is valid if it's 'github:<owner>/<repo>' (strict GitHub slug,
+   see `sessions/parse-project`) or 'session:<non-blank>'. Leading
+   `github:` or `session:` prefixes inside the tail are rejected by
+   `parse-project`'s regex, so `github:session:foo/bar` cannot sneak
+   through the dispatcher."
+  [scope]
+  (cond
+    (not (string? scope)) false
+
+    (str/starts-with? scope github-scope-prefix)
+    (let [project (subs scope (count github-scope-prefix))]
+      (some? (sessions/parse-project project)))
+
+    (str/starts-with? scope session-scope-prefix)
+    (let [tail (subs scope (count session-scope-prefix))]
+      (not (str/blank? tail)))
+
+    :else false))
+
+(defmethod handle-tool "wait_for_event" [_ params]
+  (let [{:keys [scope since-seq timeout-ms max-events]} params]
+    (cond
+      (nil? scope)
+      {:error "scope is required (format: 'github:owner/repo' or 'session:<id>')"}
+
+      (not (valid-scope? scope))
+      {:error (str "Invalid scope: " scope)}
+
+      (not (non-negative-integer? since-seq))
+      {:error "since_seq must be a non-negative integer"}
+
+      (not (non-negative-integer? timeout-ms))
+      {:error "timeout_ms must be a non-negative integer"}
+
+      (not (non-negative-integer? max-events))
+      {:error "max_events must be a non-negative integer"}
+
+      (and timeout-ms (> timeout-ms max-wait-timeout-ms))
+      {:error (str "timeout_ms must be <= " max-wait-timeout-ms)}
+
+      :else
+      (let [opts {:since-seq (or since-seq 0)
+                  :timeout-ms (if (nil? timeout-ms) 300000 timeout-ms)
+                  :max-events (or max-events 50)}]
+        (if (str/starts-with? scope github-scope-prefix)
+          ;; GitHub scopes go through github-events so the poller lifecycle
+          ;; runs. Session scopes are passive — nothing to start, just
+          ;; delegate straight to the event stream.
+          (github-events/wait-for-scope! scope opts)
+          (event-stream/wait-for-event (assoc opts :scope scope)))))))
+
 (defmethod handle-tool :default [tool-name _]
   (throw (ex-info "Unknown tool" {:tool tool-name})))
 
@@ -746,9 +936,11 @@
         ;; Normalize incoming args: snake_case -> kebab-case
         arguments (util/keys->kebab (or (:arguments params) {}))]
     (try
-      ;; Validate required fields and types before dispatch
-      (validate-tool-args tool-name arguments)
-      (let [result (handle-tool tool-name arguments)]
+      ;; Validate required fields and types before dispatch.
+      ;; `validate-tool-args` returns the (possibly coerced) args —
+      ;; numeric-string fields like `{"line": "41"}` become real ints.
+      (let [coerced (validate-tool-args tool-name arguments)
+            result (handle-tool tool-name coerced)]
         ;; Normalize to Promise for consistent handling
         (-> (ensure-promise result)
             (.then format-tool-result)

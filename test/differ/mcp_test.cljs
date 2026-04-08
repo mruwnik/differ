@@ -2,7 +2,10 @@
   "Tests for MCP (Model Context Protocol) JSON-RPC handlers."
   (:require [clojure.test :refer [deftest testing is use-fixtures]]
             [differ.test-helpers :as helpers]
-            [differ.mcp :as mcp]))
+            [differ.mcp :as mcp]
+            [differ.sessions :as sessions]
+            [differ.event-stream]
+            [differ.github-events]))
 
 ;; ============================================================================
 ;; Test Setup
@@ -77,7 +80,22 @@
       (is (contains? tool-names "get_session_diff"))
       (is (contains? tool-names "get_file_versions"))
       ;; PR creation/review request
-      (is (contains? tool-names "request_review")))))
+      (is (contains? tool-names "request_review"))
+      ;; GitHub discovery
+      (is (contains? tool-names "list_github_prs")))))
+
+(deftest list-github-prs-schema-test
+  (testing "list_github_prs tool has correct schema"
+    (let [tool (first (filter #(= "list_github_prs" (:name %)) mcp/tools))]
+      (is (some? tool))
+      (is (string? (:description tool)))
+      (let [schema (:inputSchema tool)
+            props (:properties schema)]
+        (is (= "object" (:type schema)))
+        (is (contains? props :project))
+        (is (contains? props :state))
+        (is (contains? props :limit))
+        (is (= ["project"] (:required schema)))))))
 
 (deftest tool-schema-test
   (testing "get_or_create_session has repo_path and github_pr options"
@@ -425,13 +443,70 @@
     (is (thrown-with-msg? js/Error #"expected array but got"
                           (#'mcp/validate-tool-args "register_files" {:session-id "s1" :paths "not-an-array" :agent-id "agent1"}))))
 
-  (testing "wrong type for integer field throws error"
+  (testing "non-numeric string for integer field throws error after coercion fails"
     (is (thrown-with-msg? js/Error #"expected integer but got"
                           (#'mcp/validate-tool-args "get_session_diff" {:session-id "s1" :from "not-a-number"}))))
 
   (testing "wrong type for boolean field throws error"
     (is (thrown-with-msg? js/Error #"expected boolean but got"
                           (#'mcp/validate-tool-args "request_review" {:session-id "s1" :draft "true"})))))
+
+(deftest validate-tool-args-coerces-numeric-strings-test
+  ;; Some MCP clients (notably the Claude Code parameter encoder)
+  ;; serialize integer arguments as JSON strings. The validator now
+  ;; coerces clean numeric strings to actual numbers before checking
+  ;; the type, so `{"line": "41"}` round-trips as `{:line 41}` and the
+  ;; downstream handler sees a real integer. Only clean integer literals
+  ;; are accepted — `"3.14"` for integer is still rejected.
+  (testing "integer field accepts numeric string and coerces it"
+    (let [result (#'mcp/validate-tool-args "add_comment"
+                                           {:session-id "s1"
+                                            :text "hello"
+                                            :author "alice"
+                                            :line "41"})]
+      (is (= 41 (:line result)))
+      (is (integer? (:line result)))))
+
+  (testing "negative integer string also coerces"
+    (let [result (#'mcp/validate-tool-args "get_session_diff"
+                                           {:session-id "s1" :from "-3"})]
+      (is (= -3 (:from result)))
+      (is (integer? (:from result)))))
+
+  (testing "wait_for_event timeout_ms accepts numeric string"
+    (let [result (#'mcp/validate-tool-args "wait_for_event"
+                                           {:scope "github:o/r"
+                                            :since-seq "5"
+                                            :timeout-ms "1000"
+                                            :max-events "25"})]
+      (is (= 5 (:since-seq result)))
+      (is (= 1000 (:timeout-ms result)))
+      (is (= 25 (:max-events result)))))
+
+  (testing "fractional string for integer field is rejected (no silent truncation)"
+    (is (thrown-with-msg? js/Error #"expected integer but got"
+                          (#'mcp/validate-tool-args "add_comment"
+                                                    {:session-id "s1"
+                                                     :text "hi"
+                                                     :author "a"
+                                                     :line "3.14"}))))
+
+  (testing "string with junk after digits is rejected"
+    (is (thrown-with-msg? js/Error #"expected integer but got"
+                          (#'mcp/validate-tool-args "add_comment"
+                                                    {:session-id "s1"
+                                                     :text "hi"
+                                                     :author "a"
+                                                     :line "41junk"}))))
+
+  (testing "real integer values still pass through unchanged"
+    (let [result (#'mcp/validate-tool-args "add_comment"
+                                           {:session-id "s1"
+                                            :text "hi"
+                                            :author "a"
+                                            :line 41})]
+      (is (= 41 (:line result)))
+      (is (integer? (:line result))))))
 
 (deftest validate-tool-args-optional-fields-test
   (testing "optional fields can be omitted"
@@ -458,6 +533,200 @@
     (is (= "array" (#'mcp/get-json-type [1 2 3])))
     (is (= "array" (#'mcp/get-json-type '(1 2 3))))
     (is (= "object" (#'mcp/get-json-type {:a 1})))))
+
+;; ============================================================================
+;; list_github_prs handler tests
+;; ============================================================================
+
+(deftest list-github-prs-missing-project-test
+  (testing "returns error when project is missing"
+    (let [result (mcp/handle-tool "list_github_prs" {})]
+      ;; Handler may return a map or a Promise; accept a sync map for this case
+      ;; since validation should happen before any async work.
+      (is (contains? result :error))
+      (is (re-find #"project" (:error result))))))
+
+(deftest list-github-prs-malformed-project-test
+  (testing "returns error when project format is invalid"
+    (let [result (mcp/handle-tool "list_github_prs" {:project "not-a-slash"})]
+      (is (contains? result :error))
+      (is (re-find #"Invalid project format" (:error result))))))
+
+(deftest list-github-prs-invalid-state-test
+  (testing "returns error when state is not open/closed/all"
+    (let [result (mcp/handle-tool "list_github_prs"
+                                  {:project "foo/bar" :state "bogus"})]
+      (is (contains? result :error))
+      (is (re-find #"Invalid state" (:error result))))))
+
+(deftest list-github-prs-invalid-limit-test
+  (testing "returns error when limit is below 1"
+    (let [result (mcp/handle-tool "list_github_prs"
+                                  {:project "foo/bar" :limit 0})]
+      (is (contains? result :error))
+      (is (re-find #"limit" (:error result))))
+
+    (let [result (mcp/handle-tool "list_github_prs"
+                                  {:project "foo/bar" :limit -5})]
+      (is (contains? result :error))
+      (is (re-find #"limit" (:error result))))))
+
+(deftest list-github-prs-dispatches-to-sessions-test
+  (testing "valid project is parsed and forwarded to sessions/list-github-prs"
+    (let [captured (atom nil)]
+      (with-redefs [sessions/list-github-prs
+                    (fn [opts]
+                      (reset! captured opts)
+                      (js/Promise.resolve {:prs [] :truncated false}))]
+        (mcp/handle-tool "list_github_prs" {:project "foo/bar"
+                                            :state "open"
+                                            :limit 10})
+        (is (= "foo" (:owner @captured)))
+        (is (= "bar" (:repo @captured)))
+        (is (= "open" (:state @captured)))
+        (is (= 10 (:limit @captured)))))))
+
+;; ============================================================================
+;; wait_for_event tests
+;; ============================================================================
+
+(deftest wait-for-event-tool-schema-test
+  (testing "wait_for_event is registered with the expected schema"
+    (let [tool (first (filter #(= "wait_for_event" (:name %)) mcp/tools))]
+      (is (some? tool))
+      (is (string? (:description tool)))
+      (let [schema (:inputSchema tool)
+            props (:properties schema)]
+        (is (= "object" (:type schema)))
+        (is (= ["scope"] (:required schema)))
+        (is (contains? props :scope))
+        (is (contains? props :since_seq))
+        (is (contains? props :timeout_ms))
+        (is (contains? props :max_events))))))
+
+(deftest wait-for-event-missing-scope-test
+  (testing "returns error when scope is missing"
+    (let [result (mcp/handle-tool "wait_for_event" {})]
+      (is (string? (:error result)))
+      (is (re-find #"scope is required" (:error result))))))
+
+(deftest wait-for-event-invalid-github-scope-test
+  (testing "returns error for malformed github scope"
+    (let [result (mcp/handle-tool "wait_for_event" {:scope "github:no-slash"})]
+      (is (string? (:error result)))
+      (is (re-find #"Invalid scope" (:error result))))))
+
+(deftest wait-for-event-invalid-scope-prefix-test
+  (testing "returns error for unknown scope prefix"
+    (let [result (mcp/handle-tool "wait_for_event" {:scope "nope:foo"})]
+      (is (string? (:error result)))
+      (is (re-find #"Invalid scope" (:error result))))))
+
+(deftest wait-for-event-empty-session-scope-test
+  (testing "returns error for session scope with empty id"
+    (let [result (mcp/handle-tool "wait_for_event" {:scope "session:"})]
+      (is (string? (:error result)))
+      (is (re-find #"Invalid scope" (:error result))))))
+
+(deftest wait-for-event-dispatches-github-scope-to-github-events-test
+  (testing "github: scope is forwarded to github-events/wait-for-scope!"
+    (let [captured (atom nil)
+          orig differ.github-events/wait-for-scope!]
+      (set! differ.github-events/wait-for-scope!
+            (fn [scope opts]
+              (reset! captured {:scope scope :opts opts})
+              (js/Promise.resolve
+               {:events [] :next-seq 0 :timed-out true})))
+      (try
+        (mcp/handle-tool "wait_for_event"
+                         {:scope "github:owner/repo"
+                          :since-seq 5
+                          :timeout-ms 1000
+                          :max-events 25})
+        (is (= "github:owner/repo" (:scope @captured)))
+        (is (= 5 (get-in @captured [:opts :since-seq])))
+        (is (= 1000 (get-in @captured [:opts :timeout-ms])))
+        (is (= 25 (get-in @captured [:opts :max-events])))
+        (finally
+          (set! differ.github-events/wait-for-scope! orig))))))
+
+(deftest wait-for-event-dispatches-session-scope-to-event-stream-test
+  (testing "session: scope is forwarded directly to event-stream/wait-for-event"
+    (let [captured (atom nil)
+          orig differ.event-stream/wait-for-event]
+      (set! differ.event-stream/wait-for-event
+            (fn [opts]
+              (reset! captured opts)
+              (js/Promise.resolve
+               {:events [] :next-seq 0 :timed-out true})))
+      (try
+        (mcp/handle-tool "wait_for_event"
+                         {:scope "session:local:abc123"
+                          :since-seq 2})
+        (is (= "session:local:abc123" (:scope @captured)))
+        (is (= 2 (:since-seq @captured)))
+        (is (= 300000 (:timeout-ms @captured)))
+        (is (= 50 (:max-events @captured)))
+        (finally
+          (set! differ.event-stream/wait-for-event orig))))))
+
+(deftest wait-for-event-defaults-applied-test
+  (testing "omitted options get default values"
+    (let [captured (atom nil)
+          orig differ.github-events/wait-for-scope!]
+      (set! differ.github-events/wait-for-scope!
+            (fn [_scope opts]
+              (reset! captured opts)
+              (js/Promise.resolve
+               {:events [] :next-seq 0 :timed-out true})))
+      (try
+        (mcp/handle-tool "wait_for_event" {:scope "github:a/b"})
+        (is (= 0 (:since-seq @captured)))
+        (is (= 300000 (:timeout-ms @captured)))
+        (is (= 50 (:max-events @captured)))
+        (finally
+          (set! differ.github-events/wait-for-scope! orig))))))
+
+;; Regression for the `github:session:foo/bar` dispatch confusion. The
+;; old `parse-project` was permissive enough to split `session:foo/bar`
+;; into owner=`session:foo`, repo=`bar`, and the dispatcher then handed
+;; that to the github poller. Tighter slug validation in
+;; `sessions/parse-project` now rejects it at the dispatcher boundary.
+(deftest wait-for-event-rejects-github-session-prefix-test
+  (testing "github:session:foo/bar must NOT slip through valid-scope?"
+    (let [result (mcp/handle-tool "wait_for_event" {:scope "github:session:foo/bar"})]
+      (is (string? (:error result)))
+      (is (re-find #"Invalid scope" (:error result))))))
+
+(deftest wait-for-event-rejects-github-with-extra-segment-test
+  (testing "github:owner/repo/extra has too many slashes — reject"
+    (let [result (mcp/handle-tool "wait_for_event" {:scope "github:owner/repo/extra"})]
+      (is (string? (:error result)))
+      (is (re-find #"Invalid scope" (:error result))))))
+
+(deftest wait-for-event-rejects-github-whitespace-owner-test
+  (testing "github: /repo (leading space owner) is rejected"
+    (let [result (mcp/handle-tool "wait_for_event" {:scope "github: /repo"})]
+      (is (string? (:error result)))
+      (is (re-find #"Invalid scope" (:error result))))))
+
+(deftest wait-for-event-rejects-github-prefix-inside-project-test
+  (testing "github:github:foo/bar is rejected (reserved-prefix impostor)"
+    (let [result (mcp/handle-tool "wait_for_event" {:scope "github:github:foo/bar"})]
+      (is (string? (:error result)))
+      (is (re-find #"Invalid scope" (:error result))))))
+
+;; ============================================================================
+;; Integration: end-to-end dispatcher → session-events → wait_for_event
+;; ============================================================================
+
+;; The end-to-end async integration test for the
+;; dispatcher → session-events → wait_for_event flow lives in
+;; differ.session-events-test, because mcp_test's `with-test-env`
+;; fixture is a synchronous wrapper (closes the test DB before any
+;; async chain finishes — incompatible with `(async done ...)` tests).
+;; The session_events_test fixture uses the :before/:after map form
+;; which waits for done.
 
 ;; ============================================================================
 ;; Kanban Board Tool Tests

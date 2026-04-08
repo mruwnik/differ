@@ -15,6 +15,7 @@
             [differ.backend.local :as local]
             [differ.backend.github :as github]
             [differ.github-oauth :as github-oauth]
+            [differ.github-api :as gh-api]
             [clojure.set :as set]
             [clojure.string :as str]
             ["fs" :as fs]
@@ -312,6 +313,24 @@
    (js/Promise.resolve {:all-failed true :last-error "No tokens available"})
    tokens))
 
+(def ^:private github-slug-re
+  "Strict GitHub owner/repo pattern. Owners and repos are GitHub handles:
+   alphanumerics, `-`, `_`, and `.` — no colons, slashes, spaces, or
+   other punctuation. Anchored at both ends so we can't accept
+   `github:session:foo/bar` or `github:owner/repo/extra` downstream."
+  #"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
+
+(defn parse-project
+  "Parse an 'owner/repo' string into {:owner ... :repo ...}.
+   Returns nil if the input does not match the strict GitHub slug
+   pattern `[A-Za-z0-9._-]+/[A-Za-z0-9._-]+`. This means: exactly one
+   slash, non-empty parts, and no reserved punctuation (in particular,
+   no `:` so `session:foo/bar` and similar are rejected)."
+  [s]
+  (when (and (string? s) (re-matches github-slug-re s))
+    (let [[owner repo] (str/split s #"/" 2)]
+      {:owner owner :repo repo})))
+
 (defn- get-or-create-github-session
   "Get or create a GitHub PR session.
    Always returns a Promise for consistency with local sessions.
@@ -398,6 +417,96 @@
   ([] (list-sessions nil))
   ([project]
    (mapv with-unresolved-count (db/list-sessions project))))
+
+(defn annotate-prs-with-sessions
+  "Join GitHub PRs with differ sessions. For each PR, if a session exists
+   with matching github-pr-number, add :has-session, :session-id, and
+   :unresolved-count. Otherwise set :has-session to false."
+  [prs sessions]
+  (let [session-by-pr (->> sessions
+                           (filter :github-pr-number)
+                           (map (juxt :github-pr-number identity))
+                           (into {}))]
+    (mapv (fn [pr]
+            (if-let [s (get session-by-pr (:number pr))]
+              (assoc pr
+                     :has-session      true
+                     :session-id       (:id s)
+                     :unresolved-count (:unresolved-count s))
+              (assoc pr :has-session false)))
+          prs)))
+
+(defn- try-tokens-with
+  "Generic token fallback helper. `action` is a 1-arg function that takes a
+   token record and returns a Promise resolving to either
+     {:success true ...}
+   or
+     {:success false :error ... :oauth-restricted bool}.
+   Iterates through tokens, returning the first success. If all fail,
+   returns {:all-failed true :last-error ... :oauth-restricted bool}."
+  [tokens action]
+  (reduce
+   (fn [prev-promise token]
+     (-> prev-promise
+         (.then (fn [prev-result]
+                  (if (:success prev-result)
+                    prev-result
+                    (-> (action token)
+                        (.then (fn [result]
+                                 (if (:success result)
+                                   result
+                                   (update result :oauth-restricted
+                                           #(or % (:oauth-restricted prev-result))))))))))))
+   (js/Promise.resolve {:all-failed true :last-error "No tokens available"})
+   tokens))
+
+(defn list-github-prs
+  "Fetch GitHub PRs for a repo and annotate them with local session state.
+   opts: {:owner :repo :state :limit}
+   Returns a Promise of one of:
+     {:prs [...] :truncated bool}
+     {:requires-auth true :auth-url ... :message ...}
+     {:requires-pat true :settings-url ... :github-pat-url ... :message ...}
+     {:error ...}"
+  [{:keys [owner repo state limit]}]
+  (let [tokens (github-oauth/get-all-tokens)]
+    (if (empty? tokens)
+      (let [base (config/base-url)]
+        (js/Promise.resolve
+         {:requires-auth true
+          :message "GitHub authentication required. Click the auth_url to connect your GitHub account, then retry this request."
+          :auth-url (str base "/oauth/github")}))
+      (let [action (fn [token-record]
+                     (-> (gh-api/list-pull-requests
+                          (:access-token token-record)
+                          owner repo
+                          {:state state :limit limit})
+                         (.then (fn [result]
+                                  (assoc result :success true)))
+                         (.catch (fn [err]
+                                   (let [msg (or (.-message err) (str err))]
+                                     {:success false
+                                      :error msg
+                                      :oauth-restricted (oauth-restriction-error? msg)})))))]
+        (-> (try-tokens-with tokens action)
+            (.then (fn [result]
+                     (cond
+                       (:success result)
+                       (let [all-sessions (list-sessions (str owner "/" repo))
+                             annotated (annotate-prs-with-sessions (:prs result) all-sessions)]
+                         {:prs annotated :truncated (:truncated result)})
+
+                       (:oauth-restricted result)
+                       (let [base (config/base-url)]
+                         {:requires-pat true
+                          :message (str "This repository restricts OAuth app access (common for forks from organizations with security policies). "
+                                        "Create a Personal Access Token at github_pat_url, then add it at settings_url and retry.")
+                          :settings-url (str base "/#github")
+                          :github-pat-url "https://github.com/settings/tokens/new?scopes=repo&description=differ-access"})
+
+                       :else
+                       {:error (str "Failed to fetch PRs: "
+                                    (or (:error result) (:last-error result)))}))))))))
 
 (defn get-session
   "Get session by ID with unresolved count."

@@ -49,7 +49,12 @@
 (defn graphql-request
   "Make GraphQL request to GitHub API.
    Always returns a Promise (rejected on error) for consistent async handling.
-   Includes rate limit checking and tracking."
+   Includes rate limit checking and tracking.
+
+   On non-OK HTTP responses the rejected error's message includes BOTH the
+   status code and the response body text, so callers (e.g.
+   `try-tokens-with-fallback`) can distinguish rate-limit 403s from
+   permission-denied 403s by matching on body text."
   [token query variables]
   (try
     (check-rate-limit!)
@@ -64,14 +69,34 @@
                  (update-rate-limit! (.-headers response))
                  (if (.-ok response)
                    (.json response)
-                   (throw (ex-info (str "GitHub API error: " (.-status response))
-                                   {:status (.-status response)})))))
+                   ;; Read the body as text before throwing so the error
+                   ;; message can include GitHub's explanation (rate limit
+                   ;; vs. permission vs. other 403s are distinguishable
+                   ;; only in the body, not the status code).
+                   (-> (.text response)
+                       (.then (fn [body]
+                                (throw (ex-info (str "GitHub API error: "
+                                                     (.-status response)
+                                                     " " body)
+                                                {:status (.-status response)
+                                                 :body body}))))))))
         (.then (fn [json]
-                 (let [data (js->clj json :keywordize-keys true)]
-                   (if-let [errors (:errors data)]
+                 (let [data (js->clj json :keywordize-keys true)
+                       errors (:errors data)
+                       payload (:data data)]
+                   (cond
+                     ;; GitHub returns partial data + errors in the same
+                     ;; response sometimes; treat that as an error rather
+                     ;; than silently returning the partial payload.
+                     (seq errors)
                      (throw (ex-info (str "GraphQL error: " (-> errors first :message))
                                      {:errors errors}))
-                     (:data data)))))
+
+                     (nil? payload)
+                     (throw (ex-info "GraphQL response missing :data"
+                                     {:response data}))
+
+                     :else payload))))
         (.catch (fn [err]
                   (throw (ex-info (str "GitHub request failed: " (or (.-message err) (ex-message err) (str err)))
                                   {:original-error err})))))
@@ -140,3 +165,178 @@
         (.catch (fn [err]
                   (throw (ex-info (str "GitHub request failed: " (or (.-message err) (ex-message err) (str err)))
                                   {:original-error err})))))))
+
+;; ============================================================================
+;; Pull request listing
+;; ============================================================================
+
+(defn state->states
+  "Map user-facing state string to GraphQL PullRequestState enum values."
+  [state]
+  (case state
+    "closed" ["CLOSED" "MERGED"]
+    "all"    ["OPEN" "CLOSED" "MERGED"]
+    ["OPEN"]))
+
+(def ^:private list-prs-query
+  "query ListPRs($owner: String!, $repo: String!, $first: Int!, $states: [PullRequestState!]) {
+     repository(owner: $owner, name: $repo) {
+       pullRequests(first: $first, states: $states,
+                    orderBy: {field: UPDATED_AT, direction: DESC}) {
+         totalCount
+         pageInfo { hasNextPage }
+         nodes {
+           number
+           title
+           isDraft
+           author { login }
+           baseRefName
+           headRefName
+           updatedAt
+           url
+         }
+       }
+     }
+   }")
+
+(defn- clamp-limit [n]
+  (cond
+    (nil? n)   30
+    (< n 1)    1
+    (> n 100)  100
+    :else      n))
+
+(defn- normalize-pr-node
+  "Convert a GraphQL PR node into differ's flat PR shape."
+  [node]
+  {:number       (:number node)
+   :title        (:title node)
+   :author       (get-in node [:author :login])
+   :draft        (:isDraft node)
+   :base-branch  (:baseRefName node)
+   :head-branch  (:headRefName node)
+   :updated-at   (:updatedAt node)
+   :url          (:url node)})
+
+(defn list-pull-requests
+  "Fetch PRs for a GitHub repo via GraphQL.
+   opts: {:state \"open\"|\"closed\"|\"all\" :limit int}
+   Returns a Promise of {:prs [...] :truncated bool}."
+  [token owner repo {:keys [state limit]}]
+  (let [variables {:owner  owner
+                   :repo   repo
+                   :first  (clamp-limit limit)
+                   :states (state->states state)}]
+    (-> (graphql-request token list-prs-query variables)
+        (.then (fn [data]
+                 (let [conn (get-in data [:repository :pullRequests])]
+                   {:prs       (mapv normalize-pr-node (:nodes conn))
+                    :truncated (boolean (get-in conn [:pageInfo :hasNextPage]))}))))))
+
+;; ============================================================================
+;; Poller-specific queries
+;; ============================================================================
+
+(def ^:private list-prs-for-poller-query
+  "query ListPRsForPoller($owner: String!, $repo: String!, $first: Int!) {
+     repository(owner: $owner, name: $repo) {
+       pullRequests(first: $first, states: [OPEN],
+                    orderBy: {field: UPDATED_AT, direction: DESC}) {
+         totalCount
+         pageInfo { hasNextPage }
+         nodes {
+           number
+           title
+           isDraft
+           author { login }
+           baseRefName
+           headRefName
+           headRefOid
+           updatedAt
+           url
+           comments { totalCount }
+           reviews { totalCount }
+           reviewThreads(first: 100) { nodes { isResolved } }
+           commits(last: 1) {
+             nodes { commit { statusCheckRollup { state } } }
+           }
+         }
+       }
+     }
+   }")
+
+(defn- normalize-checks-state
+  "Map GitHub statusCheckRollup.state to a lowercase keyword, or nil if absent."
+  [raw]
+  (when raw
+    (keyword (str/lower-case raw))))
+
+(defn- count-unresolved-threads
+  "Count review threads with :isResolved false.
+
+   IMPORTANT: capped at 100 by the GraphQL query (reviewThreads(first: 100)).
+   A PR with 150 unresolved threads is reported as 100; the poller will
+   not fire `:pr-feedback-changed` events until the true count drops
+   below 100. We deliberately do not paginate here because the extra cost
+   is substantial for typical repos and the 100-thread ceiling is a fine
+   approximation in practice. Agents consuming `:unresolved-count` should
+   treat it as a best-effort coarse count, not an exact value."
+  [threads-nodes]
+  (count (filter #(false? (:isResolved %)) threads-nodes)))
+
+(defn- normalize-pr-for-poller
+  "Convert a GraphQL node (from list-prs-for-poller-query) to the flat shape
+   the poller uses for caching and event emission."
+  [node]
+  (let [rollup (get-in node [:commits :nodes 0 :commit :statusCheckRollup])]
+    {:number           (:number node)
+     :title            (:title node)
+     :author           (get-in node [:author :login])
+     :draft            (:isDraft node)
+     :base-branch      (:baseRefName node)
+     :head-branch      (:headRefName node)
+     :head-sha         (:headRefOid node)
+     :updated-at       (:updatedAt node)
+     :url              (:url node)
+     :unresolved-count (count-unresolved-threads (get-in node [:reviewThreads :nodes] []))
+     :review-count     (get-in node [:reviews :totalCount] 0)
+     ;; PR-level conversation comments (issue comments). Distinct from
+     ;; review-thread comments — these are top-level PR discussion.
+     ;; Tracking this lets `pr-feedback-changed` fire when an agent
+     ;; adds a comment via differ's `add_comment` MCP handler against
+     ;; a github session, which posts an issue comment via the GitHub
+     ;; API but does NOT touch reviewThreads.
+     :comment-count    (get-in node [:comments :totalCount] 0)
+     :checks-status    (normalize-checks-state (:state rollup))}))
+
+(defn list-prs-for-poller
+  "Fetch open PRs for a repo with the extra fields needed by the event poller
+   (head SHA, unresolved thread count, review count, checks rollup state).
+   Separate from list-pull-requests because normal callers don't want to pay
+   for the extra GraphQL selections.
+   Returns a Promise of {:prs [normalized] :truncated bool}."
+  [token owner repo {:keys [limit]}]
+  (let [variables {:owner owner :repo repo :first (clamp-limit limit)}]
+    (-> (graphql-request token list-prs-for-poller-query variables)
+        (.then (fn [data]
+                 (let [conn (get-in data [:repository :pullRequests])]
+                   {:prs       (mapv normalize-pr-for-poller (:nodes conn))
+                    :truncated (boolean (get-in conn [:pageInfo :hasNextPage]))}))))))
+
+(def ^:private get-pr-merged-query
+  "query GetPRMerged($owner: String!, $repo: String!, $number: Int!) {
+     repository(owner: $owner, name: $repo) {
+       pullRequest(number: $number) { merged }
+     }
+   }")
+
+(defn get-pr-merge-status
+  "Returns a Promise of boolean: true if the PR is merged, false otherwise.
+   Never rejects — resolves to false on any error. The poller uses this to
+   decide whether a disappeared PR produced a merged-close or a regular close."
+  [token owner repo pr-number]
+  (-> (graphql-request token get-pr-merged-query
+                       {:owner owner :repo repo :number pr-number})
+      (.then (fn [data]
+               (boolean (get-in data [:repository :pullRequest :merged]))))
+      (.catch (fn [_err] false))))
