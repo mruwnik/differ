@@ -109,6 +109,110 @@ The endpoint accepts standard MCP JSON-RPC over HTTP POST. Any agent that suppor
 | `get_file_content` | Get file content at a ref |
 | `get_history` | Get commit/change history for the session |
 | `create_pull_request` | Push branch and create a GitHub PR |
+| `list_github_prs` | List open GitHub PRs for a repo, annotated with differ session state |
+| `wait_for_event` | Block until new events appear for a scope (GitHub PR activity or session updates); see below |
+
+### `wait_for_event`
+
+Blocks inside differ until new events arrive for a watched scope, then returns them. Designed for agents that want to react without polling — one tool call covers a long stretch of idle time, so an idle agent logs one entry in its context per wait instead of dozens of empty poll responses.
+
+**Scopes:**
+
+| Scope format | Source | Event types |
+|---|---|---|
+| `github:owner/repo` | Internal poller (every ~30s, lazy-started on first call, grace-stops after 5 min idle) | `pr-opened`, `pr-head-changed`, `pr-feedback-changed`, `pr-closed` |
+| `session:<session-id>` | Push: emitted by MCP handlers on the same session | `comment-added`, `comment-resolved`, `comment-unresolved`, `files-registered`, `files-unregistered`, `review-submitted` |
+
+The github and session scopes share the same ring buffer + wait infrastructure (`differ.event-stream`). Agents use the same loop pattern for both — only the scope string changes.
+
+**Arguments:**
+
+- `scope` (required) — `"github:owner/repo"` or `"session:<session-id>"`
+- `since_seq` (default `0`) — return events with `seq > since_seq`
+- `timeout_ms` (default `300000`, max `600000`) — max ms to block; `0` = peek (return immediately)
+- `max_events` (default `50`, capped at `500`) — upper bound per response
+
+**Response shape:**
+
+Every event has a common envelope (`seq`, `received_at`, `event_type`, `scope`) plus event-type-specific fields. Example GitHub event:
+
+```json
+{
+  "events": [
+    {
+      "seq": 42,
+      "received_at": "2026-04-08T14:23:10.542Z",
+      "event_type": "pr-head-changed",
+      "scope": "github:EquiStamp/cairn",
+      "project": "EquiStamp/cairn",
+      "pr_number": 31,
+      "pr_url": "https://github.com/EquiStamp/cairn/pull/31",
+      "head_branch": "feature/foo",
+      "base_branch": "main",
+      "author": "octocat",
+      "title": "Add widget",
+      "draft": false,
+      "session_id": null,
+      "details": {
+        "new_head_sha": "abc123",
+        "previous_head_sha": "000111"
+      }
+    }
+  ],
+  "next_seq": 42,
+  "timed_out": false
+}
+```
+
+Example session event:
+
+```json
+{
+  "events": [
+    {
+      "seq": 7,
+      "received_at": "2026-04-08T14:24:05.101Z",
+      "event_type": "comment-added",
+      "scope": "session:github:EquiStamp/cairn:31",
+      "session_id": "github:EquiStamp/cairn:31",
+      "comment_id": "c-abc",
+      "author": "reviewer",
+      "file": "src/foo.clj",
+      "line": 42,
+      "parent_id": null,
+      "created_at": "2026-04-08T14:24:04.950Z"
+    }
+  ],
+  "next_seq": 7,
+  "timed_out": false
+}
+```
+
+**Typical agent loop:**
+
+```python
+since = 0
+while True:
+    result = wait_for_event(scope="github:EquiStamp/cairn", since_seq=since)
+    since = result["next_seq"]
+    for event in result["events"]:
+        handle(event)
+```
+
+**Configuration** (in `resources/config.edn` or via env vars):
+
+- `DIFFER_EVENT_BUFFER_SIZE` (default 10000) — shared ring buffer capacity per scope (both `github:` and `session:`)
+- `DIFFER_GITHUB_POLL_INTERVAL_MS` (default 30000) — GitHub poller interval
+- `DIFFER_GITHUB_POLLER_GRACE_MS` (default 300000) — grace period before the poller stops
+
+Events are kept in an in-memory ring buffer per scope and are lost on differ restart. Agents that reconnect after a restart should reconcile state (call `list_github_prs` / `get_review_state`) and then resume watching from the new `next_seq`.
+
+**Duplicate event story (github + session scopes).** When a GitHub PR has an associated differ session, mutating MCP calls (`add_comment`, `resolve_comment`, `unresolve_comment`, `register_files`, `unregister_files`, `submit_review`) will surface on BOTH scopes:
+
+- Immediately on `session:<id>` as the specific event (`comment-added`, `comment-resolved`, etc.)
+- Within one poll interval (up to ~30 s) on `github:owner/repo` as a `pr-feedback-changed` envelope
+
+Choose the scope that matches your latency and coverage requirements; DO NOT subscribe to both expecting deduplication — you will see the same underlying change twice, on two different scopes, with possibly different ordering.
 
 ## Slash Commands
 
