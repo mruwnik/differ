@@ -1,9 +1,11 @@
 (ns differ.mcp-test
   "Tests for MCP (Model Context Protocol) JSON-RPC handlers."
-  (:require [clojure.test :refer [deftest testing is use-fixtures]]
+  (:require [clojure.test :refer [deftest testing is use-fixtures async]]
             [differ.test-helpers :as helpers]
             [differ.mcp :as mcp]
+            [differ.boards :as boards]
             [differ.sessions :as sessions]
+            [differ.util :as util]
             [differ.event-stream]
             [differ.github-events]))
 
@@ -739,4 +741,136 @@
       (is (contains? tool-names "list_tasks"))
       (is (contains? tool-names "take_task"))
       (is (contains? tool-names "update_task"))
-      (is (contains? tool-names "add_note")))))
+      (is (contains? tool-names "add_note"))
+      (is (contains? tool-names "get_upstream"))
+      (is (contains? tool-names "get_downstream")))))
+
+(deftest dep-graph-tool-schemas-test
+  (testing "get_upstream has the expected schema"
+    (let [tool (first (filter #(= "get_upstream" (:name %)) mcp/tools))
+          schema (:inputSchema tool)
+          props (:properties schema)]
+      (is (some? tool))
+      (is (contains? props :task_id))
+      (is (contains? props :depth))
+      (is (contains? props :fields))
+      ;; :minimum is intentionally not set on :depth — validate-type does not
+      ;; honor JSON Schema `minimum`, so advertising it would be misleading.
+      ;; boards/validate-depth is the actual source of truth for negatives.
+      (is (nil? (get-in props [:depth :minimum])))
+      (is (= ["task_id"] (:required schema)))))
+
+  (testing "get_downstream has the expected schema"
+    (let [tool (first (filter #(= "get_downstream" (:name %)) mcp/tools))
+          schema (:inputSchema tool)
+          props (:properties schema)]
+      (is (some? tool))
+      (is (contains? props :task_id))
+      (is (contains? props :depth))
+      (is (contains? props :fields))
+      (is (nil? (get-in props [:depth :minimum])))
+      (is (= ["task_id"] (:required schema)))))
+
+  (testing "get_upstream and get_downstream share the same input schema object"
+    (let [up (first (filter #(= "get_upstream" (:name %)) mcp/tools))
+          down (first (filter #(= "get_downstream" (:name %)) mcp/tools))]
+      ;; Both point to the shared dep-graph-input-schema def
+      (is (identical? (:inputSchema up) (:inputSchema down))))))
+
+;; ============================================================================
+;; get_upstream / get_downstream handler tests
+;;
+;; The harness hits a real DB; to exercise just the argument massaging
+;; (snake_case→kebab-case, string→keyword for :fields, numeric-string→int
+;; for :depth, JSON-RPC round-trip), we stub boards/get-upstream and
+;; boards/get-downstream via with-redefs. The stubs record the opts they
+;; received so we can assert on the conversion.
+;; ============================================================================
+
+(deftest get-upstream-handler-argument-conversion-test
+  (testing "handle-tool converts fields strings to kebab-case keywords"
+    (let [captured (atom nil)]
+      (with-redefs [boards/get-upstream (fn [tid opts]
+                                          (reset! captured {:task-id tid :opts opts})
+                                          [])]
+        (mcp/handle-tool "get_upstream"
+                         {:task-id "t1"
+                          :depth 2
+                          :fields ["title" "worker_name" "blocked_by"]})
+        (is (= "t1" (:task-id @captured)))
+        (is (= 2 (get-in @captured [:opts :depth])))
+        ;; fields went through ->field-keywords: strings become kebab kw's
+        (is (= [:title :worker-name :blocked-by] (get-in @captured [:opts :fields])))))))
+
+(deftest get-downstream-handler-argument-conversion-test
+  (testing "handle-tool forwards task-id, depth, and fields to boards/get-downstream"
+    (let [captured (atom nil)]
+      (with-redefs [boards/get-downstream (fn [tid opts]
+                                            (reset! captured {:task-id tid :opts opts})
+                                            [])]
+        (mcp/handle-tool "get_downstream"
+                         {:task-id "t1"
+                          :fields ["description"]})
+        (is (= "t1" (:task-id @captured)))
+        (is (= [:description] (get-in @captured [:opts :fields])))))))
+
+(deftest tools-call-get-upstream-validates-and-coerces-test
+  (testing "validate-tool-args round-trips snake_case + numeric-string depth + fields"
+    ;; Simulates the first half of `handle-method \"tools/call\"`:
+    ;; keys->kebab then validate-tool-args (which coerces). We can't await
+    ;; the full Promise chain in the sync test harness, so we exercise the
+    ;; argument-massaging path directly and verify the handler's downstream
+    ;; call receives correctly-shaped opts.
+    (let [captured (atom nil)
+          raw-args (util/keys->kebab
+                    {:task_id "abc"
+                     :depth "2"    ;; numeric string
+                     :fields ["title" "worker_name"]})
+          coerced (#'mcp/validate-tool-args "get_upstream" raw-args)]
+      ;; (a) snake_case -> kebab-case on the outer map
+      (is (contains? coerced :task-id))
+      (is (= "abc" (:task-id coerced)))
+      ;; (c) numeric-string "2" coerced to integer
+      (is (= 2 (:depth coerced)))
+      (is (integer? (:depth coerced)))
+      ;; fields entries remain strings at this point (JSON array of strings)
+      (is (= ["title" "worker_name"] (:fields coerced)))
+      ;; Now run through handle-tool with a stub and verify the field
+      ;; conversion happens at the handler boundary.
+      (with-redefs [boards/get-upstream (fn [tid opts]
+                                          (reset! captured {:task-id tid :opts opts})
+                                          [{:id "fake" :title "T" :depth 1}])]
+        (mcp/handle-tool "get_upstream" coerced)
+        (is (= "abc" (:task-id @captured)))
+        (is (= 2 (get-in @captured [:opts :depth])))
+        ;; (b) strings became kebab-case keywords inside handle-tool
+        (is (= [:title :worker-name] (get-in @captured [:opts :fields])))))))
+
+(deftest tools-call-get-downstream-validates-and-coerces-test
+  (testing "get_downstream handler path mirrors get_upstream"
+    (let [captured (atom nil)
+          raw-args (util/keys->kebab
+                    {:task_id "root"
+                     :depth "3"})
+          coerced (#'mcp/validate-tool-args "get_downstream" raw-args)]
+      (is (= "root" (:task-id coerced)))
+      (is (= 3 (:depth coerced)))
+      (with-redefs [boards/get-downstream (fn [tid opts]
+                                            (reset! captured {:task-id tid :opts opts})
+                                            [])]
+        (mcp/handle-tool "get_downstream" coerced)
+        (is (= "root" (:task-id @captured)))
+        (is (= 3 (get-in @captured [:opts :depth])))
+        ;; :fields absent -> ->field-keywords returns nil, boards defaults apply
+        (is (nil? (get-in @captured [:opts :fields])))))))
+
+(deftest tools-call-get-upstream-invalid-field-item-test
+  (testing "non-string fields entries raise an ex-info that surfaces as an MCP tool error"
+    (is (thrown-with-msg? js/Error #"Invalid fields"
+                          (mcp/handle-tool "get_upstream"
+                                           {:task-id "x" :fields [42]})))
+    (let [ed (try (mcp/handle-tool "get_upstream" {:task-id "x" :fields [42]})
+                  nil
+                  (catch :default e (ex-data e)))]
+      (is (= 42 (:invalid-field ed))))))
+

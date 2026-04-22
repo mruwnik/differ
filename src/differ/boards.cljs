@@ -69,6 +69,51 @@
         rows (.all stmt task-id)]
     (mapv (fn [^js row] (.-task_id row)) rows)))
 
+(def ^:private sqlite-param-chunk-size
+  "Conservative ceiling under SQLite's SQLITE_MAX_VARIABLE_NUMBER (default 32766
+   on modern builds, 999 on older ones). Keeps us well below either."
+  500)
+
+(defn- dep-rows-batch
+  "Core of the task-dependency batch queries. For each id in `task-ids`,
+   collects the value of `value-col` from every task_dependencies row whose
+   `key-col` matches. Returns {key-col-value [value-col-value ...]}; ids
+   with no matching rows are omitted from the map.
+
+   Wide frontiers are chunked to stay under SQLite's parameter limit.
+   Column names are hardcoded callsite strings ('task_id' /
+   'depends_on_task_id'), never user input — no injection risk."
+  [task-ids key-col value-col]
+  (if (empty? task-ids)
+    {}
+    (reduce
+     (fn [acc chunk]
+       (let [placeholders (str/join "," (repeat (count chunk) "?"))
+             sql (str "SELECT " key-col ", " value-col " FROM task_dependencies"
+                      " WHERE " key-col " IN (" placeholders ")")
+             ^js stmt (.prepare (db/db) sql)
+             rows (.all stmt (to-array chunk))]
+         (reduce (fn [m ^js r]
+                   (update m (aget r key-col) (fnil conj []) (aget r value-col)))
+                 acc
+                 rows)))
+     {}
+     (partition-all sqlite-param-chunk-size task-ids))))
+
+(defn get-task-dependencies-batch
+  "Batch variant of get-task-dependencies. Given a seq of task IDs, returns
+   {parent-id [child-ids]} using a single SQL query. IDs with no deps are
+   omitted from the map. Used by dep-graph traversal to avoid N+1 queries."
+  [task-ids]
+  (dep-rows-batch task-ids "task_id" "depends_on_task_id"))
+
+(defn get-tasks-blocked-by-batch
+  "Batch variant of get-tasks-blocked-by. Given a seq of task IDs, returns
+   {parent-id [child-ids]} where child-ids are tasks blocked by parent-id.
+   Single SQL query. IDs with no dependents are omitted from the map."
+  [task-ids]
+  (dep-rows-batch task-ids "depends_on_task_id" "task_id"))
+
 (defn- enrich-task
   "Add effective status and blocked-by to a single task."
   [task]
@@ -376,6 +421,167 @@
   "Keys that callers may pass through to update-task!. Used by both the REST API
    and the MCP handler to whitelist incoming fields."
   #{:status :title :description :persist :note :author :blocked-by})
+
+;; ============================================================================
+;; Dependency graph traversal
+;; ============================================================================
+
+(def dep-graph-fields
+  "Fields allowed in get-upstream / get-downstream :fields options.
+   :id is always included in the result regardless of :fields, and :depth
+   is synthesized by the traversal (hop count). Listing :depth in :fields
+   raises 'Unknown fields: depth' — it's not a column, so just omit it."
+  #{:id :board-id :title :description :status :worker-name :worker-id
+    :persist :blocked-by :created-at :updated-at})
+
+(def default-dep-graph-fields
+  "Fields returned on each related task when :fields is not specified."
+  [:title :status :blocked-by])
+
+(defn- traverse-dep-graph
+  "BFS over the dependency graph from start-id, following next-batch-fn (a
+   function from a seq of task IDs to a map of {parent-id [child-ids]}).
+   One SQL round-trip per BFS level.
+
+   Returns a vector of [id depth] pairs in BFS order. start-id appears in the
+   result only if it's reachable from itself through a cycle (so callers can
+   compose `(some #{task-id} (map :id (get-upstream task-id {})))` as a
+   cycle-detection check).
+
+   Cycle-safe via visited set. `max-depth` nil = unlimited, 0 = empty, N = up
+   to N hops. Note: `(and max-depth (> hop max-depth))` is intentional — in
+   Clojure 0 is truthy, so `:depth 0` is handled by max-depth being non-nil,
+   not by falsy-0 semantics.
+
+   There is no cap on result size. With `max-depth` nil and a highly-connected
+   graph this can return every reachable task. Callers that may hit large
+   closures should pass an explicit `:depth` to bound the traversal."
+  [start-id next-batch-fn max-depth]
+  (loop [frontier [start-id]
+         visited #{}
+         result []
+         hop 1]
+    (if (or (empty? frontier)
+            (and max-depth (> hop max-depth)))
+      result
+      (let [edges (next-batch-fn frontier)
+            next-ids (->> frontier
+                          (mapcat edges)
+                          (remove visited)
+                          distinct
+                          vec)]
+        (recur next-ids
+               (into visited next-ids)
+               (into result (map #(vector % hop)) next-ids)
+               (inc hop))))))
+
+(defn- fetch-enriched-tasks-by-ids
+  "Fetch and enrich tasks by IDs. Returns id -> task map. Chunks wide id lists
+   to stay under SQLite's parameter limit."
+  [ids]
+  (if (empty? ids)
+    {}
+    (reduce
+     (fn [acc chunk]
+       (let [placeholders (str/join "," (repeat (count chunk) "?"))
+             sql (str "SELECT * FROM tasks WHERE id IN (" placeholders ")")
+             ^js stmt (.prepare (db/db) sql)
+             rows (.all stmt (to-array chunk))
+             tasks (enrich-tasks (mapv row->task rows))]
+         (into acc (map (juxt :id identity)) tasks)))
+     {}
+     (partition-all sqlite-param-chunk-size ids))))
+
+(defn- coerce-field
+  "Accept a keyword as-is, or a string (converted to a kebab-case keyword).
+   Anything else is rejected with an ex-info; the MCP tools/call path
+   surfaces this as an MCP tool error (isError: true) rather than a
+   JSON-RPC server error."
+  [f]
+  (cond
+    (keyword? f) f
+    (string? f) (keyword (str/replace f #"_" "-"))
+    :else
+    (throw (ex-info (str "Invalid field: " (pr-str f)
+                         " (expected string or keyword)")
+                    {:invalid-field f}))))
+
+(defn- field->snake
+  "Render a field keyword as the snake_case name the MCP schema advertises,
+   so error messages echo what the caller typed rather than the internal
+   kebab-case form."
+  [k]
+  (str/replace (name k) "-" "_"))
+
+(defn- validate-dep-graph-fields
+  "Reject fields not in `dep-graph-fields`. The ex-info surfaces as an
+   MCP tool error (isError: true) rather than a JSON-RPC server error
+   on the tools/call path."
+  [fields]
+  (when-let [invalid (seq (remove dep-graph-fields fields))]
+    (throw (ex-info (str "Unknown fields: " (str/join ", " (map field->snake invalid))
+                         ". Allowed: "
+                         (str/join ", " (sort (map field->snake dep-graph-fields))))
+                    {:invalid-fields (vec invalid)
+                     :allowed (vec (sort (map field->snake dep-graph-fields)))}))))
+
+(defn- validate-depth
+  "Reject non-integer or negative depth. The ex-info surfaces as an MCP
+   tool error (isError: true) rather than a JSON-RPC server error on the
+   tools/call path."
+  [depth]
+  (when (and (some? depth) (or (not (integer? depth)) (neg? depth)))
+    (throw (ex-info (str "depth must be a non-negative integer, got: " (pr-str depth))
+                    {:invalid-depth depth}))))
+
+(defn- get-related-tasks
+  [start-id next-batch-fn {:keys [depth fields]}]
+  (validate-depth depth)
+  (let [fields (if (seq fields)
+                 (mapv coerce-field fields)
+                 default-dep-graph-fields)
+        _ (validate-dep-graph-fields fields)
+        select-keys-set (conj (set fields) :id)
+        id-depth-pairs (traverse-dep-graph start-id next-batch-fn depth)
+        by-id (fetch-enriched-tasks-by-ids (map first id-depth-pairs))]
+    (into []
+          (keep (fn [[id hop]]
+                  (when-let [task (get by-id id)]
+                    (-> (select-keys task select-keys-set)
+                        (assoc :depth hop)))))
+          id-depth-pairs)))
+
+(defn get-upstream
+  "Return tasks that task-id transitively depends on (its ancestors in the
+   blocked-by graph). Each task is returned with :id, :depth (hops from
+   task-id), and the fields requested via opts :fields (default: title,
+   status, blocked-by). Results are in BFS order.
+
+   Cycle-safe. If task-id reaches itself through a cycle (including a
+   self-loop), task-id appears in the result at the hop it was rediscovered.
+   That makes `(some #{id} (map :id (get-upstream id {})))` a valid
+   cycle-detection check. Returns [] for unknown task-id.
+
+   The returned :blocked-by field on each task reflects *currently-unresolved*
+   dependencies (deps whose status is not 'done') — not the raw graph edges.
+   A task whose deps are all done will show :blocked-by [] even though it
+   has predecessors in the DAG.
+
+   Traversal crosses board boundaries: if a dependency points to a task on
+   another board, the result will include tasks from multiple boards.
+
+   opts: :depth (non-negative int, nil = unlimited, 0 = empty),
+         :fields (collection of kebab-case keywords or snake_case strings)."
+  [task-id opts]
+  (get-related-tasks task-id get-task-dependencies-batch opts))
+
+(defn get-downstream
+  "Return tasks that transitively depend on task-id (its descendants in the
+   blocked-by graph). Same return shape, options, cycle semantics, and
+   cross-board behavior as `get-upstream`. :blocked-by on each returned task
+   reflects currently-unresolved deps only, not the raw graph edges."
+  [task-id opts]
+  (get-related-tasks task-id get-tasks-blocked-by-batch opts))
 
 ;; ============================================================================
 ;; Summary operations

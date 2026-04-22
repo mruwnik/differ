@@ -12,6 +12,7 @@
             [differ.comments-test]
             [differ.api-test]
             [differ.mcp-test]
+            [differ.mcp-async-test]
             [differ.config-test]
             [differ.diff-test]
             [differ.watcher-test]
@@ -46,6 +47,7 @@
    'differ.comments-test
    'differ.api-test
    'differ.mcp-test
+   'differ.mcp-async-test
    'differ.config-test
    'differ.diff-test
    'differ.watcher-test

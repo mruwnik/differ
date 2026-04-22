@@ -24,6 +24,20 @@
   {:name "differ"
    :version "0.1.0"})
 
+;; Shared input schema for get_upstream / get_downstream — extracted so a
+;; third traversal tool (if it lands) can reuse it without drifting.
+(def ^:private dep-graph-input-schema
+  {:type "object"
+   :properties {:task_id {:type "string"
+                          :description "Task ID to traverse from"}
+                :depth {:type "integer"
+                        :description "Max hops to traverse (omit for full transitive closure, 1 for direct only). The boards layer rejects negative values; the MCP schema itself does not enforce a minimum."}
+                :fields {:type "array"
+                         :items {:type "string"}
+                         :uniqueItems true
+                         :description "Fields to include per task (in addition to id and depth). Default: [\"title\", \"status\", \"blocked_by\"]. Allowed: id, board_id, title, description, status, worker_name, worker_id, persist, blocked_by, created_at, updated_at."}}
+   :required ["task_id"]})
+
 ;; Tool definitions
 (def tools
   [{:name "list_sessions"
@@ -263,6 +277,14 @@
                                :author {:type "string"
                                         :description "Author of the note"}}
                   :required ["task_id"]}}
+
+   {:name "get_upstream"
+    :description "Get tasks that the given task transitively depends on (ancestors in the blocked_by graph). Use to review what assumptions or prerequisites underpin a task. Returns tasks in BFS order, each annotated with `depth` (hops from the origin). Cycle-safe: if the task reaches itself through a cycle (or self-loop), the task appears in its own ancestor set at the hop it was rediscovered — so `task_id in ancestors(task_id)` is a valid cycle check. Returns [] for unknown task IDs. The `blocked_by` field on each returned task reflects *currently-unresolved* dependencies (deps whose status is not 'done') — not the raw graph edges. Traversal crosses board boundaries: dependencies may point to tasks on other boards, and results can include tasks from multiple boards. No result cap: calling with no `depth` on a highly-connected task can return many tasks — pass an explicit `depth` to bound the traversal when the ancestor closure may be large."
+    :inputSchema dep-graph-input-schema}
+
+   {:name "get_downstream"
+    :description "Get tasks that transitively depend on the given task (descendants in the blocked_by graph). Use to find what needs revisiting if this task is refuted, rejected, or re-scoped. Returns tasks in BFS order, each annotated with `depth` (hops from the origin). Cycle-safe: if the task reaches itself through a cycle (or self-loop), the task appears in its own descendant set at the hop it was rediscovered. Returns [] for unknown task IDs. The `blocked_by` field on each returned task reflects *currently-unresolved* dependencies (deps whose status is not 'done') — not the raw graph edges. Traversal crosses board boundaries: dependencies may link tasks on different boards, and results can include tasks from multiple boards. No result cap: calling with no `depth` on a highly-connected task can return many tasks — pass an explicit `depth` to bound the traversal when the descendant closure may be large."
+    :inputSchema dep-graph-input-schema}
 
    {:name "add_note"
     :description "Add a note to a task without changing its state."
@@ -786,6 +808,30 @@
         board (boards/get-board (:board-id task))]
     (sse/broadcast-all! :task-updated {:task task :repo-path (:repo-path board)})
     {:task task}))
+
+(defn- ->field-keywords
+  "Convert a vector of snake_case field name strings to kebab-case keywords.
+   The MCP boundary always delivers strings; the keyword branch is defensive
+   for non-MCP callers that pass keywords directly. Each element must be a
+   string or keyword — anything else raises ex-info, which surfaces as an
+   MCP tool error (isError: true) rather than a JSON-RPC server error."
+  [fields]
+  (when (seq fields)
+    (mapv (fn [f]
+            (cond
+              (keyword? f) f
+              (string? f) (util/snake->kebab f)
+              :else
+              (throw (ex-info (str "Invalid fields entry: " (pr-str f)
+                                   " (expected string)")
+                              {:invalid-field f}))))
+          fields)))
+
+(defmethod handle-tool "get_upstream" [_ {:keys [task-id depth fields]}]
+  {:tasks (boards/get-upstream task-id {:depth depth :fields (->field-keywords fields)})})
+
+(defmethod handle-tool "get_downstream" [_ {:keys [task-id depth fields]}]
+  {:tasks (boards/get-downstream task-id {:depth depth :fields (->field-keywords fields)})})
 
 (defmethod handle-tool "add_note" [_ {:keys [task-id author content]}]
   (let [note (boards/add-note! {:task-id task-id :author author :content content})
