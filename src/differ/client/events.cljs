@@ -772,7 +772,8 @@
 (rf/reg-event-fx
  :load-board-tasks
  (fn [{:keys [db]} [_ repo-path]]
-   {:http (api/fetch-board-tasks repo-path :show-done (:board-show-done db))}))
+   (when-let [req (api/fetch-board-tasks repo-path :show-done (:board-show-done db))]
+     {:http req})))
 
 (rf/reg-event-db
  :board-tasks-loaded

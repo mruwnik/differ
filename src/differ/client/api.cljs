@@ -208,12 +208,16 @@
    :on-failure [:api-error]})
 
 (defn fetch-board-tasks [repo-path & {:keys [show-done]}]
-  {:method "GET"
-   :url (str "/api/boards/" (js/encodeURIComponent repo-path) "/tasks"
-             "?show_done=" (if show-done "true" "false")
-             "&include_notes=true")
-   :on-success [:board-tasks-loaded]
-   :on-failure [:api-error]})
+  ;; encodeURIComponent("") is "" — without this guard the URL would be
+  ;; /api/boards//tasks, which proxies reject as a path-traversal/normalisation
+  ;; risk (interior empty segment).
+  (when (seq repo-path)
+    {:method "GET"
+     :url (str "/api/boards/" (js/encodeURIComponent repo-path) "/tasks"
+               "?show_done=" (if show-done "true" "false")
+               "&include_notes=true")
+     :on-success [:board-tasks-loaded]
+     :on-failure [:api-error]}))
 
 (defn fetch-task [task-id]
   {:method "GET"
