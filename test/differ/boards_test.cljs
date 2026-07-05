@@ -132,7 +132,7 @@
           _ (boards/take-task! {:task-id (:id task)
                                 :worker-name "agent-1"
                                 :worker-id "w-001"})]
-      (is (thrown-with-msg? js/Error #"not pending"
+      (is (thrown-with-msg? js/Error #"not in queue"
                             (boards/take-task! {:task-id (:id task)
                                                 :worker-name "agent-2"
                                                 :worker-id "w-002"})))))
@@ -190,7 +190,102 @@
     (is (thrown-with-msg? js/Error #"No board found"
                           (boards/take-task! {:repo-path "/tmp/no-board-here"
                                               :worker-name "agent"
-                                              :worker-id "w"})))))
+                                              :worker-id "w"}))))
+
+  (testing "requires a non-blank worker-name"
+    (let [task (boards/create-task! {:repo-path "/tmp/take-repo-no-worker"
+                                     :title "Needs a worker name"})]
+      (is (thrown-with-msg? js/Error #"worker-name is required"
+                            (boards/take-task! {:task-id (:id task)
+                                                :worker-id "w-001"})))
+      (is (thrown-with-msg? js/Error #"worker-name is required"
+                            (boards/take-task! {:task-id (:id task)
+                                                :worker-name ""
+                                                :worker-id "w-001"}))))))
+
+(deftest take-task-queues-test
+  (testing "pulls from a named queue and sets move-to status"
+    (let [task (boards/create-task! {:repo-path "/tmp/queue-repo" :title "Planned task"})
+          _ (boards/update-task! (:id task) {:status "ready"})
+          taken (boards/take-task! {:repo-path "/tmp/queue-repo"
+                                    :status "ready"
+                                    :move-to "in_progress"
+                                    :worker-name "impl-1"})]
+      (is (= (:id task) (:id taken)))
+      (is (= "in_progress" (:status taken)))
+      (is (= "impl-1" (:worker-name taken)))))
+
+  (testing "claim-in-place: move-to same as queue status"
+    (let [task (boards/create-task! {:repo-path "/tmp/queue-repo2" :title "Needs plan check"})
+          _ (boards/update-task! (:id task) {:status "plan_review"})
+          taken (boards/take-task! {:repo-path "/tmp/queue-repo2"
+                                    :status "plan_review"
+                                    :move-to "plan_review"
+                                    :worker-name "checker-1"})]
+      (is (= "plan_review" (:status taken)))
+      (is (= "checker-1" (:worker-name taken)))))
+
+  (testing "auto-assign skips claimed tasks in the queue"
+    (let [t1 (boards/create-task! {:repo-path "/tmp/queue-repo3" :title "Claimed"})
+          t2 (boards/create-task! {:repo-path "/tmp/queue-repo3" :title "Free"})
+          _ (boards/update-task! (:id t1) {:status "plan_review"})
+          _ (boards/update-task! (:id t2) {:status "plan_review"})
+          _ (boards/take-task! {:task-id (:id t1) :status "plan_review"
+                                :move-to "plan_review" :worker-name "checker-1"})
+          taken (boards/take-task! {:repo-path "/tmp/queue-repo3"
+                                    :status "plan_review"
+                                    :move-to "plan_review"
+                                    :worker-name "checker-2"})]
+      (is (= (:id t2) (:id taken)))))
+
+  (testing "explicit task-id fails when task is in a different queue"
+    (let [task (boards/create-task! {:repo-path "/tmp/queue-repo4" :title "Still pending"})]
+      (is (thrown-with-msg? js/Error #"not in queue 'ready'"
+                            (boards/take-task! {:task-id (:id task)
+                                                :status "ready"
+                                                :worker-name "impl-1"})))))
+
+  (testing "explicit task-id fails when task is already claimed"
+    (let [task (boards/create-task! {:repo-path "/tmp/queue-repo5" :title "Claim twice"})
+          _ (boards/update-task! (:id task) {:status "plan_review"})
+          _ (boards/take-task! {:task-id (:id task) :status "plan_review"
+                                :move-to "plan_review" :worker-name "checker-1"})]
+      (is (thrown-with-msg? js/Error #"already claimed by checker-1"
+                            (boards/take-task! {:task-id (:id task)
+                                                :status "plan_review"
+                                                :move-to "plan_review"
+                                                :worker-name "checker-2"})))))
+
+  (testing "rejects a queue status not on the board"
+    (boards/create-task! {:repo-path "/tmp/queue-repo6" :title "T"})
+    (is (thrown-with-msg? js/Error #"Invalid status 'bogus'"
+                          (boards/take-task! {:repo-path "/tmp/queue-repo6"
+                                              :status "bogus"
+                                              :worker-name "w"}))))
+
+  (testing "rejects a move-to status not on the board"
+    (boards/create-task! {:repo-path "/tmp/queue-repo7" :title "T"})
+    (is (thrown-with-msg? js/Error #"Invalid status 'bogus'"
+                          (boards/take-task! {:repo-path "/tmp/queue-repo7"
+                                              :move-to "bogus"
+                                              :worker-name "w"}))))
+
+  (testing "empty queue names the queue in the error"
+    (boards/get-or-create-board! "/tmp/queue-repo8")
+    (is (thrown-with-msg? js/Error #"No available tasks in queue 'ready'"
+                          (boards/take-task! {:repo-path "/tmp/queue-repo8"
+                                              :status "ready"
+                                              :worker-name "w"}))))
+
+  (testing "blocked tasks are skipped in non-pending queues too"
+    (let [dep (boards/create-task! {:repo-path "/tmp/queue-repo9" :title "Dep"})
+          t (boards/create-task! {:repo-path "/tmp/queue-repo9" :title "Blocked ready"
+                                  :blocked-by [(:id dep)]})
+          _ (boards/update-task! (:id t) {:status "ready"})]
+      (is (thrown-with-msg? js/Error #"No available tasks in queue 'ready'"
+                            (boards/take-task! {:repo-path "/tmp/queue-repo9"
+                                                :status "ready"
+                                                :worker-name "w"}))))))
 
 ;; ============================================================================
 ;; Update Task Tests
@@ -249,6 +344,28 @@
   (testing "fails on non-existent task"
     (is (thrown-with-msg? js/Error #"not found"
                           (boards/update-task! "no-such-task" {:title "nope"})))))
+
+(deftest update-task-releases-claim-test
+  (testing "status change clears the worker"
+    (let [task (boards/create-task! {:repo-path "/tmp/release-repo" :title "Phase task"})
+          _ (boards/take-task! {:task-id (:id task) :worker-name "planner-1" :worker-id "p-1"})
+          updated (boards/update-task! (:id task) {:status "plan_review"})]
+      (is (= "plan_review" (:status updated)))
+      (is (nil? (:worker-name updated)))
+      (is (nil? (:worker-id updated)))))
+
+  (testing "non-status updates keep the worker"
+    (let [task (boards/create-task! {:repo-path "/tmp/release-repo" :title "Keep worker"})
+          _ (boards/take-task! {:task-id (:id task) :worker-name "planner-1" :worker-id "p-1"})
+          updated (boards/update-task! (:id task) {:description "enriched plan"})]
+      (is (= "planner-1" (:worker-name updated)))
+      (is (= "p-1" (:worker-id updated)))))
+
+  (testing "setting status to its current value keeps the worker"
+    (let [task (boards/create-task! {:repo-path "/tmp/release-repo" :title "Same status"})
+          _ (boards/take-task! {:task-id (:id task) :worker-name "planner-1" :worker-id "p-1"})
+          updated (boards/update-task! (:id task) {:status "in_progress" :note "still at it" :author "planner-1"})]
+      (is (= "planner-1" (:worker-name updated))))))
 
 ;; ============================================================================
 ;; List Tasks Tests

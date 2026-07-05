@@ -1,9 +1,12 @@
 (ns differ.db-test
   "Tests for database operations.
    Uses a separate test database to avoid affecting production data."
-  (:require [clojure.test :refer [deftest testing is use-fixtures]]
+  (:require ["better-sqlite3" :as Database]
+            [clojure.test :refer [deftest testing is use-fixtures]]
             [differ.test-helpers :as helpers]
-            [differ.util :as util]))
+            [differ.util :as util]
+            [differ.db :as db]
+            [differ.boards :as boards]))
 
 ;; ============================================================================
 ;; Test Database Setup
@@ -438,3 +441,192 @@
       (create-comment! {:session-id "reply-test" :parent-id (:id parent) :file "a.cljs" :line 1 :line-content-hash "h" :text "reply" :author "a"})
       ;; Now counts both parent and reply (2 total)
       (is (= 2 (count-unresolved-comments "reply-test"))))))
+
+;; ============================================================================
+;; Board Status Tests - use boards-test fixture pattern
+;; ============================================================================
+
+(defn with-test-db-for-boards [f]
+  (let [test-db (helpers/init-test-db!)]
+    (reset! db/db-instance test-db)
+    (try
+      (f)
+      (finally
+        (reset! db/db-instance nil)
+        (helpers/cleanup-test-db!)))))
+
+(deftest default-board-statuses-test
+  (with-test-db-for-boards
+    (fn []
+      (testing "new boards get the full planning lifecycle"
+        (let [board (boards/get-or-create-board! "/tmp/statuses-default-repo")]
+          (is (= ["pending" "planning" "plan_review" "ready"
+                  "in_progress" "in_review" "done" "rejected"]
+                 (:statuses board))))))))
+
+(deftest migrate-board-statuses-test
+  (with-test-db-for-boards
+    (fn []
+      (testing "boards on the plain old default are rewritten"
+        (let [^js stmt (.prepare (db/db)
+                                 "INSERT INTO boards (id, repo_path, statuses, created_at, updated_at)
+                                  VALUES (?, ?, ?, datetime('now'), datetime('now'))")]
+          (.run stmt "old-board" "/tmp/old-default-repo"
+                "[\"pending\",\"in_progress\",\"done\",\"rejected\",\"in_review\"]"))
+        (db/migrate-board-statuses (db/db))
+        (is (= ["pending" "planning" "plan_review" "ready"
+                "in_progress" "in_review" "done" "rejected"]
+               (:statuses (boards/get-board "old-board")))))
+
+      (testing "boards on the blocked-variant old default (real production DDL) are rewritten"
+        (let [^js stmt (.prepare (db/db)
+                                 "INSERT INTO boards (id, repo_path, statuses, created_at, updated_at)
+                                  VALUES (?, ?, ?, datetime('now'), datetime('now'))")]
+          (.run stmt "blocked-variant-board" "/tmp/blocked-variant-repo"
+                "[\"pending\",\"in_progress\",\"done\",\"rejected\",\"blocked\",\"in_review\"]"))
+        (db/migrate-board-statuses (db/db))
+        (is (= ["pending" "planning" "plan_review" "ready"
+                "in_progress" "in_review" "done" "rejected"]
+               (:statuses (boards/get-board "blocked-variant-board")))))
+
+      (testing "customized boards are untouched"
+        (let [^js stmt (.prepare (db/db)
+                                 "INSERT INTO boards (id, repo_path, statuses, created_at, updated_at)
+                                  VALUES (?, ?, ?, datetime('now'), datetime('now'))")]
+          (.run stmt "custom-board" "/tmp/custom-repo" "[\"todo\",\"doing\",\"done\"]"))
+        (db/migrate-board-statuses (db/db))
+        (is (= ["todo" "doing" "done"]
+               (:statuses (boards/get-board "custom-board")))))
+
+      (testing "migration is idempotent"
+        (db/migrate-board-statuses (db/db))
+        (db/migrate-board-statuses (db/db))
+        (is (= ["pending" "planning" "plan_review" "ready"
+                "in_progress" "in_review" "done" "rejected"]
+               (:statuses (boards/get-board "old-board"))))))))
+
+(deftest migrate-board-statuses-clears-stale-workers-test
+  (with-test-db-for-boards
+    (fn []
+      (let [^js board-stmt (.prepare (db/db)
+                                     "INSERT INTO boards (id, repo_path, statuses, created_at, updated_at)
+                                      VALUES (?, ?, ?, datetime('now'), datetime('now'))")]
+        (.run board-stmt "stale-worker-board" "/tmp/stale-worker-repo"
+              "[\"pending\",\"in_progress\",\"done\",\"rejected\",\"in_review\"]")
+        (.run board-stmt "blocked-variant-board" "/tmp/blocked-variant-worker-repo"
+              "[\"pending\",\"in_progress\",\"done\",\"rejected\",\"blocked\",\"in_review\"]")
+        (.run board-stmt "custom-worker-board" "/tmp/custom-worker-repo"
+              "[\"todo\",\"doing\",\"done\"]"))
+      (let [^js task-stmt (.prepare (db/db)
+                                    "INSERT INTO tasks (id, board_id, title, status, worker_name, worker_id, created_at, updated_at)
+                                     VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))")]
+        ;; stale-worker-board: pending/in_review rows with a leftover worker
+        ;; (old lifecycle never cleared these) plus an in_progress row that
+        ;; must keep its worker (genuinely claimed).
+        (.run task-stmt "t-pending" "stale-worker-board" "Pending w/ stale worker" "pending" "old-agent" "w-old")
+        (.run task-stmt "t-in-review" "stale-worker-board" "In review w/ stale worker" "in_review" "old-agent" "w-old")
+        (.run task-stmt "t-in-progress" "stale-worker-board" "Actively claimed" "in_progress" "active-agent" "w-active")
+        (.run task-stmt "t-done" "stale-worker-board" "Done, attribution kept" "done" "finisher" "w-finisher")
+        ;; blocked-variant-board: the real production default; stale worker on a
+        ;; pending row must also be cleared once this board is migrated.
+        (.run task-stmt "t-bv-pending" "blocked-variant-board" "Pending on blocked-variant board" "pending" "old-agent" "w-old")
+        ;; custom-worker-board: never touched by the migration at all.
+        (.run task-stmt "t-custom" "custom-worker-board" "Custom board pending" "todo" "custom-agent" "w-custom"))
+
+      (testing "migrating old-default boards clears stale workers on non-terminal, non-active statuses"
+        (db/migrate-board-statuses (db/db))
+        (is (nil? (:worker-name (boards/get-task "t-pending"))))
+        (is (nil? (:worker-id (boards/get-task "t-pending"))))
+        (is (nil? (:worker-name (boards/get-task "t-in-review"))))
+        (is (nil? (:worker-id (boards/get-task "t-in-review")))))
+
+      (testing "blocked-variant board is migrated and its stale worker cleared"
+        (is (= ["pending" "planning" "plan_review" "ready"
+                "in_progress" "in_review" "done" "rejected"]
+               (:statuses (boards/get-board "blocked-variant-board"))))
+        (is (nil? (:worker-name (boards/get-task "t-bv-pending"))))
+        (is (nil? (:worker-id (boards/get-task "t-bv-pending")))))
+
+      (testing "in_progress keeps its worker (genuinely claimed)"
+        (is (= "active-agent" (:worker-name (boards/get-task "t-in-progress"))))
+        (is (= "w-active" (:worker-id (boards/get-task "t-in-progress")))))
+
+      (testing "done keeps its worker (attribution, never claimable anyway)"
+        (is (= "finisher" (:worker-name (boards/get-task "t-done")))))
+
+      (testing "custom-status boards are untouched"
+        (is (= "custom-agent" (:worker-name (boards/get-task "t-custom")))))
+
+      (testing "idempotence: re-running after a post-migration claim does not clear it"
+        (let [claimed (boards/take-task! {:task-id "t-pending"
+                                          :status "pending"
+                                          :move-to "pending"
+                                          :worker-name "new-agent"
+                                          :worker-id "w-new"})]
+          (is (= "new-agent" (:worker-name claimed))))
+        (db/migrate-board-statuses (db/db))
+        (is (= "new-agent" (:worker-name (boards/get-task "t-pending"))))))))
+
+;; ============================================================================
+;; run-migrations! wiring test
+;; Uses a raw better-sqlite3 Database (bypassing differ.db/init! and
+;; test-helpers' pre-built schema) to prove the board-statuses migration is
+;; actually reachable via the standard migration path, not just callable
+;; directly.
+;; ============================================================================
+
+(deftest run-migrations-wires-board-statuses-migration-test
+  (testing "run-migrations! rewrites old-default boards on a fresh raw database"
+    (let [dir (helpers/create-temp-dir "differ-run-migrations-test")
+          raw-db (Database (str dir "/raw.db"))]
+      (try
+        ;; Pre-seed a board on the old default, using the shared kanban DDL
+        ;; (public, same constant production uses) so the schema matches.
+        (.exec raw-db db/kanban-ddl)
+        (let [^js stmt (.prepare raw-db
+                                 "INSERT INTO boards (id, repo_path, statuses, created_at, updated_at)
+                                  VALUES (?, ?, ?, datetime('now'), datetime('now'))")]
+          (.run stmt "raw-old-board" "/tmp/raw-old-default-repo"
+                "[\"pending\",\"in_progress\",\"done\",\"rejected\",\"in_review\"]"))
+
+        (db/run-migrations! raw-db)
+
+        (let [^js row (.get (.prepare raw-db "SELECT statuses FROM boards WHERE id = ?")
+                            "raw-old-board")]
+          (is (= ["pending" "planning" "plan_review" "ready"
+                  "in_progress" "in_review" "done" "rejected"]
+                 (js->clj (js/JSON.parse (.-statuses row))))))
+        (finally
+          (.close raw-db)
+          (helpers/remove-dir dir))))))
+
+;; ============================================================================
+;; get-or-create-board! must not rely on a (possibly stale) column DEFAULT.
+;; Simulates a DB whose boards table was created by an older DDL carrying the
+;; blocked-variant default, then asserts a freshly-created board still gets the
+;; current status list because the INSERT sets statuses explicitly.
+;; ============================================================================
+
+(deftest get-or-create-board-ignores-stale-column-default-test
+  (testing "new board gets current statuses even when the boards table DEFAULT is the old blocked-variant"
+    (let [dir (helpers/create-temp-dir "differ-stale-default-test")
+          raw-db (Database (str dir "/stale.db"))]
+      (.pragma raw-db "foreign_keys = ON")
+      ;; boards table created with the OLD blocked-variant column DEFAULT.
+      (.exec raw-db "CREATE TABLE boards (
+                       id TEXT PRIMARY KEY,
+                       repo_path TEXT NOT NULL UNIQUE,
+                       statuses TEXT NOT NULL DEFAULT '[\"pending\",\"in_progress\",\"done\",\"rejected\",\"blocked\",\"in_review\"]',
+                       created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                     );")
+      (reset! db/db-instance raw-db)
+      (try
+        (let [board (boards/get-or-create-board! "/tmp/stale-default-repo")]
+          (is (= ["pending" "planning" "plan_review" "ready"
+                  "in_progress" "in_review" "done" "rejected"]
+                 (:statuses board))))
+        (finally
+          (reset! db/db-instance nil)
+          (.close raw-db)
+          (helpers/remove-dir dir))))))

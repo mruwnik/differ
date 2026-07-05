@@ -242,12 +242,16 @@
                   :required ["repo_path"]}}
 
    {:name "take_task"
-    :description "Claim a pending task. Sets status to in_progress and assigns you as worker. If task_id is omitted, auto-assigns the first available (pending, unblocked) task on the board. Returns full task details."
+    :description "Atomically claim a task from a queue. Pulls from the `status` queue (default: pending) and moves the task to `move_to` (default: in_progress), assigning you as worker. If task_id is omitted, auto-assigns the oldest unclaimed, unblocked task in the queue. Changing a task's status via update_task releases the worker, so each lifecycle phase (planning, plan_review checking, implementation, review) is claimed separately. To claim in place (e.g. reviewing a plan without moving it), set move_to to the same status as the queue. Returns full task details."
     :inputSchema {:type "object"
                   :properties {:task_id {:type "string"
                                          :description "Task ID to claim (optional - omit to auto-assign next available task)"}
                                :repo_path {:type "string"
                                            :description "Repo path to find board (required when task_id is omitted)"}
+                               :status {:type "string"
+                                        :description "Queue to pull from (default: pending). Must be one of the board's statuses."}
+                               :move_to {:type "string"
+                                         :description "Status set on claim (default: in_progress). Must be one of the board's statuses."}
                                :worker_name {:type "string"
                                              :description "Display name of the worker"}
                                :worker_id {:type "string"
@@ -257,7 +261,7 @@
                   :required ["worker_name"]}}
 
    {:name "update_task"
-    :description "Update a task's status, title, description, persist flag, or dependencies. Status is validated against the board's allowed statuses: pending, in_progress, done, rejected, in_review. 'blocked' is a computed status based on dependencies."
+    :description "Update a task's status, title, description, persist flag, or dependencies. Status is validated against the board's allowed statuses (default lifecycle: pending, planning, plan_review, ready, in_progress, in_review, done, rejected). Changing status releases the task's worker so the next phase can be claimed with take_task. 'blocked' is a computed status based on dependencies."
     :inputSchema {:type "object"
                   :properties {:task_id {:type "string"
                                          :description "Task ID to update"}
@@ -794,11 +798,12 @@
                                 :include-notes include-notes :show-done show-done})}
     {:tasks []}))
 
-(defmethod handle-tool "take_task" [_ {:keys [task-id repo-path worker-name worker-id note]}]
+(defmethod handle-tool "take_task" [_ {:keys [task-id repo-path worker-name worker-id note status move-to]}]
   (when (and (nil? task-id) (nil? repo-path))
     (throw (js/Error. "Either task_id or repo_path is required")))
   (let [task (boards/take-task! {:task-id task-id :repo-path repo-path
-                                 :worker-name worker-name :worker-id worker-id :note note})
+                                 :worker-name worker-name :worker-id worker-id :note note
+                                 :status status :move-to move-to})
         board (boards/get-board (:board-id task))]
     (sse/broadcast-all! :task-updated {:task task :repo-path (:repo-path board)})
     {:task task}))

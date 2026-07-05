@@ -90,14 +90,31 @@
         ALTER TABLE sessions ADD COLUMN github_pr_number INTEGER;
       "))))
 
+(def default-board-statuses
+  "Canonical task lifecycle for new boards. Also interpolated into the
+   boards.statuses column default in kanban-ddl, and used as the JSON
+   parse fallback in boards/row->board."
+  ["pending" "planning" "plan_review" "ready" "in_progress" "in_review" "done" "rejected"])
+
+(def ^:private historical-default-statuses
+  "Status lists written by previous versions' column defaults. Boards
+   still on any of these are non-customized and get migrated. The
+   blocked-variant is the one real production DBs actually carry (verified
+   via .schema on the live DB); the plain variant covers older/other DDLs."
+  [["pending" "in_progress" "done" "rejected" "in_review"]
+   ["pending" "in_progress" "done" "rejected" "blocked" "in_review"]])
+
+(defn statuses-json [statuses]
+  (js/JSON.stringify (clj->js statuses)))
+
 (def kanban-ddl
   "Kanban board DDL. Single source of truth used by create-tables, migrate-kanban-tables,
    and test_helpers. All three locations reference this constant so schema changes only
    need to happen in one place."
-  "CREATE TABLE IF NOT EXISTS boards (
+  (str "CREATE TABLE IF NOT EXISTS boards (
       id TEXT PRIMARY KEY,
       repo_path TEXT NOT NULL UNIQUE,
-      statuses TEXT NOT NULL DEFAULT '[\"pending\",\"in_progress\",\"done\",\"rejected\",\"in_review\"]',
+      statuses TEXT NOT NULL DEFAULT '" (statuses-json default-board-statuses) "',
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
@@ -134,12 +151,57 @@
       PRIMARY KEY (task_id, depends_on_task_id)
     );
 
-    CREATE INDEX IF NOT EXISTS idx_task_deps_depends_on ON task_dependencies(depends_on_task_id);")
+    CREATE INDEX IF NOT EXISTS idx_task_deps_depends_on ON task_dependencies(depends_on_task_id);"))
 
 (defn- migrate-kanban-tables
   "Add kanban board tables for existing databases."
   [db]
   (.exec db kanban-ddl))
+
+(defn migrate-board-statuses
+  "Rewrite boards still on the old default status list to the current
+   default (adds the planning lifecycle columns). Boards with customized
+   statuses are untouched. Idempotent.
+
+   Also clears stale worker assignments on the boards migrated in THIS run:
+   under the old lifecycle only 'in_progress' meant actively claimed, so a
+   worker on a pending/in_review row is stale attribution that would make
+   the task permanently unclaimable under the new worker-IS-NULL
+   availability rule. in_progress keeps its worker (genuinely claimed);
+   done/rejected keep theirs (attribution, never claimable anyway).
+
+   Scoping the cleanup to boards whose statuses actually got rewritten here
+   (rather than 'every board') keeps this idempotent: re-running the
+   migration after a post-migration claim must not clear that live claim.
+
+   The SELECT + both UPDATEs run inside a single better-sqlite3 transaction
+   so the board rewrite and the worker cleanup commit atomically. Without it
+   a crash between the two UPDATEs would leave boards already on the new
+   default while the cleanup never ran, and the idempotence guard SELECT
+   (matching only old-default boards) would then never match again —
+   permanently stranding the stale workers with no automatic recovery."
+  [^js db]
+  (let [historical-json (mapv statuses-json historical-default-statuses)
+        txn (.transaction db
+                          (fn []
+                            (let [^js select-stmt (.prepare db
+                                                            (str "SELECT id FROM boards WHERE statuses IN ("
+                                                                 (in-clause (count historical-json)) ")"))
+                                  rows (.all select-stmt (to-array historical-json))
+                                  board-ids (mapv (fn [^js r] (.-id r)) rows)]
+                              (when (seq board-ids)
+                                (let [^js update-stmt (.prepare db
+                                                                (str "UPDATE boards SET statuses = ? WHERE statuses IN ("
+                                                                     (in-clause (count historical-json)) ")"))]
+                                  (.run update-stmt (to-array (into [(statuses-json default-board-statuses)]
+                                                                    historical-json))))
+                                (let [^js clear-stmt (.prepare db
+                                                               (str "UPDATE tasks SET worker_name = NULL, worker_id = NULL
+                                                                     WHERE board_id IN (" (in-clause (count board-ids)) ")
+                                                                     AND status NOT IN ('in_progress', 'done', 'rejected')
+                                                                     AND worker_name IS NOT NULL"))]
+                                  (.run clear-stmt (to-array board-ids)))))))]
+    (txn)))
 
 (defn- create-tables [db]
   (.exec db "
@@ -281,6 +343,19 @@
   ;; Kanban board tables - uses shared DDL constant (see kanban-ddl)
   (.exec db kanban-ddl))
 
+(defn run-migrations!
+  "Run schema creation and all migrations against db, in order. Used by
+   init! for real connections, and directly by tests to verify migrations
+   are actually wired into the standard init path (rather than only being
+   reachable by calling an individual migration fn)."
+  [db]
+  (create-tables db)
+  (migrate-comments-table db)
+  (migrate-sessions-table db)
+  (migrate-github-tokens-table db)
+  (migrate-kanban-tables db)
+  (migrate-board-statuses db))
+
 (defn init!
   "Initialize database connection."
   []
@@ -290,11 +365,7 @@
       ;; Enable foreign key enforcement - must be set per-connection (not persisted).
       ;; This enables ON DELETE CASCADE for comments.parent_id and comments.session_id.
       (.pragma db "foreign_keys = ON")
-      (create-tables db)
-      (migrate-comments-table db)
-      (migrate-sessions-table db)
-      (migrate-github-tokens-table db)
-      (migrate-kanban-tables db)
+      (run-migrations! db)
       (reset! db-instance db)))
   @db-instance)
 

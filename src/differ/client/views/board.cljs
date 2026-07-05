@@ -4,10 +4,13 @@
             [reagent.core :as r]
             [clojure.string :as str]))
 
-(def status-order ["pending" "in_progress" "blocked" "in_review" "done" "rejected"])
+(def status-order ["pending" "planning" "plan_review" "ready" "in_progress" "blocked" "in_review" "done" "rejected"])
 
 (def status-labels
   {"pending" "Pending"
+   "planning" "Planning"
+   "plan_review" "Plan Review"
+   "ready" "Ready"
    "in_progress" "In Progress"
    "blocked" "Blocked"
    "in_review" "In Review"
@@ -16,6 +19,9 @@
 
 (def status-colors
   {"pending" "#6a737d"
+   "planning" "#6f42c1"
+   "plan_review" "#b08800"
+   "ready" "#00838f"
    "in_progress" "#0366d6"
    "blocked" "#d73a49"
    "in_review" "#e36209"
@@ -72,9 +78,9 @@
 ;; ============================================================================
 
 (defn kanban-column [status tasks]
-  [:div {:style {:min-width "240px"
-                 :max-width "300px"
-                 :flex "1 1 240px"}}
+  [:div {:style {:min-width "200px"
+                 :max-width "280px"
+                 :flex "1 1 200px"}}
    [:div {:style {:display "flex" :align-items "center" :gap "8px"
                   :margin-bottom "12px" :padding-bottom "8px"
                   :border-bottom (str "2px solid " (get status-colors status "#e1e4e8"))}}
@@ -246,9 +252,19 @@
         show-done @(rf/subscribe [:board-show-done])
         selected @(rf/subscribe [:selected-task])
         grouped (group-by :status tasks)
+        ;; status-order is the hardcoded canonical order; boards with
+        ;; customized statuses (deliberately untouched by the statuses
+        ;; migration) can have tasks whose status isn't in it. Append any
+        ;; such statuses, in stable (first-seen) order, so they still get a
+        ;; column instead of silently vanishing from the board.
+        extra-statuses (->> tasks
+                            (map :status)
+                            distinct
+                            (remove (set status-order)))
+        all-statuses (into status-order extra-statuses)
         visible-statuses (if show-done
-                           status-order
-                           (remove #(#{"done" "rejected"} %) status-order))]
+                           all-statuses
+                           (remove #(#{"done" "rejected"} %) all-statuses))]
     [:div {:style {:padding-right (when selected "420px")
                    :transition "padding-right 0.2s"}}
      ;; Header

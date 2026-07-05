@@ -12,7 +12,7 @@
   (when row
     {:id (.-id row)
      :repo-path (.-repo_path row)
-     :statuses (db/safe-parse-json (.-statuses row) ["pending" "in_progress" "done" "rejected" "in_review"])
+     :statuses (db/safe-parse-json (.-statuses row) db/default-board-statuses)
      :created-at (.-created_at row)
      :updated-at (.-updated_at row)}))
 
@@ -177,10 +177,13 @@
   [repo-path]
   (let [id (util/gen-uuid)
         now (util/now-iso)
+        ;; Explicitly set statuses rather than relying on the column DEFAULT:
+        ;; CREATE TABLE IF NOT EXISTS never updates an existing table's default,
+        ;; so on DBs created by an older DDL the default is a stale status list.
         ^js stmt (.prepare (db/db)
-                           "INSERT OR IGNORE INTO boards (id, repo_path, created_at, updated_at)
-                            VALUES (?, ?, ?, ?)")]
-    (.run stmt id repo-path now now)
+                           "INSERT OR IGNORE INTO boards (id, repo_path, statuses, created_at, updated_at)
+                            VALUES (?, ?, ?, ?, ?)")]
+    (.run stmt id repo-path (db/statuses-json db/default-board-statuses) now now)
     (get-board-by-repo repo-path)))
 
 ;; ============================================================================
@@ -197,6 +200,13 @@
   "Get single task by ID. Returns effective status and blocked-by."
   [task-id]
   (enrich-task (get-task-raw task-id)))
+
+(defn- validate-board-status
+  "Throw unless status is in the board's allowed statuses."
+  [board status]
+  (when-not (some #{status} (:statuses board))
+    (throw (js/Error. (str "Invalid status '" status "'. Allowed: "
+                           (str/join ", " (:statuses board)))))))
 
 (defn create-task!
   "Create a task, auto-creating board for repo-path if needed.
@@ -218,13 +228,14 @@
     (get-task id)))
 
 (defn- find-next-available-task-row
-  "Find the first pending task with no unresolved dependencies on a board.
-   Returns raw JS row or nil. Must be called inside a transaction."
-  [board-id]
+  "Find the oldest unclaimed task in the given queue with no unresolved
+   dependencies. Returns raw JS row or nil. Must be called inside a transaction."
+  [board-id queue-status]
   (let [^js stmt (.prepare (db/db)
                            "SELECT t.* FROM tasks t
                             WHERE t.board_id = ?
-                            AND t.status = 'pending'
+                            AND t.status = ?
+                            AND t.worker_name IS NULL
                             AND NOT EXISTS (
                               SELECT 1 FROM task_dependencies td
                               JOIN tasks dep ON dep.id = td.depends_on_task_id
@@ -232,65 +243,87 @@
                             )
                             ORDER BY t.created_at ASC
                             LIMIT 1")]
-    (.get stmt board-id)))
+    (.get stmt board-id queue-status)))
 
 (defn take-task!
-  "Atomically claim a pending task. Fails if task is not pending or blocked.
-   If task-id is nil, auto-assigns the first available task on the board
-   identified by repo-path. Uses better-sqlite3 transaction for atomicity."
-  [{:keys [task-id repo-path worker-name worker-id note]}]
+  "Atomically claim a task from a queue.
+
+   :status  - queue to pull from (default \"pending\")
+   :move-to - status set on claim (default \"in_progress\")
+
+   With :task-id, claims that specific task (must be in the queue, unclaimed,
+   and unblocked). Otherwise auto-assigns the oldest available task on the
+   board identified by :repo-path. Claiming sets the worker; a status change
+   via update-task! releases it again, so each lifecycle phase is claimed
+   separately. Uses better-sqlite3 transaction for atomicity."
+  [{:keys [task-id repo-path worker-name worker-id note status move-to]}]
+  (when (str/blank? worker-name)
+    (throw (js/Error. "worker-name is required")))
   (when (and (nil? task-id) (nil? repo-path))
     (throw (js/Error. "Either task-id or repo-path is required")))
-  (let [txn (.transaction (db/db)
+  (let [queue-status (or status "pending")
+        target-status (or move-to "in_progress")
+        txn (.transaction (db/db)
                           (fn []
-                            ;; When task-id is provided it takes precedence; repo-path is ignored.
-                            (let [^js row (if task-id
-                                            (let [^js read-stmt (.prepare (db/db) "SELECT * FROM tasks WHERE id = ?")
-                                                  ^js r (.get read-stmt task-id)]
-                                              (when-not r
-                                                (throw (js/Error. (str "Task not found: " task-id))))
-                                              (when-not (= "pending" (.-status r))
-                                                (throw (js/Error. (str "Task is not pending (status: " (.-status r) ")"))))
-                                              r)
-                                           ;; Auto-assign: find next available task on the board
-                                            (let [board (get-board-by-repo repo-path)]
-                                              (when-not board
-                                                (throw (js/Error. (str "No board found for repo: " repo-path))))
-                                              (let [^js r (find-next-available-task-row (:id board))]
-                                                (when-not r
-                                                  (throw (js/Error. "No available tasks on this board")))
-                                                r)))]
-                              ;; Check for unresolved dependencies (only needed for explicit task-id;
-                              ;; auto-assign already filters these out in the SQL query)
+                ;; When task-id is provided it takes precedence; repo-path is ignored.
+                            (let [^js row
+                                  (if task-id
+                                    (let [^js read-stmt (.prepare (db/db) "SELECT * FROM tasks WHERE id = ?")
+                                          ^js r (.get read-stmt task-id)]
+                                      (when-not r
+                                        (throw (js/Error. (str "Task not found: " task-id))))
+                                      (let [board (get-board (.-board_id r))]
+                                        (validate-board-status board queue-status)
+                                        (validate-board-status board target-status))
+                                      (when-not (= queue-status (.-status r))
+                                        (throw (js/Error. (str "Task is not in queue '" queue-status
+                                                               "' (status: " (.-status r) ")"))))
+                                      (when (.-worker_name r)
+                                        (throw (js/Error. (str "Task is already claimed by " (.-worker_name r)))))
+                                      r)
+                        ;; Auto-assign: find next available task in the queue
+                                    (let [board (get-board-by-repo repo-path)]
+                                      (when-not board
+                                        (throw (js/Error. (str "No board found for repo: " repo-path))))
+                                      (validate-board-status board queue-status)
+                                      (validate-board-status board target-status)
+                                      (let [^js r (find-next-available-task-row (:id board) queue-status)]
+                                        (when-not r
+                                          (throw (js/Error. (str "No available tasks in queue '" queue-status "'"))))
+                                        r)))]
+                  ;; Check for unresolved dependencies (only needed for explicit task-id;
+                  ;; auto-assign already filters these out in the SQL query)
                               (when task-id
                                 (let [^js deps-stmt (.prepare (db/db)
                                                               "SELECT COUNT(*) as count FROM task_dependencies td
-                                                               JOIN tasks t ON t.id = td.depends_on_task_id
-                                                               WHERE td.task_id = ? AND t.status != 'done'")
+                                                   JOIN tasks t ON t.id = td.depends_on_task_id
+                                                   WHERE td.task_id = ? AND t.status != 'done'")
                                       ^js deps-row (.get deps-stmt task-id)]
                                   (when (pos? (.-count deps-row))
                                     (throw (js/Error. "Task is blocked by unresolved dependencies")))))
                               (let [tid (.-id row)
                                     now (util/now-iso)
                                     ^js update-stmt (.prepare (db/db)
-                                                              "UPDATE tasks SET status = 'in_progress', worker_name = ?, worker_id = ?, updated_at = ?
-                                                               WHERE id = ?")]
-                                (.run update-stmt worker-name worker-id now tid)
-                                ;; Update board timestamp
+                                                              "UPDATE tasks SET status = ?, worker_name = ?, worker_id = ?, updated_at = ?
+                                                   WHERE id = ?")]
+                                (.run update-stmt target-status worker-name worker-id now tid)
+                    ;; Update board timestamp
                                 (let [^js board-stmt (.prepare (db/db) "UPDATE boards SET updated_at = ? WHERE id = ?")]
                                   (.run board-stmt now (.-board_id row)))
-                                ;; Add note if provided
+                    ;; Add note if provided
                                 (when note
                                   (let [note-id (util/gen-uuid)
                                         ^js note-stmt (.prepare (db/db)
                                                                 "INSERT INTO task_notes (id, task_id, author, content, created_at)
-                                                                 VALUES (?, ?, ?, ?, ?)")]
+                                                     VALUES (?, ?, ?, ?, ?)")]
                                     (.run note-stmt note-id tid worker-name note now)))
                                 tid))))]
     (get-task (txn))))
 
 (defn update-task!
   "Update task fields. Validates status against board's allowed statuses.
+   Changing status releases the task's worker (worker_name/worker_id set to NULL)
+   so the next phase can be claimed via take-task!.
    Optionally adds a note when :note and :author are provided.
    Accepts optional :blocked-by to set task dependencies.
    The :description field uses contains? to distinguish 'not provided' from 'set to nil'.
@@ -305,10 +338,12 @@
                               ;; Validate status if provided
                               (when status
                                 (let [board (get-board (:board-id task))]
-                                  (when-not (some #{status} (:statuses board))
-                                    (throw (js/Error. (str "Invalid status '" status "'. Allowed: " (str/join ", " (:statuses board))))))))
+                                  (validate-board-status board status)))
                               (let [now (util/now-iso)
                                     new-status (or status (:status task))
+                                    status-changed? (and status (not= status (:status task)))
+                                    new-worker-name (when-not status-changed? (:worker-name task))
+                                    new-worker-id (when-not status-changed? (:worker-id task))
                                     new-title (or title (:title task))
                                     new-description (if (contains? opts :description)
                                                       (:description opts)
@@ -317,9 +352,9 @@
                                                   (if persist 1 0)
                                                   (if (:persist task) 1 0))
                                     ^js stmt (.prepare (db/db)
-                                                       "UPDATE tasks SET status = ?, title = ?, description = ?, persist = ?, updated_at = ?
+                                                       "UPDATE tasks SET status = ?, title = ?, description = ?, persist = ?, worker_name = ?, worker_id = ?, updated_at = ?
                                                         WHERE id = ?")]
-                                (.run stmt new-status new-title new-description new-persist now task-id)
+                                (.run stmt new-status new-title new-description new-persist new-worker-name new-worker-id now task-id)
                                 ;; Update board timestamp
                                 (let [^js board-stmt (.prepare (db/db) "UPDATE boards SET updated_at = ? WHERE id = ?")]
                                   (.run board-stmt now (:board-id task)))

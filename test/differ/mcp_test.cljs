@@ -745,6 +745,47 @@
       (is (contains? tool-names "get_upstream"))
       (is (contains? tool-names "get_downstream")))))
 
+(deftest take-task-tool-schema-test
+  (testing "take_task schema advertises status and move_to"
+    (let [tool (->> mcp/tools
+                    (filter #(= "take_task" (:name %)))
+                    first)
+          props (get-in tool [:inputSchema :properties])]
+      (is (contains? props :status))
+      (is (contains? props :move_to)))))
+
+;; NOTE: this exercises the handler's argument pass-through via with-redefs
+;; stubs on boards/take-task! and boards/get-board rather than real DB
+;; writes — mcp_test's with-test-env fixture does not wire
+;; differ.db/db-instance to the isolated test DB (see boards_test.cljs for
+;; the file that does), so calling boards/create-task! etc. directly here
+;; would hit the real production database. Mirrors the
+;; get-upstream-handler-argument-conversion-test pattern above.
+(deftest take-task-tool-queue-test
+  (testing "handler passes status and move-to through to boards/take-task!"
+    (let [captured (atom nil)]
+      (with-redefs [boards/take-task! (fn [opts]
+                                        (reset! captured opts)
+                                        {:id "fake-task-id" :board-id "fake-board-id"
+                                         :status "in_progress" :worker-name "impl-1"})
+                    boards/get-board (fn [_board-id]
+                                       {:id "fake-board-id" :repo-path "/tmp/mcp-queue-repo"})]
+        (mcp/handle-tool "take_task" {:repo-path "/tmp/mcp-queue-repo"
+                                      :status "ready"
+                                      :move-to "in_progress"
+                                      :worker-name "impl-1"})
+        ;; Assert on the full opts map the handler forwarded — a dropped or
+        ;; mis-forwarded param fails loudly. (Asserting on the handler's
+        ;; return value would be vacuous here: the stub returns it verbatim.)
+        (is (= {:task-id nil
+                :repo-path "/tmp/mcp-queue-repo"
+                :worker-name "impl-1"
+                :worker-id nil
+                :note nil
+                :status "ready"
+                :move-to "in_progress"}
+               @captured))))))
+
 (deftest dep-graph-tool-schemas-test
   (testing "get_upstream has the expected schema"
     (let [tool (first (filter #(= "get_upstream" (:name %)) mcp/tools))
