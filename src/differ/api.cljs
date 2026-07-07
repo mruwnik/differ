@@ -39,6 +39,24 @@
       (.status status)
       (.json #js {:error message})))
 
+(defn- html-response
+  "Send an HTML response with the given status code."
+  [^js res status html]
+  (-> res
+      (.status status)
+      (.type "html")
+      (.send html)))
+
+(defn- html-escape
+  "Escape a string for safe interpolation into HTML attributes/text."
+  [s]
+  (-> (str s)
+      (str/replace "&" "&amp;")
+      (str/replace "<" "&lt;")
+      (str/replace ">" "&gt;")
+      (str/replace "\"" "&quot;")
+      (str/replace "'" "&#39;")))
+
 ;; ============================================================================
 ;; Request Body Normalization
 ;; ============================================================================
@@ -577,20 +595,113 @@
       (js->clj :keywordize-keys true)
       util/keys->kebab))
 
+(defn- parse-scope-param
+  "Parse a space-delimited scope string into a vector, or nil when absent/blank."
+  [s]
+  (when (and s (not (str/blank? s)))
+    (str/split (str/trim s) #"\s+")))
+
+(defn- authorize-params
+  "Build the OAuth authorization params map from a normalized (kebab-keyed)
+   request map (query for GET, body for the login POST)."
+  [m]
+  {:client-id (:client-id m)
+   :redirect-uri (:redirect-uri m)
+   :scopes (parse-scope-param (:scope m))
+   :state (:state m)
+   :code-challenge (:code-challenge m)})
+
+(defn- login-page-html
+  "Render the login form. `m` is a kebab-keyed map holding the OAuth request
+   params (client-id, redirect-uri, scope, state, code-challenge); they are
+   re-embedded as hidden fields so the POST carries the same authorization
+   request. `error` is an optional message to display."
+  [m error]
+  (let [hidden (fn [name value]
+                 (when (some? value)
+                   (str "<input type=\"hidden\" name=\"" name "\" value=\""
+                        (html-escape value) "\">")))]
+    (str "<!DOCTYPE html>\n"
+         "<html lang=\"en\"><head><meta charset=\"utf-8\">"
+         "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+         "<title>Sign in</title>"
+         "<style>"
+         "body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;"
+         "background:#0d1117;color:#e6edf3;display:flex;min-height:100vh;margin:0;"
+         "align-items:center;justify-content:center}"
+         ".card{background:#161b22;border:1px solid #30363d;border-radius:8px;"
+         "padding:2rem;width:320px;box-sizing:border-box}"
+         "h1{font-size:1.25rem;margin:0 0 1.25rem}"
+         "label{display:block;font-size:.85rem;margin:.75rem 0 .25rem}"
+         "input[type=text],input[type=password]{width:100%;box-sizing:border-box;"
+         "padding:.5rem;border:1px solid #30363d;border-radius:6px;background:#0d1117;"
+         "color:#e6edf3}"
+         "button{width:100%;margin-top:1.25rem;padding:.6rem;border:0;border-radius:6px;"
+         "background:#238636;color:#fff;font-weight:600;cursor:pointer}"
+         "button:hover{background:#2ea043}"
+         ".error{background:#3d1519;border:1px solid #f85149;color:#ffa198;"
+         "padding:.5rem .75rem;border-radius:6px;font-size:.85rem;margin-bottom:1rem}"
+         "</style></head><body>"
+         "<form class=\"card\" method=\"post\" action=\"/oauth/authorize\">"
+         "<h1>Sign in to Differ</h1>"
+         (when error
+           (str "<div class=\"error\">" (html-escape error) "</div>"))
+         (hidden "client_id" (:client-id m))
+         (hidden "redirect_uri" (:redirect-uri m))
+         (hidden "scope" (:scope m))
+         (hidden "state" (:state m))
+         (hidden "code_challenge" (:code-challenge m))
+         "<label for=\"username\">Username</label>"
+         "<input id=\"username\" name=\"username\" type=\"text\" autocomplete=\"username\" autofocus required>"
+         "<label for=\"password\">Password</label>"
+         "<input id=\"password\" name=\"password\" type=\"password\" autocomplete=\"current-password\" required>"
+         "<button type=\"submit\">Sign in</button>"
+         "</form></body></html>")))
+
 (defn oauth-authorize-handler
-  "GET /oauth/authorize"
+  "GET /oauth/authorize
+   When login is required, validate the request then present the login form.
+   Otherwise auto-approve (local, no-login flow)."
   [^js req res]
   (let [query (get-query req)
-        result (oauth/authorize
-                {:client-id (:client-id query)
-                 :redirect-uri (:redirect-uri query)
-                 :scopes (when-let [s (:scope query)]
-                           (str/split s #"\s+"))
-                 :state (:state query)
-                 :code-challenge (:code-challenge query)})]
-    (if-let [error (:error result)]
-      (error-response res 400 error)
-      (.redirect res (:redirect-url result)))))
+        params (authorize-params query)]
+    (if (oauth/auth-required?)
+      ;; Validate the client/redirect/scopes up front so bad requests are
+      ;; rejected before we ever show (or accept) credentials.
+      (if-let [error (:error (oauth/validate-authorization-request params))]
+        (error-response res 400 error)
+        (html-response res 200 (login-page-html query nil)))
+      (let [result (oauth/authorize params)]
+        (if-let [error (:error result)]
+          (error-response res 400 error)
+          (.redirect res (:redirect-url result)))))))
+
+(defn oauth-login-handler
+  "POST /oauth/authorize
+   Verify submitted credentials and, on success, issue the authorization code.
+   When login is not configured, behave like the GET auto-approve flow so the
+   endpoint stays coherent (rather than serving a form that can never succeed)."
+  [^js req res]
+  (let [body (get-body req)
+        base-params (authorize-params body)]
+    (if-not (oauth/auth-required?)
+      (let [result (oauth/authorize base-params)]
+        (if-let [error (:error result)]
+          (error-response res 400 error)
+          (.redirect res (:redirect-url result))))
+      (let [params (assoc base-params
+                          :username (:username body)
+                          :password (:password body))
+            result (oauth/authorize-with-login params)]
+        (cond
+          (:unauthorized result)
+          (html-response res 401 (login-page-html body "Invalid username or password"))
+
+          (:error result)
+          (error-response res 400 (:error result))
+
+          :else
+          (.redirect res (:redirect-url result)))))))
 
 (defn oauth-token-handler
   "POST /oauth/token"
@@ -866,6 +977,7 @@
   (.get app "/.well-known/oauth-protected-resource" oauth-protected-resource-handler)
   (.post app "/oauth/register" oauth-register-handler)
   (.get app "/oauth/authorize" oauth-authorize-handler)
+  (.post app "/oauth/authorize" oauth-login-handler)
   (.post app "/oauth/token" oauth-token-handler)
   (.post app "/oauth/revoke" oauth-revoke-handler)
 

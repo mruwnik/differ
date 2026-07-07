@@ -5,6 +5,7 @@
             [clojure.string :as str]
             [clojure.set :as set]
             [differ.oauth :as oauth]
+            [differ.config :as config]
             [differ.db :as db]
             [differ.test-helpers :as helpers]
             [differ.util :as util]))
@@ -265,6 +266,122 @@
                                    :scopes ["read"]})]
       ;; Should use & instead of ? for additional params
       (is (str/includes? (:redirect-url result) "existing=param&code=")))))
+
+;; ============================================================================
+;; Optional Login / Credential Tests
+;; ============================================================================
+
+(deftest auth-required-test
+  (testing "auth-required? reflects configured credentials"
+    (with-redefs [config/auth-credentials (constantly nil)]
+      (is (false? (oauth/auth-required?))))
+    (with-redefs [config/auth-credentials (constantly {:username "admin" :password "secret"})]
+      (is (true? (oauth/auth-required?))))))
+
+(deftest verify-credentials-test
+  (testing "returns false when auth is not configured"
+    (with-redefs [config/auth-credentials (constantly nil)]
+      (is (false? (oauth/verify-credentials "admin" "secret")))))
+
+  (with-redefs [config/auth-credentials (constantly {:username "admin" :password "secret"})]
+    (testing "accepts matching credentials"
+      (is (true? (oauth/verify-credentials "admin" "secret"))))
+
+    (testing "rejects wrong password"
+      (is (false? (oauth/verify-credentials "admin" "wrong"))))
+
+    (testing "rejects wrong username"
+      (is (false? (oauth/verify-credentials "root" "secret"))))
+
+    (testing "rejects nil credentials"
+      (is (false? (oauth/verify-credentials nil nil))))
+
+    (testing "rejects empty credentials"
+      (is (false? (oauth/verify-credentials "" ""))))))
+
+(deftest verify-credentials-empty-config-secret-test
+  (testing "a blank configured password never authenticates (even with blank input)"
+    ;; Guards against a half-configured server (DIFFER_AUTH_PASSWORD=) accepting
+    ;; empty credentials. config normally filters this out, but verify-credentials
+    ;; rejects it as defense-in-depth regardless.
+    (with-redefs [config/auth-credentials (constantly {:username "admin" :password ""})]
+      (is (false? (oauth/verify-credentials "admin" "")))
+      (is (false? (oauth/verify-credentials "admin" nil)))
+      (is (false? (oauth/verify-credentials "" ""))))))
+
+(deftest authorize-with-login-tampered-redirect-test
+  (testing "rejects a valid client with an unregistered redirect_uri even with valid creds"
+    ;; Hidden form fields are attacker-controllable; the POST must re-validate them.
+    (with-redefs [config/auth-credentials (constantly {:username "admin" :password "secret"})]
+      (oauth/register-client {:client-id "test-client"
+                              :redirect-uris ["http://localhost:3000/callback"]})
+      (let [result (oauth/authorize-with-login
+                    {:client-id "test-client"
+                     :redirect-uri "http://localhost:9999/evil"
+                     :scopes ["read"]
+                     :username "admin"
+                     :password "secret"})]
+        (is (str/includes? (:error result) "Invalid redirect_uri"))
+        (is (nil? (:redirect-url result)))
+        (is (nil? (:unauthorized result)))))))
+
+(deftest authorize-with-login-invalid-request-test
+  (testing "returns error for unknown client regardless of credentials"
+    (with-redefs [config/auth-credentials (constantly {:username "admin" :password "secret"})]
+      (let [result (oauth/authorize-with-login
+                    {:client-id "unknown-client"
+                     :redirect-uri "http://localhost/callback"
+                     :scopes ["read"]
+                     :username "admin"
+                     :password "secret"})]
+        (is (= "Unknown client" (:error result)))))))
+
+(deftest authorize-with-login-bad-credentials-test
+  (testing "returns unauthorized for a valid request with wrong credentials"
+    (with-redefs [config/auth-credentials (constantly {:username "admin" :password "secret"})]
+      (oauth/register-client {:client-id "test-client"
+                              :redirect-uris ["http://localhost:3000/callback"]})
+      (let [result (oauth/authorize-with-login
+                    {:client-id "test-client"
+                     :redirect-uri "http://localhost:3000/callback"
+                     :scopes ["read"]
+                     :username "admin"
+                     :password "wrong"})]
+        (is (true? (:unauthorized result)))
+        (is (nil? (:redirect-url result)))))))
+
+(deftest authorize-with-login-success-test
+  (testing "issues an authorization code when credentials match"
+    (with-redefs [config/auth-credentials (constantly {:username "admin" :password "secret"})]
+      (oauth/register-client {:client-id "test-client"
+                              :redirect-uris ["http://localhost:3000/callback"]})
+      (let [result (oauth/authorize-with-login
+                    {:client-id "test-client"
+                     :redirect-uri "http://localhost:3000/callback"
+                     :scopes ["read"]
+                     :state "st-123"
+                     :username "admin"
+                     :password "secret"})]
+        (is (nil? (:error result)))
+        (is (str/starts-with? (:redirect-url result) "http://localhost:3000/callback"))
+        (is (str/includes? (:redirect-url result) "code="))
+        (is (str/includes? (:redirect-url result) "state=st-123")))))
+
+  (testing "issued code exchanges for tokens"
+    (with-redefs [config/auth-credentials (constantly {:username "admin" :password "secret"})]
+      (oauth/register-client {:client-id "test-client"
+                              :redirect-uris ["http://localhost/callback"]})
+      (let [auth-result (oauth/authorize-with-login
+                         {:client-id "test-client"
+                          :redirect-uri "http://localhost/callback"
+                          :scopes ["read"]
+                          :username "admin"
+                          :password "secret"})
+            code (second (re-find #"code=([^&]+)" (:redirect-url auth-result)))
+            result (oauth/exchange-authorization-code {:code code
+                                                       :client-id "test-client"})]
+        (is (nil? (:error result)))
+        (is (string? (:access_token result)))))))
 
 ;; ============================================================================
 ;; Token Exchange Tests

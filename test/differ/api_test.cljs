@@ -5,6 +5,9 @@
             [clojure.string :as str]
             [differ.test-helpers :as helpers]
             [differ.util :as util]
+            [differ.api :as api]
+            [differ.oauth :as oauth]
+            [differ.config :as config]
             ["path" :as path]))
 
 ;; ============================================================================
@@ -45,7 +48,7 @@
    res-atom accumulates response data.
    get-response-fn returns {:status :data} after json() is called."
   []
-  (let [response (atom {:status nil :data nil :redirected nil})]
+  (let [response (atom {:status nil :data nil :redirected nil :content-type nil :sent nil})]
     [#js {:status (fn [code]
                     (swap! response assoc :status code)
                     (js-this))
@@ -54,7 +57,13 @@
                   (js-this))
           :redirect (fn [url]
                       (swap! response assoc :redirected url)
-                      (js-this))}
+                      (js-this))
+          :type (fn [t]
+                  (swap! response assoc :content-type t)
+                  (js-this))
+          :send (fn [body]
+                  (swap! response assoc :sent body)
+                  (js-this))}
      (fn [] @response)]))
 
 ;; ============================================================================
@@ -570,3 +579,62 @@
       (let [result (get-response)]
         ;; No error response was sent
         (is (nil? (:status result)))))))
+
+;; ============================================================================
+;; OAuth login handler tests (optional auth feature)
+;; ============================================================================
+
+(deftest oauth-login-handler-bad-credentials-test
+  (testing "wrong password re-renders the login form (401) without echoing the password"
+    (with-redefs [config/auth-credentials (constantly {:username "admin" :password "s3cret"})]
+      (oauth/register-client {:client-id "test-client"
+                              :redirect-uris ["http://localhost:3000/callback"]})
+      (let [req (make-mock-req :body {:client_id "test-client"
+                                      :redirect_uri "http://localhost:3000/callback"
+                                      :scope "read"
+                                      :state "st-1"
+                                      :username "admin"
+                                      :password "sup3r-secret-typo"})
+            [res get-response] (make-mock-res)]
+        (api/oauth-login-handler req res)
+        (let [{:keys [status sent redirected content-type]} (get-response)]
+          (is (= 401 status))
+          (is (nil? redirected) "must not issue a code on bad credentials")
+          (is (= "html" content-type))
+          (is (str/includes? sent "Invalid username or password"))
+          (is (not (str/includes? sent "sup3r-secret-typo"))
+              "the submitted password must never be reflected back into the page"))))))
+
+(deftest oauth-login-handler-success-test
+  (testing "correct credentials issue a code via redirect"
+    (with-redefs [config/auth-credentials (constantly {:username "admin" :password "s3cret"})]
+      (oauth/register-client {:client-id "test-client"
+                              :redirect-uris ["http://localhost:3000/callback"]})
+      (let [req (make-mock-req :body {:client_id "test-client"
+                                      :redirect_uri "http://localhost:3000/callback"
+                                      :scope "read"
+                                      :state "st-2"
+                                      :username "admin"
+                                      :password "s3cret"})
+            [res get-response] (make-mock-res)]
+        (api/oauth-login-handler req res)
+        (let [{:keys [redirected]} (get-response)]
+          (is (some? redirected))
+          (is (str/starts-with? redirected "http://localhost:3000/callback"))
+          (is (str/includes? redirected "code=")))))))
+
+(deftest oauth-login-handler-auto-approves-when-auth-disabled-test
+  (testing "POST behaves like the GET auto-approve flow when no auth is configured"
+    (with-redefs [config/auth-credentials (constantly nil)]
+      (oauth/register-client {:client-id "test-client"
+                              :redirect-uris ["http://localhost:3000/callback"]})
+      (let [req (make-mock-req :body {:client_id "test-client"
+                                      :redirect_uri "http://localhost:3000/callback"
+                                      :scope "read"
+                                      :state "st-3"})
+            [res get-response] (make-mock-res)]
+        (api/oauth-login-handler req res)
+        (let [{:keys [redirected status]} (get-response)]
+          (is (some? redirected) "should issue a code, not serve a dead login form")
+          (is (nil? status))
+          (is (str/includes? redirected "code=")))))))

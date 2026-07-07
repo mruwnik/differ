@@ -65,7 +65,16 @@ node target/server.js
 
 Differ exposes an MCP endpoint at `http://localhost:8576/mcp` for AI agent integration.
 
-**Note:** The MCP server implements the OAuth flow for clients that require it, but accepts all requests without actually verifying credentials. This is intentional as local services are assumed to be secure. Don't expose it to the internet.
+**Note:** By default the MCP server implements the OAuth flow for clients that require it, but accepts all requests without actually verifying credentials. This is intentional as local services are assumed to be secure. Don't expose it to the internet.
+
+**Optional login:** Set both `DIFFER_AUTH_USERNAME` and `DIFFER_AUTH_PASSWORD` (env vars or `.env`) to require a username/password before the authorization endpoint issues a token. When set, the OAuth authorize page shows a login form and only grants access after the credentials match. When unset, the auto-approve behavior above is used.
+
+> **Scope of the optional login — read before relying on it.** These credentials gate **only the MCP OAuth flow** — i.e. who can complete `/oauth/authorize` to obtain a Bearer token for the `/mcp` endpoint. They do **not** protect the web UI or its REST API:
+>
+> - The web UI (served at `/`) and every `/api/*` route are **unauthenticated**. Anyone who can reach the port can browse diffs, read file contents, and add/resolve comments and board tasks without a password.
+> - The login is not a network boundary. Regardless of whether it is set, do **not** expose the server to the internet — bind it to localhost/trusted networks (or put it behind your own authenticating reverse proxy / VPN if you need remote access).
+>
+> In short: the optional login raises the bar for issuing MCP tokens; it is not a substitute for keeping the server off untrusted networks.
 
 ### Claude Code
 
@@ -309,3 +318,4 @@ Environment variables:
 
 - `PORT` - Server port (default 8576)
 - `DIFFER_URL` - Base URL for OAuth callbacks (e.g., `http://localhost:8576`)
+- `DIFFER_AUTH_USERNAME` / `DIFFER_AUTH_PASSWORD` - Optional. When both are set, require this username/password on the OAuth login page before issuing an MCP token. When unset, all authorization requests are auto-approved. Gates the MCP OAuth flow only — the web UI and `/api/*` remain unauthenticated (see MCP Integration).

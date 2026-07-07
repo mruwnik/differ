@@ -5,6 +5,7 @@
    Environment variables override file config for secrets:
    - GITHUB_CLIENT_ID
    - GITHUB_CLIENT_SECRET
+   - DIFFER_AUTH_USERNAME / DIFFER_AUTH_PASSWORD (optional login)
 
    Supports .env file in project root (takes precedence over process.env).
 
@@ -124,6 +125,32 @@
                 client-secret (assoc :client-secret client-secret)))
       config)))
 
+(defn- merge-auth-from-env
+  "Merge optional login credentials from .env file or environment variables.
+   Both DIFFER_AUTH_USERNAME and DIFFER_AUTH_PASSWORD must be set to enable
+   authentication; a partial configuration is ignored (with a warning) so the
+   server never silently starts half-protected.
+   env-file should be pre-loaded via load-env-file."
+  [config env-file]
+  (let [;; Treat blank values (e.g. `DIFFER_AUTH_PASSWORD=` in .env, which is
+        ;; preserved as "") as unset, so a half-configured server never starts
+        ;; "enabled" with an empty password that would accept empty input. The
+        ;; original (untrimmed) value is kept so credentials may contain spaces.
+        raw-username (get-env env-file "DIFFER_AUTH_USERNAME")
+        raw-password (get-env env-file "DIFFER_AUTH_PASSWORD")
+        username (when-not (str/blank? raw-username) raw-username)
+        password (when-not (str/blank? raw-password) raw-password)]
+    (cond
+      (and username password)
+      (assoc config :auth {:username username :password password})
+
+      (or username password)
+      (do (js/console.warn
+           "Both DIFFER_AUTH_USERNAME and DIFFER_AUTH_PASSWORD must be set to enable authentication; ignoring partial configuration.")
+          config)
+
+      :else config)))
+
 (defn- valid-whitelist-value?
   "Check if a whitelist value is a valid array of strings."
   [v]
@@ -174,6 +201,7 @@
           merged (-> defaults
                      (merge (read-config-file))
                      (merge-github-from-env env-file)
+                     (merge-auth-from-env env-file)
                      (merge-push-whitelist-from-env env-file))]
       (reset! config-cache merged)
       merged)))
@@ -188,6 +216,14 @@
    Used in MCP responses and OAuth redirects."
   []
   (:base-url (get-config)))
+
+(defn auth-credentials
+  "Returns {:username ... :password ...} when login is required, configured via
+   the DIFFER_AUTH_USERNAME / DIFFER_AUTH_PASSWORD env vars (both must be set).
+   Returns nil when authentication is disabled.
+   Never exposed to the client (see client-config-keys)."
+  []
+  (:auth (get-config)))
 
 (defn reload!
   "Force reload config from disk."

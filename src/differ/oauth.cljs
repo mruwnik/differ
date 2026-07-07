@@ -6,6 +6,7 @@
             ["path" :as path]
             ["fs" :as fs]
             [differ.db :as db]
+            [differ.config :as config]
             [differ.util :as util]))
 
 ;; Configuration
@@ -161,9 +162,49 @@
       :else
       {:valid true :scopes (vec requested-set)})))
 
-(defn authorize
-  "Start authorization flow. Auto-approves for local use (no login required)."
-  [{:keys [client-id redirect-uri scopes state code-challenge]}]
+;; Login credentials (optional)
+;;
+;; When DIFFER_AUTH_USERNAME / DIFFER_AUTH_PASSWORD are configured the
+;; authorization endpoint requires a valid username/password before it issues
+;; an authorization code. When they are unset the flow auto-approves as before.
+
+(defn auth-required?
+  "True when server-side login credentials are configured."
+  []
+  (some? (config/auth-credentials)))
+
+(defn- constant-time-equal?
+  "Compare two strings for equality without leaking their length or contents via
+   timing. Both sides are first hashed to a fixed-length digest, so the XOR scan
+   always runs over the same number of bytes regardless of input length."
+  [a b]
+  (let [ha (util/sha256-hex (str a))
+        hb (util/sha256-hex (str b))]
+    (zero? (reduce (fn [acc i]
+                     (bit-or acc (bit-xor (.charCodeAt ha i) (.charCodeAt hb i))))
+                   0
+                   (range (count ha))))))
+
+(defn verify-credentials
+  "Verify a supplied username/password against the configured credentials.
+   Returns true on a match. Returns false when credentials don't match or when
+   authentication is not configured (including a blank configured secret)."
+  [username password]
+  (boolean
+   (when-let [{expected-user :username expected-pass :password} (config/auth-credentials)]
+     ;; Compute both comparisons unconditionally (no and-short-circuit) so a
+     ;; wrong username can't be distinguished from a wrong password by timing.
+     (let [user-ok (constant-time-equal? username expected-user)
+           pass-ok (constant-time-equal? password expected-pass)]
+       (and (not (str/blank? expected-pass))
+            user-ok
+            pass-ok)))))
+
+(defn validate-authorization-request
+  "Validate the client, redirect URI, and requested scopes for an authorization
+   request. Returns {:error \"...\"} on failure or {:client client :scopes [...]}
+   with the resolved (validated) scopes on success."
+  [{:keys [client-id redirect-uri scopes]}]
   (let [client (get-client client-id)]
     (cond
       (not client)
@@ -177,23 +218,48 @@
             scope-validation (validate-scopes requested-scopes client)]
         (if-not (:valid scope-validation)
           {:error (:error scope-validation)}
-          ;; Auto-approve: create local user, generate code, redirect immediately
-          (let [user (db/get-or-create-user! "local@localhost" "Local User")
-                gen-state (or state (util/gen-token "state_"))
-                _ (db/create-oauth-state!
-                   {:state gen-state
-                    :client-id client-id
-                    :redirect-uri redirect-uri
-                    :redirect-uri-provided-explicitly (boolean redirect-uri)
-                    :code-challenge code-challenge
-                    :scopes (:scopes scope-validation)
-                    :expires-at (util/expires-at auth-code-lifetime)})
-                code (util/gen-token "code_")
-                _ (db/update-oauth-state! gen-state {:code code :user-id (:id user)})
-                separator (if (str/includes? redirect-uri "?") "&" "?")]
-            {:redirect-url (str redirect-uri separator
-                                "code=" code
-                                "&state=" gen-state)}))))))
+          {:client client :scopes (:scopes scope-validation)})))))
+
+(defn- issue-authorization-code
+  "Create the local user, persist the OAuth state, and build the redirect URL
+   carrying the authorization code. Assumes the request has already been
+   validated and `scopes` holds the resolved scopes."
+  [{:keys [client-id redirect-uri scopes state code-challenge]}]
+  (let [user (db/get-or-create-user! "local@localhost" "Local User")
+        gen-state (or state (util/gen-token "state_"))
+        _ (db/create-oauth-state!
+           {:state gen-state
+            :client-id client-id
+            :redirect-uri redirect-uri
+            :redirect-uri-provided-explicitly (boolean redirect-uri)
+            :code-challenge code-challenge
+            :scopes scopes
+            :expires-at (util/expires-at auth-code-lifetime)})
+        code (util/gen-token "code_")
+        _ (db/update-oauth-state! gen-state {:code code :user-id (:id user)})
+        separator (if (str/includes? redirect-uri "?") "&" "?")]
+    {:redirect-url (str redirect-uri separator
+                        "code=" code
+                        "&state=" gen-state)}))
+
+(defn authorize
+  "Start authorization flow. Auto-approves for local use (no login required)."
+  [params]
+  (let [validation (validate-authorization-request params)]
+    (if (:error validation)
+      validation
+      (issue-authorization-code (assoc params :scopes (:scopes validation))))))
+
+(defn authorize-with-login
+  "Complete an authorization request after verifying login credentials.
+   Returns {:error \"...\"} for an invalid request, {:unauthorized true} when the
+   username/password don't match, or {:redirect-url \"...\"} on success."
+  [{:keys [username password] :as params}]
+  (let [validation (validate-authorization-request params)]
+    (cond
+      (:error validation) validation
+      (not (verify-credentials username password)) {:unauthorized true}
+      :else (issue-authorization-code (assoc params :scopes (:scopes validation))))))
 
 ;; PKCE verification
 
