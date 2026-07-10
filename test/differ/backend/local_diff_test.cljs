@@ -7,8 +7,11 @@
    the shared local-backend suite keeps the sync tests and these live here."
   (:require [clojure.test :refer [deftest testing is use-fixtures async]]
             [clojure.string :as str]
+            ["better-sqlite3" :as Database]
             [differ.backend.local :as local]
             [differ.backend.protocol :as proto]
+            [differ.db :as db]
+            [differ.util :as util]
             [differ.test-helpers :as helpers]))
 
 ;; A regular atom (not a dynamic var): dynamic bindings don't propagate across
@@ -18,6 +21,29 @@
 (use-fixtures :each
   {:before (fn [] (reset! test-repo (:path (helpers/create-test-repo))))
    :after  (fn [] (when-let [p @test-repo] (helpers/remove-dir p) (reset! test-repo nil)))})
+
+;; Staleness surfaces only through the DB-backed comment methods, so those tests
+;; wire a fully-migrated db into differ.db (init-test-db!'s comments schema is
+;; older than migrate-comments-table and lacks the columns create-comment!
+;; writes). Each test sets up and tears down its own db in-body.
+(defonce ^:private test-db-dir (atom nil))
+
+(defn- fresh-migrated-db! []
+  (let [dir (helpers/create-temp-dir "differ-diff-db")
+        d (Database (str dir "/test.db"))]
+    (reset! test-db-dir dir)
+    (.pragma d "journal_mode = WAL")
+    (.pragma d "foreign_keys = ON")
+    (db/run-migrations! d)
+    (reset! db/db-instance d)
+    d))
+
+(defn- cleanup-db! [d]
+  (.close d)
+  (reset! db/db-instance nil)
+  (when-let [dir @test-db-dir]
+    (helpers/remove-dir dir)
+    (reset! test-db-dir nil)))
 
 (deftest get-diff-three-dot-for-non-head-branch-test
   (testing "diffs target...branch when the session branch is not the checked-out HEAD"
@@ -126,5 +152,137 @@
                           ;; exec-git trims trailing whitespace off `git show`.
                           (is (= "base version" content))
                           (is (not= "advanced target" content))
+                          (done)))
+                 (.catch (fn [err] (is false (str "rejected: " err)) (done))))))))
+
+;; ============================================================================
+;; Branch-aware staleness (reads the branch tip, not repo-path's working tree)
+;; ============================================================================
+
+(deftest staleness-reads-branch-tip-not-working-tree-test
+  (testing "get-comments computes staleness against the session branch tip for a non-checked-out branch"
+    (async done
+           ;; foo.txt lives only on `feature`; HEAD is main, whose working tree
+           ;; has no foo.txt. add-comment! must hash line 2 off the branch tip
+           ;; ("line two"), not the working tree (which is absent -> "").
+           ;;
+           ;; Both add-comment! and get-comments resolve `source` identically
+           ;; (source-branch-arg -> "feature"), so the symmetric :fresh assertion
+           ;; alone can't distinguish a branch-tip read from a broken uniform
+           ;; working-tree read (which hashes "" on both sides -> also :fresh).
+           ;; The discriminating check is that the STORED hash equals the known
+           ;; branch-tip content hash: a working-tree-reading impl stores
+           ;; sha256("") and fails it; only a real branch-tip read passes.
+           (helpers/create-test-branch @test-repo "feature")
+           (helpers/add-test-file @test-repo "foo.txt" "line one\nline two\nline three\n")
+           (helpers/commit-test-changes @test-repo "add foo on feature")
+           (helpers/checkout-test-branch @test-repo "main")
+           (let [d (fresh-migrated-db!)]
+             (db/create-session! {:id "local:sid" :session-type "local" :project "p"
+                                  :branch "feature" :target-branch "main" :repo-path @test-repo})
+             (let [backend (local/create-local-backend @test-repo "main" "local:sid" "feature")]
+               (-> (proto/add-comment! backend {:file "foo.txt" :line 2 :text "re: line two" :author "rev"})
+                   (.then (fn [_] (proto/get-comments backend)))
+                   (.then (fn [comments]
+                            (let [c (first comments)]
+                              (is (= 1 (count comments)))
+                              (is (= "foo.txt" (:file c)))
+                              ;; The stored hash must be the branch-tip line 2
+                              ;; ("line two"), proving add read the branch tip and
+                              ;; not main's (absent) working tree, where it would
+                              ;; store sha256("").
+                              (is (= (util/sha256-hex "line two") (:line-content-hash c)))
+                              (is (= :fresh (:staleness c))))
+                            (cleanup-db! d)
+                            (done)))
+                   (.catch (fn [err] (cleanup-db! d) (is false (str "rejected: " err)) (done)))))))))
+
+(deftest staleness-fallback-reads-working-tree-for-same-branch-test
+  (testing "staleness reads the working tree when the session branch is the checked-out HEAD"
+    (async done
+           ;; Same-branch session (branch == HEAD == main): the working tree is
+           ;; the review surface. A comment hashed against an uncommitted
+           ;; working-tree edit must read back as :fresh from the working tree.
+           (helpers/modify-test-file @test-repo "README.md" "alpha\nbeta\ngamma\n")
+           (let [d (fresh-migrated-db!)]
+             (db/create-session! {:id "local:sid" :session-type "local" :project "p"
+                                  :branch "main" :target-branch "main" :repo-path @test-repo})
+             (let [backend (local/create-local-backend @test-repo "main" "local:sid" "main")]
+               (-> (proto/add-comment! backend {:file "README.md" :line 2 :text "re: beta" :author "rev"})
+                   (.then (fn [_] (proto/get-comments backend)))
+                   (.then (fn [comments]
+                            (is (= :fresh (:staleness (first comments))))
+                            (cleanup-db! d)
+                            (done)))
+                   (.catch (fn [err] (cleanup-db! d) (is false (str "rejected: " err)) (done)))))))))
+
+;; ============================================================================
+;; file-exists? / list-directory: branch-aware + base-side merge-base consistency
+;; ============================================================================
+
+(deftest file-exists-head-reads-branch-tip-test
+  (testing "file-exists? ref=head/nil resolves to the session branch tip"
+    (async done
+           ;; foo.txt is on feature only; main's working tree lacks it.
+           (helpers/create-test-branch @test-repo "feature")
+           (helpers/add-test-file @test-repo "foo.txt" "x\n")
+           (helpers/commit-test-changes @test-repo "add foo on feature")
+           (helpers/checkout-test-branch @test-repo "main")
+           (let [backend (local/create-local-backend @test-repo "main" "local:sid" "feature")]
+             (-> (js/Promise.all
+                  #js [(proto/file-exists? backend "head" "foo.txt")
+                       (proto/file-exists? backend nil "foo.txt")])
+                 (.then (fn [[head? nil?]]
+                          (is (true? head?))
+                          (is (true? nil?))
+                          (done)))
+                 (.catch (fn [err] (is false (str "rejected: " err)) (done))))))))
+
+(deftest file-exists-base-reads-merge-base-not-target-tip-test
+  (testing "file-exists? ref=base resolves to the merge-base, matching get-file-content"
+    (async done
+           ;; only-on-main-tip.txt is committed to main AFTER feature was cut, so
+           ;; it exists at main's tip but NOT at merge-base(main, feature).
+           (helpers/add-test-file @test-repo "shared.txt" "base\n")
+           (helpers/commit-test-changes @test-repo "shared on main (merge-base)")
+           (helpers/create-test-branch @test-repo "feature")
+           (helpers/modify-test-file @test-repo "shared.txt" "feature\n")
+           (helpers/commit-test-changes @test-repo "edit shared on feature")
+           (helpers/checkout-test-branch @test-repo "main")
+           (helpers/add-test-file @test-repo "only-on-main-tip.txt" "y\n")
+           (helpers/commit-test-changes @test-repo "advance main")
+           (let [backend (local/create-local-backend @test-repo "main" "local:sid" "feature")]
+             (-> (proto/file-exists? backend "base" "only-on-main-tip.txt")
+                 (.then (fn [exists?]
+                          ;; false proves base==merge-base; target-tip read would be true.
+                          (is (false? exists?))
+                          (done)))
+                 (.catch (fn [err] (is false (str "rejected: " err)) (done))))))))
+
+(deftest list-directory-head-and-base-are-branch-and-merge-base-consistent-test
+  (testing "list-directory resolves head to the branch tip and base to the merge-base"
+    (async done
+           (helpers/add-test-file @test-repo "shared.txt" "base\n")
+           (helpers/commit-test-changes @test-repo "shared on main (merge-base)")
+           (helpers/create-test-branch @test-repo "feature")
+           (helpers/add-test-file @test-repo "on-feature.txt" "f\n")
+           (helpers/commit-test-changes @test-repo "add on-feature")
+           (helpers/checkout-test-branch @test-repo "main")
+           (helpers/add-test-file @test-repo "only-on-main-tip.txt" "y\n")
+           (helpers/commit-test-changes @test-repo "advance main")
+           (let [backend (local/create-local-backend @test-repo "main" "local:sid" "feature")]
+             (-> (js/Promise.all
+                  #js [(proto/list-directory backend "head" "")
+                       (proto/list-directory backend "base" "")])
+                 (.then (fn [[head-entries base-entries]]
+                          (let [head-names (set (map :name head-entries))
+                                base-names (set (map :name base-entries))]
+                            ;; head == feature tip: has on-feature.txt, not main's later file.
+                            (is (contains? head-names "on-feature.txt"))
+                            (is (not (contains? head-names "only-on-main-tip.txt")))
+                            ;; base == merge-base: has shared.txt, neither branch's later adds.
+                            (is (contains? base-names "shared.txt"))
+                            (is (not (contains? base-names "on-feature.txt")))
+                            (is (not (contains? base-names "only-on-main-tip.txt"))))
                           (done)))
                  (.catch (fn [err] (is false (str "rejected: " err)) (done))))))))
