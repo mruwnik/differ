@@ -81,12 +81,16 @@
    blank lines and boundary whitespace must survive so line offsets line up for
    staleness matching."
   [repo-path ref file-path]
-  (let [result (cp/spawnSync "git" #js ["show" (str ref ":" file-path)]
-                             #js {:cwd repo-path
-                                  :encoding "utf8"
-                                  :maxBuffer (* 50 1024 1024)})]
-    (when (zero? (.-status result))
-      (.-stdout result))))
+  (try
+    (let [result (cp/spawnSync "git" #js ["show" (str ref ":" file-path)]
+                               #js {:cwd repo-path
+                                    :encoding "utf8"
+                                    :maxBuffer (* 50 1024 1024)})]
+      (when (zero? (.-status result))
+        (.-stdout result)))
+    (catch :default e
+      (js/console.warn "[local] Git command failed:" (pr-str ["show" (str ref ":" file-path)]) (.-message e))
+      nil)))
 
 (defn- read-file-lines
   "Read file-path's lines at `source` (a git ref), or from repo-path's working

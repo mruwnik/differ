@@ -11,6 +11,7 @@
             [differ.backend.local :as local]
             [differ.backend.protocol :as proto]
             [differ.db :as db]
+            [differ.util :as util]
             [differ.test-helpers :as helpers]))
 
 ;; A regular atom (not a dynamic var): dynamic bindings don't propagate across
@@ -162,9 +163,16 @@
   (testing "get-comments computes staleness against the session branch tip for a non-checked-out branch"
     (async done
            ;; foo.txt lives only on `feature`; HEAD is main, whose working tree
-           ;; has no foo.txt. add-comment! hashes line 2 off the branch tip, and
-           ;; get-comments must re-read the branch tip to see it as :fresh — a
-           ;; working-tree read would hash "" and report :changed.
+           ;; has no foo.txt. add-comment! must hash line 2 off the branch tip
+           ;; ("line two"), not the working tree (which is absent -> "").
+           ;;
+           ;; Both add-comment! and get-comments resolve `source` identically
+           ;; (source-branch-arg -> "feature"), so the symmetric :fresh assertion
+           ;; alone can't distinguish a branch-tip read from a broken uniform
+           ;; working-tree read (which hashes "" on both sides -> also :fresh).
+           ;; The discriminating check is that the STORED hash equals the known
+           ;; branch-tip content hash: a working-tree-reading impl stores
+           ;; sha256("") and fails it; only a real branch-tip read passes.
            (helpers/create-test-branch @test-repo "feature")
            (helpers/add-test-file @test-repo "foo.txt" "line one\nline two\nline three\n")
            (helpers/commit-test-changes @test-repo "add foo on feature")
@@ -179,6 +187,11 @@
                             (let [c (first comments)]
                               (is (= 1 (count comments)))
                               (is (= "foo.txt" (:file c)))
+                              ;; The stored hash must be the branch-tip line 2
+                              ;; ("line two"), proving add read the branch tip and
+                              ;; not main's (absent) working tree, where it would
+                              ;; store sha256("").
+                              (is (= (util/sha256-hex "line two") (:line-content-hash c)))
                               (is (= :fresh (:staleness c))))
                             (cleanup-db! d)
                             (done)))
