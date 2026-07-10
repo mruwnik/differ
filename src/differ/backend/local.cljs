@@ -75,43 +75,63 @@
 
 ;; Comment staleness helpers
 
+(defn- git-show-file
+  "Return the raw, UNTRIMMED content of file-path at a git ref, or nil when the
+   file does not exist at that ref. Distinct from exec-git, which trims: leading
+   blank lines and boundary whitespace must survive so line offsets line up for
+   staleness matching."
+  [repo-path ref file-path]
+  (let [result (cp/spawnSync "git" #js ["show" (str ref ":" file-path)]
+                             #js {:cwd repo-path
+                                  :encoding "utf8"
+                                  :maxBuffer (* 50 1024 1024)})]
+    (when (zero? (.-status result))
+      (.-stdout result))))
+
+(defn- read-file-lines
+  "Read file-path's lines at `source` (a git ref), or from repo-path's working
+   tree when source is nil. Returns a vector of lines, or nil when the file
+   can't be read — missing on disk, or absent from the ref (file-not-in-branch)."
+  [repo-path source file-path]
+  (let [content (if source
+                  (git-show-file repo-path source file-path)
+                  (let [full-path (path/join repo-path file-path)]
+                    (try
+                      (fs/readFileSync full-path "utf8")
+                      (catch :default _ nil))))]
+    (when content
+      (str/split-lines content))))
+
 (defn- get-line-content
-  "Get content of a specific line."
-  [repo-path file-path line]
+  "Get content of a specific line at `source` (git ref) or the working tree."
+  [repo-path source file-path line]
   (when (pos? line)
-    (let [full-path (path/join repo-path file-path)]
-      (try
-        (let [content (fs/readFileSync full-path "utf8")
-              lines (str/split-lines content)]
-          (get lines (dec line)))
-        (catch :default _ nil)))))
+    (when-let [lines (read-file-lines repo-path source file-path)]
+      (get lines (dec line)))))
 
 (defn- compute-line-hash
-  "Compute hash of line content for staleness detection."
-  [repo-path file line]
-  (let [content (get-line-content repo-path file line)]
+  "Compute hash of line content for staleness detection, reading from `source`
+   (git ref) or the working tree when source is nil."
+  [repo-path source file line]
+  (let [content (get-line-content repo-path source file line)]
     (util/sha256-hex (or content ""))))
 
 (defn- get-lines-range
-  "Get a range of lines from file."
-  [repo-path file-path from-line to-line]
+  "Get a range of lines from file-path at `source` (git ref) or the working tree."
+  [repo-path source file-path from-line to-line]
   (when (and (pos? from-line) (pos? to-line) (<= from-line to-line))
-    (let [full-path (path/join repo-path file-path)]
-      (try
-        (let [content (fs/readFileSync full-path "utf8")
-              lines (str/split-lines content)]
-          (->> (range (dec from-line) (min to-line (count lines)))
-               (mapv (fn [idx]
-                       {:line (inc idx)
-                        :content (get lines idx)}))))
-        (catch :default _ nil)))))
+    (when-let [lines (read-file-lines repo-path source file-path)]
+      (->> (range (dec from-line) (min to-line (count lines)))
+           (mapv (fn [idx]
+                   {:line (inc idx)
+                    :content (get lines idx)}))))))
 
 (defn- find-shifted-line
   "Search nearby lines for matching content hash."
-  [repo-path file original-line target-hash search-range]
+  [repo-path source file original-line target-hash search-range]
   (let [from-line (max 1 (- original-line search-range))
         to-line (+ original-line search-range)
-        lines (get-lines-range repo-path file from-line to-line)]
+        lines (get-lines-range repo-path source file from-line to-line)]
     (when lines
       (->> lines
            (map (fn [{:keys [line content]}]
@@ -125,27 +145,29 @@
            :line))))
 
 (defn- check-staleness
-  "Check if a comment's line has changed."
-  [comment repo-path]
+  "Check if a comment's line has changed, reading current content from `source`
+   (the session branch tip) or the working tree when source is nil."
+  [comment repo-path source]
   (let [{:keys [file line line-content-hash]} comment]
     (if-not (and file line line-content-hash)
       nil
-      (let [current-hash (compute-line-hash repo-path file line)]
+      (let [current-hash (compute-line-hash repo-path source file line)]
         (cond
           (= current-hash line-content-hash)
           :fresh
 
           :else
-          (if-let [new-line (find-shifted-line repo-path file line line-content-hash 50)]
+          (if-let [new-line (find-shifted-line repo-path source file line line-content-hash 50)]
             {:status :shifted :shifted-to new-line}
             :changed))))))
 
 (defn- annotate-comments-with-staleness
-  "Add :staleness key to each comment."
-  [comments repo-path]
+  "Add :staleness key to each comment. `source` is the git ref to read current
+   content from (nil = working tree)."
+  [comments repo-path source]
   (letfn [(annotate [comment]
             (-> comment
-                (assoc :staleness (check-staleness comment repo-path))
+                (assoc :staleness (check-staleness comment repo-path source))
                 (update :replies #(mapv annotate %))))]
     (mapv annotate comments)))
 
@@ -167,6 +189,31 @@
   (when (and (not (str/blank? branch))
              (not= branch (get-current-branch repo-path)))
     branch))
+
+(defn- resolve-effective-ref
+  "Resolve a caller-facing ref to a concrete git ref, or nil meaning 'read
+   repo-path's working tree'. Shared by get-file-content, file-exists?, and
+   list-directory so all three agree on ref semantics:
+
+   - 'base' -> the before-side of the review diff. In the worktree case the diff
+     is three-dot (target...source), whose before-side is the merge-base of
+     target and source — NOT target's tip — so read that, staying correct once
+     target advances past the merge-base. Falls back to target-branch when there
+     is no source (same-branch/working-tree diff, whose base IS target's tip) or
+     when merge-base is blank (e.g. unrelated histories).
+   - 'head'/nil -> the session branch when it isn't the checked-out HEAD (the
+     worktree case: read the branch tip), else nil to read the working tree.
+   - any other ref (SHA, branch name) is returned unchanged."
+  [repo-path target-branch branch ref]
+  (let [source (source-branch-arg repo-path branch)]
+    (case ref
+      "base" (or (when source
+                   (let [mb (exec-git repo-path "merge-base" target-branch source)]
+                     (when-not (str/blank? mb) mb)))
+                 target-branch)
+      "head" source
+      nil source
+      ref)))
 
 (defrecord LocalBackend [repo-path target-branch session-id-str branch]
   proto/ReviewBackend
@@ -242,25 +289,7 @@
   (get-file-content
     [_ ref file-path opts]
     (js/Promise.resolve
-     (let [source (source-branch-arg repo-path branch)
-           ;; 'base' -> the before-side of the diff. In the worktree case the
-           ;; diff is three-dot (target...source), whose before-side is the
-           ;; merge-base of target and source — NOT target's tip — so read that
-           ;; to stay consistent once target advances past the merge-base. Fall
-           ;; back to target-branch when there's no source (same-branch/working-
-           ;; tree diff, whose base IS target's tip) or when merge-base is
-           ;; blank (e.g. unrelated histories). 'head'/nil -> the session branch
-           ;; when it isn't the checked-out HEAD (worktree case: read the branch
-           ;; tip via `git show`), else nil to read repo-path's working tree.
-           effective-ref (case ref
-                           "base" (if-let [mb (and source
-                                                   (let [m (exec-git repo-path "merge-base" target-branch source)]
-                                                     (when-not (str/blank? m) m)))]
-                                    mb
-                                    target-branch)
-                           "head" source
-                           nil source
-                           ref)
+     (let [effective-ref (resolve-effective-ref repo-path target-branch branch ref)
            content (if effective-ref
                      (exec-git repo-path "show" (str effective-ref ":" file-path))
                      (let [full-path (path/join repo-path file-path)]
@@ -273,17 +302,20 @@
 
   (list-directory [_ ref dir-path]
     (js/Promise.resolve
-     (let [effective-ref (case ref
-                           "base" target-branch
-                           "head" nil
-                           ref)]
+     (let [effective-ref (resolve-effective-ref repo-path target-branch branch ref)]
        (if effective-ref
-         ;; Use git ls-tree for ref
-         (if-let [output (exec-git repo-path "ls-tree" effective-ref (or dir-path ""))]
+         ;; Use git ls-tree for ref. Omit the pathspec entirely for the root:
+         ;; git rejects an empty-string pathspec ("empty string is not a valid
+         ;; pathspec"), which would otherwise return nil (empty listing).
+         (if-let [output (if (str/blank? dir-path)
+                           (exec-git repo-path "ls-tree" effective-ref)
+                           (exec-git repo-path "ls-tree" effective-ref dir-path))]
            (->> (str/split-lines output)
                 (filter seq)
                 (map (fn [line]
-                       (let [[_ type _ name] (re-find #"^\d+ (\w+) [a-f0-9]+\t(.+)$" line)]
+                       ;; re-find returns [whole type name] — the pattern has two
+                       ;; capture groups, so name is the third element.
+                       (let [[_ type name] (re-find #"^\d+ (\w+) [a-f0-9]+\t(.+)$" line)]
                          {:name (path/basename name)
                           :path name
                           :type (if (= type "tree") :dir :file)
@@ -305,10 +337,7 @@
 
   (file-exists? [_ ref file-path]
     (js/Promise.resolve
-     (let [effective-ref (case ref
-                           "base" target-branch
-                           "head" nil
-                           ref)]
+     (let [effective-ref (resolve-effective-ref repo-path target-branch branch ref)]
        (if effective-ref
          (some? (exec-git repo-path "cat-file" "-e" (str effective-ref ":" file-path)))
          (try
@@ -342,14 +371,16 @@
   ;; Comments - delegate to db/comments module
   (get-comments [this]
     (js/Promise.resolve
-     (let [comments (db/list-comments (proto/session-id this))]
+     (let [source (source-branch-arg repo-path branch)
+           comments (db/list-comments (proto/session-id this))]
        (annotate-comments-with-staleness
         (schema/build-threads comments)
-        repo-path))))
+        repo-path source))))
 
   (get-pending-comments [this opts]
     (js/Promise.resolve
-     (let [{:keys [since]} opts
+     (let [source (source-branch-arg repo-path branch)
+           {:keys [since]} opts
            comments (db/list-unresolved-comments (proto/session-id this) since)
            all-comments (db/list-comments (proto/session-id this))
            unresolved-ids (set (map :id comments))
@@ -361,7 +392,7 @@
            relevant-comments (concat comments replies-to-unresolved)]
        (annotate-comments-with-staleness
         (schema/build-threads relevant-comments)
-        repo-path))))
+        repo-path source))))
 
   (add-comment! [this comment]
     (js/Promise.resolve
@@ -375,9 +406,12 @@
            line-content (or line-content (when parent (:line-content parent)))
            context-before (or context-before (when parent (:context-before parent)))
            context-after (or context-after (when parent (:context-after parent)))
-           ;; Compute line hash for staleness detection
+           ;; Compute line hash for staleness detection, against the same ref
+           ;; staleness will later read from (session branch tip, or working
+           ;; tree for same-branch sessions) so the two always agree.
+           source (source-branch-arg repo-path branch)
            line-hash (when (and file line)
-                       (compute-line-hash repo-path file line))]
+                       (compute-line-hash repo-path source file line))]
        (db/create-comment!
         {:session-id (proto/session-id this)
          :parent-id parent-id
