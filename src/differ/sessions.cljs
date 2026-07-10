@@ -107,7 +107,7 @@
       (let [repo-path (:repo-path session)
             target-branch (:target-branch session)]
         (js/Promise.resolve
-         {:backend (local/create-local-backend repo-path target-branch session-id)}))
+         {:backend (local/create-local-backend repo-path target-branch session-id (:branch session))}))
 
       :github
       (let [{:keys [owner repo pr-number]} (parse-session-id session-id)

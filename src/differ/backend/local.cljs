@@ -151,7 +151,25 @@
 
 ;; LocalBackend record
 
-(defrecord LocalBackend [repo-path target-branch session-id-str]
+(defn- source-branch-arg
+  "Decide whether to diff against an explicit source branch or fall back to a
+   working-tree diff.
+
+   Returns the session's `branch` when it is set and differs from the branch
+   currently checked out at `repo-path` — the worktree case, where the session
+   branch lives in another working tree and is NOT reachable from repo-path's
+   HEAD. Callers then diff three-dot (`target...branch`).
+
+   Returns nil when `branch` is blank/nil or already equals the checked-out
+   HEAD, so callers do a plain `git diff <target>` working-tree diff. This
+   preserves the original same-branch behavior (uncommitted changes included)."
+  [repo-path branch]
+  (when (and branch
+             (not (str/blank? branch))
+             (not= branch (get-current-branch repo-path)))
+    branch))
+
+(defrecord LocalBackend [repo-path target-branch session-id-str branch]
   proto/ReviewBackend
 
   (session-id [_]
@@ -179,7 +197,10 @@
   (get-diff
     [_ opts]
     (js/Promise.resolve
-     (let [diff (exec-git repo-path "diff" target-branch)]
+     (let [source (source-branch-arg repo-path branch)
+           diff (if source
+                  (exec-git repo-path "diff" (str target-branch "..." source))
+                  (exec-git repo-path "diff" target-branch))]
        (if opts
          (proto/extract-lines diff opts)
          diff))))
@@ -189,14 +210,20 @@
   (get-file-diff
     [_ file-path opts]
     (js/Promise.resolve
-     (let [diff (exec-git repo-path "diff" target-branch "--" file-path)]
+     (let [source (source-branch-arg repo-path branch)
+           diff (if source
+                  (exec-git repo-path "diff" (str target-branch "..." source) "--" file-path)
+                  (exec-git repo-path "diff" target-branch "--" file-path))]
        (if opts
          (proto/extract-lines diff opts)
          diff))))
 
   (get-changed-files [_]
     (js/Promise.resolve
-     (if-let [output (exec-git repo-path "diff" "--name-status" target-branch)]
+     (if-let [output (let [source (source-branch-arg repo-path branch)]
+                       (if source
+                         (exec-git repo-path "diff" "--name-status" (str target-branch "..." source))
+                         (exec-git repo-path "diff" "--name-status" target-branch)))]
        (->> (str/split-lines output)
             (filter seq)
             (map (fn [line]
@@ -216,10 +243,13 @@
   (get-file-content
     [_ ref file-path opts]
     (js/Promise.resolve
-     (let [;; Interpret 'base' as target-branch, 'head' as current
+     (let [;; 'base' -> target-branch. 'head'/nil -> the session branch when it
+           ;; isn't the checked-out HEAD (worktree case: read the branch tip via
+           ;; `git show`), else nil to read repo-path's working tree as before.
            effective-ref (case ref
                            "base" target-branch
-                           "head" nil
+                           "head" (source-branch-arg repo-path branch)
+                           nil (source-branch-arg repo-path branch)
                            ref)
            content (if effective-ref
                      (exec-git repo-path "show" (str effective-ref ":" file-path))
@@ -399,15 +429,23 @@
 
 (defn create-local-backend
   "Create a LocalBackend for a local directory.
-   repo-path: absolute path to the directory
-   target-branch: branch to diff against (default: auto-detect)"
-  [repo-path & [target-branch]]
+   repo-path:     absolute path to the directory
+   target-branch: branch to diff against (default: auto-detect)
+   session-id:    the session's stored id, stored verbatim. When omitted it is
+                  recomputed from project + the checked-out branch — only safe
+                  when repo-path's HEAD IS the session branch. Callers that own
+                  a session row MUST pass its id so the backend never drifts to
+                  a phantom id (see differ.sessions/create-backend).
+   branch:        the session's source branch, stored verbatim and used for
+                  branch-aware diffs/file reads. nil = diff the working tree."
+  [repo-path & [target-branch session-id branch]]
   (let [resolved-path (path/resolve repo-path)
-        branch (or target-branch
+        target (or target-branch
                    (when (git-repo? resolved-path)
                      (detect-default-branch resolved-path))
                    "main")
-        project (get-project-id resolved-path)
-        current-branch (get-current-branch resolved-path)
-        session-id (str "local:" (util/session-id project current-branch))]
-    (->LocalBackend resolved-path branch session-id)))
+        sid (or session-id
+                (let [project (get-project-id resolved-path)
+                      current-branch (get-current-branch resolved-path)]
+                  (str "local:" (util/session-id project current-branch))))]
+    (->LocalBackend resolved-path target sid branch)))
