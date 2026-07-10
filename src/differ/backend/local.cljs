@@ -164,8 +164,7 @@
    HEAD, so callers do a plain `git diff <target>` working-tree diff. This
    preserves the original same-branch behavior (uncommitted changes included)."
   [repo-path branch]
-  (when (and branch
-             (not (str/blank? branch))
+  (when (and (not (str/blank? branch))
              (not= branch (get-current-branch repo-path)))
     branch))
 
@@ -243,13 +242,24 @@
   (get-file-content
     [_ ref file-path opts]
     (js/Promise.resolve
-     (let [;; 'base' -> target-branch. 'head'/nil -> the session branch when it
-           ;; isn't the checked-out HEAD (worktree case: read the branch tip via
-           ;; `git show`), else nil to read repo-path's working tree as before.
+     (let [source (source-branch-arg repo-path branch)
+           ;; 'base' -> the before-side of the diff. In the worktree case the
+           ;; diff is three-dot (target...source), whose before-side is the
+           ;; merge-base of target and source — NOT target's tip — so read that
+           ;; to stay consistent once target advances past the merge-base. Fall
+           ;; back to target-branch when there's no source (same-branch/working-
+           ;; tree diff, whose base IS target's tip) or when merge-base is
+           ;; blank (e.g. unrelated histories). 'head'/nil -> the session branch
+           ;; when it isn't the checked-out HEAD (worktree case: read the branch
+           ;; tip via `git show`), else nil to read repo-path's working tree.
            effective-ref (case ref
-                           "base" target-branch
-                           "head" (source-branch-arg repo-path branch)
-                           nil (source-branch-arg repo-path branch)
+                           "base" (if-let [mb (and source
+                                                   (let [m (exec-git repo-path "merge-base" target-branch source)]
+                                                     (when-not (str/blank? m) m)))]
+                                    mb
+                                    target-branch)
+                           "head" source
+                           nil source
                            ref)
            content (if effective-ref
                      (exec-git repo-path "show" (str effective-ref ":" file-path))

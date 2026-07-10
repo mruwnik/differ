@@ -66,3 +66,65 @@
                           (is (str/includes? diff "Another edit"))
                           (done)))
                  (.catch (fn [err] (is false (str "rejected: " err)) (done))))))))
+
+(deftest get-file-content-head-reads-non-head-branch-tip-test
+  (testing "get-file-content ref=head/nil returns the branch-tip content for a non-checked-out branch"
+    (async done
+           ;; foo.txt exists only on `feature`; HEAD is back on main where it is
+           ;; absent, so a working-tree read would miss it — head/nil must read
+           ;; the branch tip via `git show`.
+           (helpers/create-test-branch @test-repo "feature")
+           (helpers/add-test-file @test-repo "foo.txt" "hello from feature\n")
+           (helpers/commit-test-changes @test-repo "add foo on feature")
+           (helpers/checkout-test-branch @test-repo "main")
+           (let [backend (local/create-local-backend @test-repo "main" "local:sid" "feature")]
+             (-> (js/Promise.all
+                  #js [(proto/get-file-content backend "head" "foo.txt")
+                       (proto/get-file-content backend nil "foo.txt")])
+                 (.then (fn [[head-content nil-content]]
+                          ;; exec-git trims trailing whitespace off `git show`.
+                          (is (= "hello from feature" head-content))
+                          (is (= "hello from feature" nil-content))
+                          (done)))
+                 (.catch (fn [err] (is false (str "rejected: " err)) (done))))))))
+
+(deftest get-changed-files-lists-branch-commit-files-test
+  (testing "get-changed-files lists files from the branch commit for a non-checked-out branch"
+    (async done
+           (helpers/create-test-branch @test-repo "feature")
+           (helpers/add-test-file @test-repo "foo.txt" "hello from feature\n")
+           (helpers/commit-test-changes @test-repo "add foo on feature")
+           (helpers/checkout-test-branch @test-repo "main")
+           (let [backend (local/create-local-backend @test-repo "main" "local:sid" "feature")]
+             (-> (proto/get-changed-files backend)
+                 (.then (fn [files]
+                          (let [paths (set (map :path files))]
+                            (is (contains? paths "foo.txt"))
+                            (is (= :added (:status (first (filter #(= "foo.txt" (:path %)) files))))))
+                          (done)))
+                 (.catch (fn [err] (is false (str "rejected: " err)) (done))))))))
+
+(deftest get-file-content-base-reads-merge-base-not-target-tip-test
+  (testing "get-file-content ref=base returns the merge-base version, not target tip, once target advances"
+    (async done
+           ;; Build a history where main advances past the point feature was cut:
+           ;;   main:    +shared(base) --cut feature--> +shared(advanced target)
+           ;;   feature:                 +shared(feature)
+           ;; The three-dot base-side is merge-base(main, feature) == the cut
+           ;; point (shared = "base version"), which differs from main's tip.
+           (helpers/add-test-file @test-repo "shared.txt" "base version\n")
+           (helpers/commit-test-changes @test-repo "add shared on main")
+           (helpers/create-test-branch @test-repo "feature")
+           (helpers/modify-test-file @test-repo "shared.txt" "feature version\n")
+           (helpers/commit-test-changes @test-repo "edit shared on feature")
+           (helpers/checkout-test-branch @test-repo "main")
+           (helpers/modify-test-file @test-repo "shared.txt" "advanced target\n")
+           (helpers/commit-test-changes @test-repo "advance shared on main")
+           (let [backend (local/create-local-backend @test-repo "main" "local:sid" "feature")]
+             (-> (proto/get-file-content backend "base" "shared.txt")
+                 (.then (fn [content]
+                          ;; exec-git trims trailing whitespace off `git show`.
+                          (is (= "base version" content))
+                          (is (not= "advanced target" content))
+                          (done)))
+                 (.catch (fn [err] (is false (str "rejected: " err)) (done))))))))
