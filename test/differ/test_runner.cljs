@@ -28,6 +28,7 @@
             ;; Backend tests
             [differ.backend.protocol-test]
             [differ.backend.local-test]
+            [differ.backend.local-diff-test]
             [differ.backend.github-test]
             ;; Client tests
             [differ.client.db-test]
@@ -63,6 +64,7 @@
    ;; Backend tests
    'differ.backend.protocol-test
    'differ.backend.local-test
+   'differ.backend.local-diff-test
    'differ.backend.github-test
    ;; Client tests
    'differ.client.db-test

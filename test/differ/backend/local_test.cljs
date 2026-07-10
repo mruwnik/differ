@@ -2,6 +2,7 @@
   "Tests for the local directory backend implementation.
    Tests pure functions and synchronous helpers."
   (:require [clojure.test :refer [deftest testing is use-fixtures]]
+            [clojure.string :as str]
             [differ.backend.local :as local]
             [differ.backend.protocol :as proto]
             [differ.git :as git]
@@ -167,3 +168,20 @@ diff --git a/file2.txt b/file2.txt
       (is (= :local (:type descriptor)))
       (is (= "main" (:target-branch descriptor)))
       (is (string? (:repo-path descriptor))))))
+
+;; ============================================================================
+;; Session identity carried into the backend (no recompute from HEAD)
+;; ============================================================================
+
+(deftest create-local-backend-stores-passed-identity-test
+  (testing "stores the passed session-id verbatim, never recomputing from HEAD"
+    ;; The repo's checked-out branch is main, so a recompute would produce a
+    ;; different (hashed) id. Passing an explicit id must win.
+    (let [backend (local/create-local-backend *test-repo* "main" "local:custom-passed-id" "feature")]
+      (is (= "local:custom-passed-id" (proto/session-id backend)))
+      (is (= "feature" (:branch backend)))))
+
+  (testing "falls back to recomputed id + nil branch when not provided (back-compat)"
+    (let [backend (local/create-local-backend *test-repo* "main")]
+      (is (str/starts-with? (proto/session-id backend) "local:"))
+      (is (nil? (:branch backend))))))

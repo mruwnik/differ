@@ -193,6 +193,11 @@
   [repo-path branch-name]
   (exec-sync (str "git checkout -b " branch-name) {:cwd repo-path}))
 
+(defn checkout-test-branch
+  "Switch the test repo to an existing branch."
+  [repo-path branch-name]
+  (exec-sync (str "git checkout " branch-name) {:cwd repo-path}))
+
 (defn add-test-file
   "Add a file to the test repo."
   [repo-path file-path content]
