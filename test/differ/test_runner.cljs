@@ -25,6 +25,7 @@
             [differ.github-oauth-test]
             [differ.session-events-test]
             [differ.oauth-test]
+            [differ.gdocs-test]
             ;; Backend tests
             [differ.backend.protocol-test]
             [differ.backend.local-test]
@@ -61,6 +62,7 @@
    'differ.github-oauth-test
    'differ.session-events-test
    'differ.oauth-test
+   'differ.gdocs-test
    ;; Backend tests
    'differ.backend.protocol-test
    'differ.backend.local-test

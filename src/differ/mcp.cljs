@@ -14,6 +14,7 @@
             [differ.event-stream :as event-stream]
             [differ.github-events :as github-events]
             [differ.session-events :as session-events]
+            [differ.gdocs.core :as gdocs]
             [clojure.string :as str]))
 
 ;; MCP Protocol version
@@ -331,7 +332,45 @@
                                             :description "Max ms to block. Default 300000 (5 min). 0 = peek (return immediately)."}
                                :max_events {:type "integer"
                                             :description "Max events to return in one call. Default 50, capped at 500."}}
-                  :required ["scope"]}}])
+                  :required ["scope"]}}
+
+   ;; ---- Google Docs tools (service-account backed) ----
+   ;; Read/write Google Docs as markdown. Auth uses a GCP service-account key
+   ;; at $GDOCS_CREDS (default resources/gcp-creds.json). Every `doc`
+   ;; argument accepts a bare document id or a full docs.google.com/.../d/<id>/
+   ;; URL. Documents must already exist and be shared with the service account.
+   {:name "gdocs_info"
+    :description "Show a Google Doc's title and tab list (title, tabId, nesting, rough word count). Run this to discover the tabId/title to pass to gdocs_read / gdocs_write."
+    :inputSchema {:type "object"
+                  :properties {:doc {:type "string"
+                                     :description "Document id or full docs.google.com URL"}}
+                  :required ["doc"]}}
+
+   {:name "gdocs_read"
+    :description "Read a Google Doc as markdown. With `tab`, returns just that tab; otherwise returns the whole document (each tab prefixed by a heading). Mapping is lossy: headings, bullets, bold/italic/code, and tables are preserved; links, images, and colors are dropped."
+    :inputSchema {:type "object"
+                  :properties {:doc {:type "string"
+                                     :description "Document id or full docs.google.com URL"}
+                               :tab {:type "string"
+                                     :description "Tab title or tabId (default: whole document). Matches exact tabId first, then case-insensitive title."}}
+                  :required ["doc"]}}
+
+   {:name "gdocs_write"
+    :description "Render markdown into a Google Doc tab, replacing the tab's content (or appending with `append`). Supports headings (#..######), bullets (nested by indent), bold/italic/code, GitHub pipe tables, and horizontal rules. The service account cannot create documents or tabs — write into ones that already exist and are shared with it. Provide the markdown via `markdown` (inline) or `file` (path the server reads); `markdown` wins if both are given."
+    :inputSchema {:type "object"
+                  :properties {:doc {:type "string"
+                                     :description "Document id or full docs.google.com URL"}
+                               :tab {:type "string"
+                                     :description "Tab title or tabId to write into (required)"}
+                               :markdown {:type "string"
+                                          :description "Markdown content to render into the tab"}
+                               :file {:type "string"
+                                      :description "Path to a markdown file the server reads (fallback when `markdown` is omitted)"}
+                               :append {:type "boolean"
+                                        :description "Append to the end of the tab instead of replacing (default: false)"}
+                               :dry_run {:type "boolean"
+                                         :description "Compute and preview the write (request count + rendered plain text) without sending anything (default: false)"}}
+                  :required ["doc" "tab"]}}])
 
 ;; Error codes
 (def parse-error -32700)
@@ -956,6 +995,40 @@
           ;; delegate straight to the event stream.
           (github-events/wait-for-scope! scope opts)
           (event-stream/wait-for-event (assoc opts :scope scope)))))))
+
+;; Google Docs tool handlers
+
+(defmethod handle-tool "gdocs_info" [_ {:keys [doc]}]
+  (gdocs/info doc))
+
+(defmethod handle-tool "gdocs_read" [_ {:keys [doc tab]}]
+  (gdocs/read-doc doc tab))
+
+(defn- resolve-write-markdown
+  "Return the markdown content for gdocs_write: prefer inline `markdown`, else
+   read `file` from disk. Throws if neither is usable."
+  [markdown file]
+  (cond
+    (and markdown (not (str/blank? markdown))) markdown
+
+    (and file (not (str/blank? file)))
+    (try
+      (fs/readFileSync file "utf8")
+      (catch :default e
+        (throw (ex-info (str "gdocs_write: cannot read file '" file "': "
+                             (or (.-message e) (str e)))
+                        {:code invalid-params :file file}))))
+
+    :else
+    (throw (ex-info "gdocs_write requires either `markdown` (inline content) or `file` (path)."
+                    {:code invalid-params}))))
+
+(defmethod handle-tool "gdocs_write" [_ {:keys [doc tab markdown file append dry-run]}]
+  (let [content (resolve-write-markdown markdown file)]
+    (gdocs/write-doc doc {:tab tab
+                          :markdown content
+                          :append? (boolean append)
+                          :dry-run? (boolean dry-run)})))
 
 (defmethod handle-tool :default [tool-name _]
   (throw (ex-info "Unknown tool" {:tool tool-name})))

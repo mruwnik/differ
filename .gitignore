@@ -37,6 +37,9 @@ Thumbs.db
 .env
 .env.local
 
+# Google Docs service-account key (gdocs_* MCP tools); never commit real creds
+resources/gcp-creds.json
+
 # Logs
 *.log
 
