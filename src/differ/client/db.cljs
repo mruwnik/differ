@@ -1,5 +1,6 @@
 (ns differ.client.db
-  "Re-frame app-db schema and initial state.")
+  "Re-frame app-db schema and initial state."
+  (:require [differ.client.task-filter :as task-filter]))
 
 ;; Default config values (used until server config loads)
 (def default-config
@@ -35,6 +36,7 @@
    :boards []
    :board-tasks []
    :board-show-done false
+   :board-filter task-filter/default-filter
    :selected-task nil})
 
 ;; Route helpers

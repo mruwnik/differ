@@ -128,6 +128,7 @@
       worker_name TEXT,
       worker_id TEXT,
       persist INTEGER NOT NULL DEFAULT 0,
+      priority INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
@@ -151,12 +152,29 @@
       PRIMARY KEY (task_id, depends_on_task_id)
     );
 
-    CREATE INDEX IF NOT EXISTS idx_task_deps_depends_on ON task_dependencies(depends_on_task_id);"))
+    CREATE INDEX IF NOT EXISTS idx_task_deps_depends_on ON task_dependencies(depends_on_task_id);
+
+    CREATE TABLE IF NOT EXISTS task_tags (
+      task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      tag TEXT NOT NULL,
+      PRIMARY KEY (task_id, tag)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_task_tags_tag ON task_tags(tag);"))
 
 (defn- migrate-kanban-tables
   "Add kanban board tables for existing databases."
   [db]
   (.exec db kanban-ddl))
+
+(defn- migrate-task-priority
+  "Add tasks.priority for databases whose tasks table predates it.
+   CREATE TABLE IF NOT EXISTS in kanban-ddl never alters an existing table."
+  [^js db]
+  (let [columns (set (map (fn [^js c] (.-name c))
+                          (.all (.prepare db "PRAGMA table_info(tasks)"))))]
+    (when-not (columns "priority")
+      (.exec db "ALTER TABLE tasks ADD COLUMN priority INTEGER NOT NULL DEFAULT 0"))))
 
 (defn migrate-board-statuses
   "Rewrite boards still on the old default status list to the current
@@ -354,6 +372,7 @@
   (migrate-sessions-table db)
   (migrate-github-tokens-table db)
   (migrate-kanban-tables db)
+  (migrate-task-priority db)
   (migrate-board-statuses db))
 
 (defn init!

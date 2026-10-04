@@ -1,6 +1,7 @@
 (ns differ.client.subs
   "Re-frame subscriptions."
-  (:require [re-frame.core :as rf]))
+  (:require [re-frame.core :as rf]
+            [differ.client.task-filter :as task-filter]))
 
 ;; Route
 (rf/reg-sub
@@ -364,6 +365,14 @@
 (rf/reg-sub :board-tasks (fn [db _] (:board-tasks db)))
 (rf/reg-sub :selected-task (fn [db _] (:selected-task db)))
 (rf/reg-sub :board-show-done (fn [db _] (:board-show-done db)))
+(rf/reg-sub :board-filter (fn [db _] (:board-filter db)))
+
+(rf/reg-sub
+ :filtered-board-tasks
+ :<- [:board-tasks]
+ :<- [:board-filter]
+ (fn [[tasks filter-state] _]
+   (task-filter/filter-tasks tasks filter-state)))
 
 (rf/reg-sub
  :board-repo

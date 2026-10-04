@@ -853,3 +853,97 @@
       (is (= "blocked" (:status b-entry)))
       ;; D is blocked by B, so D also shows as "blocked"
       (is (= "blocked" (:status d-entry))))))
+
+;; ============================================================================
+;; Priority & Tags
+;; ============================================================================
+
+(deftest create-task-priority-and-tags-defaults-test
+  (let [task (boards/create-task! {:repo-path "/tmp/pt-defaults" :title "Plain"})]
+    (is (= 0 (:priority task)))
+    (is (= [] (:tags task)))))
+
+(deftest create-task-priority-and-tags-test
+  (let [task (boards/create-task! {:repo-path "/tmp/pt-create" :title "Tagged"
+                                   :priority 5
+                                   :tags ["Security" " bug " "security" ""]})]
+    (is (= 5 (:priority task)))
+    (testing "tags are trimmed, lowercased, deduped, blank-dropped and sorted"
+      (is (= ["bug" "security"] (:tags task))))
+    (testing "get-task returns the same tags"
+      (is (= ["bug" "security"] (:tags (boards/get-task (:id task))))))))
+
+(deftest create-task-rejects-non-integer-priority-test
+  (doseq [bad ["high" 1.5 true]]
+    (is (thrown-with-msg? js/Error #"priority must be an integer"
+                          (boards/create-task! {:repo-path "/tmp/pt-bad" :title "Bad"
+                                                :priority bad})))))
+
+(deftest update-task-priority-and-tags-test
+  (let [task (boards/create-task! {:repo-path "/tmp/pt-update" :title "T"
+                                   :priority 1 :tags ["a" "b"]})]
+    (testing "omitting priority and tags leaves them untouched"
+      (let [updated (boards/update-task! (:id task) {:title "T2"})]
+        (is (= 1 (:priority updated)))
+        (is (= ["a" "b"] (:tags updated)))))
+    (testing "setting priority and replacing tags"
+      (let [updated (boards/update-task! (:id task) {:priority -3 :tags ["c"]})]
+        (is (= -3 (:priority updated)))
+        (is (= ["c"] (:tags updated)))))
+    (testing "empty tags clears them"
+      (is (= [] (:tags (boards/update-task! (:id task) {:tags []})))))
+    (testing "invalid priority throws"
+      (is (thrown-with-msg? js/Error #"priority must be an integer"
+                            (boards/update-task! (:id task) {:priority "urgent"}))))))
+
+(deftest take-task-prefers-highest-priority-test
+  (let [repo "/tmp/pt-take"
+        low (boards/create-task! {:repo-path repo :title "low" :priority -1})
+        mid-old (boards/create-task! {:repo-path repo :title "mid-old"})
+        high (boards/create-task! {:repo-path repo :title "high" :priority 10})
+        take! #(boards/take-task! {:repo-path repo :worker-name "w"})]
+    (is (= (:id high) (:id (take!))))
+    (is (= (:id mid-old) (:id (take!))))
+    (is (= (:id low) (:id (take!))))))
+
+(deftest take-task-filters-by-tags-test
+  (let [repo "/tmp/pt-take-tags"
+        _untagged (boards/create-task! {:repo-path repo :title "untagged" :priority 100})
+        ui (boards/create-task! {:repo-path repo :title "ui" :tags ["frontend"]})
+        sec (boards/create-task! {:repo-path repo :title "sec" :tags ["security"] :priority 2})]
+    (testing "takes the highest-priority task having any of the tags"
+      (is (= (:id sec) (:id (boards/take-task! {:repo-path repo :worker-name "w"
+                                                 :tags ["security" "frontend"]})))))
+    (testing "tag matching is case-insensitive"
+      (is (= (:id ui) (:id (boards/take-task! {:repo-path repo :worker-name "w"
+                                                :tags ["FrontEnd"]})))))
+    (testing "throws when no task matches the tags"
+      (is (thrown-with-msg? js/Error #"No available tasks"
+                            (boards/take-task! {:repo-path repo :worker-name "w"
+                                                :tags ["security"]}))))))
+
+(deftest list-tasks-priority-order-and-tag-filter-test
+  (let [repo "/tmp/pt-list"
+        board (boards/get-or-create-board! repo)
+        a (boards/create-task! {:repo-path repo :title "a" :tags ["x"]})
+        b (boards/create-task! {:repo-path repo :title "b" :priority 3 :tags ["y"]})
+        c (boards/create-task! {:repo-path repo :title "c" :tags ["x" "z"]})]
+    (testing "ordered by priority desc, then oldest first"
+      (is (= (mapv :id [b a c]) (mapv :id (boards/list-tasks (:id board) {})))))
+    (testing "tags filter matches any of the given tags"
+      (is (= (mapv :id [a c]) (mapv :id (boards/list-tasks (:id board) {:tags ["x"]}))))
+      (is (= (mapv :id [b c]) (mapv :id (boards/list-tasks (:id board) {:tags ["y" "Z"]})))))
+    (testing "every listed task carries its tags"
+      (is (= [["y"] ["x"] ["x" "z"]] (mapv :tags (boards/list-tasks (:id board) {})))))))
+
+(deftest dep-graph-priority-and-tags-fields-test
+  (let [repo "/tmp/pt-graph"
+        a (boards/create-task! {:repo-path repo :title "A" :priority 4 :tags ["t"]})
+        b (boards/create-task! {:repo-path repo :title "B" :blocked-by [(:id a)]})
+        [entry] (boards/get-upstream (:id b) {:fields [:priority :tags]})]
+    (is (= 4 (:priority entry)))
+    (is (= ["t"] (:tags entry)))))
+
+(deftest update-task-allowed-keys-include-priority-and-tags-test
+  (is (contains? boards/update-task-allowed-keys :priority))
+  (is (contains? boards/update-task-allowed-keys :tags)))

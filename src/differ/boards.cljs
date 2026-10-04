@@ -26,6 +26,7 @@
      :worker-name (.-worker_name row)
      :worker-id (.-worker_id row)
      :persist (= 1 (.-persist row))
+     :priority (or (.-priority row) 0)
      :created-at (.-created_at row)
      :updated-at (.-updated_at row)}))
 
@@ -36,6 +37,50 @@
      :author (.-author row)
      :content (.-content row)
      :created-at (.-created_at row)}))
+
+;; ============================================================================
+;; Priority & tag helpers
+;; ============================================================================
+
+(defn validate-priority
+  "Throw unless priority is nil (not provided) or an integer.
+   Higher priority = more urgent; default is 0, negatives mean 'low'."
+  [priority]
+  (when-not (or (nil? priority) (integer? priority))
+    (throw (js/Error. (str "priority must be an integer, got: " (pr-str priority))))))
+
+(defn normalize-tags
+  "Trim, lowercase, drop blanks, dedupe and sort a seq of tag strings."
+  [tags]
+  (->> tags
+       (map (comp str/lower-case str/trim str))
+       (remove str/blank?)
+       distinct
+       sort
+       vec))
+
+(defn set-task-tags!
+  "Replace all tags for a task."
+  [task-id tags]
+  (.run (.prepare (db/db) "DELETE FROM task_tags WHERE task_id = ?") task-id)
+  (let [^js ins-stmt (.prepare (db/db) "INSERT INTO task_tags (task_id, tag) VALUES (?, ?)")]
+    (doseq [tag (normalize-tags tags)]
+      (.run ins-stmt task-id tag))))
+
+(defn- tags-in-clause
+  "SQL condition (on task alias t) matching tasks having any of `tags`,
+   plus its params. Returns nil when tags is empty."
+  [tags]
+  (let [tags (normalize-tags tags)]
+    (when (seq tags)
+      [(str "EXISTS (SELECT 1 FROM task_tags tt WHERE tt.task_id = t.id AND tt.tag IN ("
+            (str/join "," (repeat (count tags) "?")) "))")
+       tags])))
+
+(def ^:private task-order-sql
+  "Queue/listing order: most urgent first, then oldest. rowid breaks
+   created_at ties between tasks created in the same millisecond."
+  " ORDER BY t.priority DESC, t.created_at ASC, t.rowid ASC")
 
 ;; ============================================================================
 ;; Task dependency operations
@@ -114,23 +159,21 @@
   [task-ids]
   (dep-rows-batch task-ids "depends_on_task_id" "task_id"))
 
-(defn- enrich-task
-  "Add effective status and blocked-by to a single task."
-  [task]
-  (when task
-    (let [^js stmt (.prepare (db/db)
-                             "SELECT td.depends_on_task_id FROM task_dependencies td
-                              JOIN tasks t ON t.id = td.depends_on_task_id
-                              WHERE td.task_id = ? AND t.status != 'done'")
-          rows (.all stmt (:id task))
-          unresolved (mapv (fn [^js r] (.-depends_on_task_id r)) rows)
-          effective-status (if (seq unresolved) "blocked" (:status task))]
-      (assoc task
-             :status effective-status
-             :blocked-by unresolved))))
+(defn- tags-by-task
+  "Map of task-id -> sorted tag vector for the given task IDs (single query).
+   Tasks without tags are omitted."
+  [ids]
+  (let [placeholders (str/join "," (repeat (count ids) "?"))
+        ^js stmt (.prepare (db/db)
+                           (str "SELECT task_id, tag FROM task_tags WHERE task_id IN ("
+                                placeholders ") ORDER BY tag ASC"))]
+    (reduce (fn [m ^js r] (update m (.-task_id r) (fnil conj []) (.-tag r)))
+            {}
+            (.all stmt (to-array ids)))))
 
 (defn- enrich-tasks
-  "Batch-enrich multiple tasks. Uses a single query instead of N+1."
+  "Batch-enrich multiple tasks with effective status, blocked-by and tags.
+   Uses one query per concern instead of N+1."
   [tasks]
   (if (empty? tasks)
     tasks
@@ -142,12 +185,22 @@
                     WHERE td.task_id IN (" placeholders ") AND t.status != 'done'")
           ^js stmt (.prepare (db/db) sql)
           rows (.all stmt (to-array ids))
-          deps-by-task (group-by (fn [^js r] (.-task_id r)) rows)]
+          deps-by-task (group-by (fn [^js r] (.-task_id r)) rows)
+          tags (tags-by-task ids)]
       (mapv (fn [task]
               (let [unresolved (mapv (fn [^js r] (.-depends_on_task_id r)) (get deps-by-task (:id task) []))
                     effective-status (if (seq unresolved) "blocked" (:status task))]
-                (assoc task :status effective-status :blocked-by unresolved)))
+                (assoc task
+                       :status effective-status
+                       :blocked-by unresolved
+                       :tags (get tags (:id task) []))))
             tasks))))
+
+(defn- enrich-task
+  "Add effective status, blocked-by and tags to a single task."
+  [task]
+  (when task
+    (first (enrich-tasks [task]))))
 
 ;; ============================================================================
 ;; Board operations
@@ -210,40 +263,49 @@
 
 (defn create-task!
   "Create a task, auto-creating board for repo-path if needed.
-   Accepts optional :blocked-by vector of task IDs."
-  [{:keys [repo-path title description blocked-by]}]
+   Accepts optional :blocked-by vector of task IDs, :priority (integer,
+   higher = more urgent, default 0) and :tags (seq of strings)."
+  [{:keys [repo-path title description blocked-by priority tags]}]
+  (validate-priority priority)
   (let [board (get-or-create-board! repo-path)
         id (util/gen-uuid)
         now (util/now-iso)
-        ^js stmt (.prepare (db/db)
-                           "INSERT INTO tasks (id, board_id, title, description, created_at, updated_at)
-                            VALUES (?, ?, ?, ?, ?, ?)")]
-    (.run stmt id (:id board) title description now now)
-    ;; Update board timestamp
-    (let [^js update-stmt (.prepare (db/db) "UPDATE boards SET updated_at = ? WHERE id = ?")]
-      (.run update-stmt now (:id board)))
-    ;; Set dependencies if provided
-    (when (seq blocked-by)
-      (set-task-dependencies! id blocked-by))
+        txn (.transaction (db/db)
+                          (fn []
+                            (let [^js stmt (.prepare (db/db)
+                                                     "INSERT INTO tasks (id, board_id, title, description, priority, created_at, updated_at)
+                                                      VALUES (?, ?, ?, ?, ?, ?, ?)")]
+                              (.run stmt id (:id board) title description (or priority 0) now now))
+                            (let [^js update-stmt (.prepare (db/db) "UPDATE boards SET updated_at = ? WHERE id = ?")]
+                              (.run update-stmt now (:id board)))
+                            (when (seq blocked-by)
+                              (set-task-dependencies! id blocked-by))
+                            (when (seq tags)
+                              (set-task-tags! id tags))))]
+    (txn)
     (get-task id)))
 
 (defn- find-next-available-task-row
-  "Find the oldest unclaimed task in the given queue with no unresolved
-   dependencies. Returns raw JS row or nil. Must be called inside a transaction."
-  [board-id queue-status]
-  (let [^js stmt (.prepare (db/db)
-                           "SELECT t.* FROM tasks t
-                            WHERE t.board_id = ?
-                            AND t.status = ?
-                            AND t.worker_name IS NULL
-                            AND NOT EXISTS (
-                              SELECT 1 FROM task_dependencies td
-                              JOIN tasks dep ON dep.id = td.depends_on_task_id
-                              WHERE td.task_id = t.id AND dep.status != 'done'
-                            )
-                            ORDER BY t.created_at ASC
-                            LIMIT 1")]
-    (.get stmt board-id queue-status)))
+  "Find the most urgent (highest priority, then oldest) unclaimed task in the
+   given queue with no unresolved dependencies, optionally restricted to tasks
+   having any of `tags`. Returns raw JS row or nil. Must be called inside a
+   transaction."
+  [board-id queue-status tags]
+  (let [[tag-sql tag-params] (tags-in-clause tags)
+        sql (str "SELECT t.* FROM tasks t
+                  WHERE t.board_id = ?
+                  AND t.status = ?
+                  AND t.worker_name IS NULL
+                  AND NOT EXISTS (
+                    SELECT 1 FROM task_dependencies td
+                    JOIN tasks dep ON dep.id = td.depends_on_task_id
+                    WHERE td.task_id = t.id AND dep.status != 'done'
+                  )"
+                 (when tag-sql (str " AND " tag-sql))
+                 task-order-sql
+                 " LIMIT 1")
+        ^js stmt (.prepare (db/db) sql)]
+    (.get stmt (to-array (into [board-id queue-status] tag-params)))))
 
 (defn take-task!
   "Atomically claim a task from a queue.
@@ -252,11 +314,12 @@
    :move-to - status set on claim (default \"in_progress\")
 
    With :task-id, claims that specific task (must be in the queue, unclaimed,
-   and unblocked). Otherwise auto-assigns the oldest available task on the
-   board identified by :repo-path. Claiming sets the worker; a status change
+   and unblocked). Otherwise auto-assigns the highest-priority (then oldest)
+   available task on the board identified by :repo-path, restricted to tasks
+   having any of :tags when given (:tags is ignored with :task-id). Claiming sets the worker; a status change
    via update-task! releases it again, so each lifecycle phase is claimed
    separately. Uses better-sqlite3 transaction for atomicity."
-  [{:keys [task-id repo-path worker-name worker-id note status move-to]}]
+  [{:keys [task-id repo-path worker-name worker-id note status move-to tags]}]
   (when (str/blank? worker-name)
     (throw (js/Error. "worker-name is required")))
   (when (and (nil? task-id) (nil? repo-path))
@@ -287,9 +350,11 @@
                                         (throw (js/Error. (str "No board found for repo: " repo-path))))
                                       (validate-board-status board queue-status)
                                       (validate-board-status board target-status)
-                                      (let [^js r (find-next-available-task-row (:id board) queue-status)]
+                                      (let [^js r (find-next-available-task-row (:id board) queue-status tags)]
                                         (when-not r
-                                          (throw (js/Error. (str "No available tasks in queue '" queue-status "'"))))
+                                          (throw (js/Error. (str "No available tasks in queue '" queue-status "'"
+                                                                 (when (seq tags)
+                                                                   (str " with tags " (str/join ", " (normalize-tags tags))))))))
                                         r)))]
                   ;; Check for unresolved dependencies (only needed for explicit task-id;
                   ;; auto-assign already filters these out in the SQL query)
@@ -325,11 +390,13 @@
    Changing status releases the task's worker (worker_name/worker_id set to NULL)
    so the next phase can be claimed via take-task!.
    Optionally adds a note when :note and :author are provided.
-   Accepts optional :blocked-by to set task dependencies.
+   Accepts optional :blocked-by to set task dependencies, :priority (integer)
+   and :tags (replaces all tags; [] clears them).
    The :description field uses contains? to distinguish 'not provided' from 'set to nil'.
    Wrapped in a transaction to prevent race conditions between concurrent agents."
   [task-id opts]
-  (let [{:keys [status title persist note author]} opts
+  (let [{:keys [status title persist note author priority]} opts
+        _ (validate-priority priority)
         txn (.transaction (db/db)
                           (fn []
                             (let [task (get-task-raw task-id)]
@@ -351,16 +418,19 @@
                                     new-persist (if (contains? opts :persist)
                                                   (if persist 1 0)
                                                   (if (:persist task) 1 0))
+                                    new-priority (if (some? priority) priority (:priority task))
                                     ^js stmt (.prepare (db/db)
-                                                       "UPDATE tasks SET status = ?, title = ?, description = ?, persist = ?, worker_name = ?, worker_id = ?, updated_at = ?
+                                                       "UPDATE tasks SET status = ?, title = ?, description = ?, persist = ?, priority = ?, worker_name = ?, worker_id = ?, updated_at = ?
                                                         WHERE id = ?")]
-                                (.run stmt new-status new-title new-description new-persist new-worker-name new-worker-id now task-id)
+                                (.run stmt new-status new-title new-description new-persist new-priority new-worker-name new-worker-id now task-id)
                                 ;; Update board timestamp
                                 (let [^js board-stmt (.prepare (db/db) "UPDATE boards SET updated_at = ? WHERE id = ?")]
                                   (.run board-stmt now (:board-id task)))
                                 ;; Update dependencies if provided
                                 (when (contains? opts :blocked-by)
                                   (set-task-dependencies! task-id (:blocked-by opts)))
+                                (when (contains? opts :tags)
+                                  (set-task-tags! task-id (:tags opts)))
                                 ;; Add note if provided
                                 (when (and note author)
                                   (let [note-id (util/gen-uuid)
@@ -416,9 +486,10 @@
    Options:
      :status      - vector of status strings to include
      :worker-id   - filter by worker
+     :tags        - only tasks having any of these tags
      :show-done   - if false (default), exclude done+rejected
      :include-notes - if true, attach :notes array to each task"
-  [board-id {:keys [status worker-id show-done include-notes]}]
+  [board-id {:keys [status worker-id tags show-done include-notes]}]
   (let [conditions ["t.board_id = ?"]
         params [board-id]
         ;; Build status filter
@@ -437,8 +508,13 @@
           [(conj conditions "t.worker_id = ?")
            (conj params worker-id)]
           [conditions params])
+        ;; Build tag filter
+        [conditions params]
+        (if-let [[tag-sql tag-params] (tags-in-clause tags)]
+          [(conj conditions tag-sql) (into params tag-params)]
+          [conditions params])
         where-clause (str/join " AND " conditions)
-        sql (str "SELECT t.* FROM tasks t WHERE " where-clause " ORDER BY t.created_at ASC")
+        sql (str "SELECT t.* FROM tasks t WHERE " where-clause task-order-sql)
         ^js stmt (.prepare (db/db) sql)
         rows (.all stmt (to-array params))
         tasks (enrich-tasks (mapv row->task rows))]
@@ -455,7 +531,7 @@
 (def update-task-allowed-keys
   "Keys that callers may pass through to update-task!. Used by both the REST API
    and the MCP handler to whitelist incoming fields."
-  #{:status :title :description :persist :note :author :blocked-by})
+  #{:status :title :description :persist :note :author :blocked-by :priority :tags})
 
 ;; ============================================================================
 ;; Dependency graph traversal
@@ -467,7 +543,7 @@
    is synthesized by the traversal (hop count). Listing :depth in :fields
    raises 'Unknown fields: depth' — it's not a column, so just omit it."
   #{:id :board-id :title :description :status :worker-name :worker-id
-    :persist :blocked-by :created-at :updated-at})
+    :persist :priority :tags :blocked-by :created-at :updated-at})
 
 (def default-dep-graph-fields
   "Fields returned on each related task when :fields is not specified."

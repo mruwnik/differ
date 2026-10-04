@@ -70,11 +70,12 @@ You are {NAME}, a fixer agent. Pick up tasks from the differ-review kanban board
 
 WORKFLOW:
 1. mcp__differ-review__list_tasks(repo_path="{REPO}") to see pending tasks
-2. Pick highest-priority pending task
-3. mcp__differ-review__take_task(task_id=..., worker_name="{NAME}") to claim it
-4. Do the work (read, fix, test)
-5. mcp__differ-review__update_task(task_id=..., status="done", note="summary")
-6. Go back to step 1
+2. mcp__differ-review__take_task(repo_path="{REPO}", worker_name="{NAME}") to claim the
+   next task (auto-assign picks highest priority first, then oldest; add tags=[...] to
+   restrict to tasks with any of those tags, e.g. a security specialist)
+3. Do the work (read, fix, test)
+4. mcp__differ-review__update_task(task_id=..., status="done", note="summary")
+5. Go back to step 1
 
 CONSTRAINTS:
 {CONSTRAINTS}
@@ -94,9 +95,11 @@ Task(name=name, subagent_type="general-purpose", mode="bypassPermissions",
 Check `mcp__differ-review__list_tasks` periodically to track progress.
 
 ### Create Tasks from Findings
-When discovery agents report, create tasks with severity in title:
+When discovery agents report, create tasks with severity as priority (higher = more
+urgent, default 0) and area/kind as tags:
 ```
-mcp__differ-review__create_task(repo_path=REPO, title="[HIGH] Fix X", description="...")
+mcp__differ-review__create_task(repo_path=REPO, title="Fix X", description="...",
+                                priority=3, tags=["security", "bug"])
 ```
 
 ### Handle Stale Agents

@@ -2,7 +2,8 @@
   "Kanban board views for task coordination."
   (:require [re-frame.core :as rf]
             [reagent.core :as r]
-            [clojure.string :as str]))
+            [clojure.string :as str]
+            [differ.client.task-filter :as task-filter]))
 
 (def status-order ["pending" "planning" "plan_review" "ready" "in_progress" "blocked" "in_review" "done" "rejected"])
 
@@ -46,11 +47,45 @@
   (last (str/split (or repo-path "") #"/")))
 
 ;; ============================================================================
+;; Priority & Tags
+;; ============================================================================
+
+(defn priority-label
+  "Higher priority = more urgent: ▲ for positive, ▼ for negative."
+  [priority]
+  (if (neg? priority) (str "\u25bc" (- priority)) (str "\u25b2" priority)))
+
+(defn priority-badge [priority]
+  (let [priority (or priority 0)]
+    (when-not (zero? priority)
+      [:span {:title (str "Priority " priority)
+              :style {:font-size "10px" :font-weight "600" :padding "0 5px"
+                      :border-radius "8px" :white-space "nowrap"
+                      :background (if (pos? priority) "#ffebe9" "#f6f8fa")
+                      :color (if (pos? priority) "#cf222e" "#6a737d")}}
+       (priority-label priority)])))
+
+(defn tag-chip
+  "A tag chip; clicking it toggles that tag in the board filter."
+  [tag selected?]
+  [:span {:title (if selected? "Remove tag filter" "Filter by this tag")
+          :style {:font-size "10px" :padding "0 6px" :border-radius "8px"
+                  :cursor "pointer" :white-space "nowrap"
+                  :background (if selected? "#0366d6" "#f1f8ff")
+                  :color (if selected? "#fff" "#0366d6")
+                  :border "1px solid #c8e1ff"}
+          :on-click (fn [e]
+                      (.stopPropagation e)
+                      (rf/dispatch [:toggle-board-tag-filter tag]))}
+   tag])
+
+;; ============================================================================
 ;; Task Card
 ;; ============================================================================
 
 (defn task-card [task]
   (let [selected @(rf/subscribe [:selected-task])
+        selected-tags (:tags @(rf/subscribe [:board-filter]))
         is-selected (and selected (= (:id selected) (:id task)))]
     [:div {:style {:padding "8px 12px"
                    :margin-bottom "6px"
@@ -59,9 +94,15 @@
                    :border-radius "4px"
                    :cursor "pointer"}
            :on-click #(rf/dispatch [:select-task task])}
-     [:div {:style {:font-size "13px" :font-weight "500" :margin-bottom "4px"
-                    :color "#24292e"}}
-      (:title task)]
+     [:div {:style {:display "flex" :gap "6px" :align-items "flex-start" :margin-bottom "4px"}}
+      [priority-badge (:priority task)]
+      [:div {:style {:font-size "13px" :font-weight "500" :color "#24292e"}}
+       (:title task)]]
+     (when (seq (:tags task))
+       [:div {:style {:display "flex" :gap "4px" :flex-wrap "wrap" :margin-bottom "4px"}}
+        (for [tag (:tags task)]
+          ^{:key tag}
+          [tag-chip tag (contains? selected-tags tag)])])
      [:div {:style {:display "flex" :justify-content "space-between" :align-items "center"}}
       [:div {:style {:display "flex" :gap "6px" :align-items "center"}}
        (when (:worker-name task)
@@ -133,7 +174,15 @@
                (str "Worker: " (:worker-name task))])
             (when (:worker-id task)
               [:span {:style {:font-size "11px" :color "#959da5"}}
-               (str "(" (:worker-id task) ")")])]
+               (str "(" (:worker-id task) ")")])
+            [priority-badge (:priority task)]]
+
+           ;; Tags
+           (when (seq (:tags task))
+             [:div {:style {:display "flex" :gap "4px" :flex-wrap "wrap" :margin-bottom "12px"}}
+              (for [tag (:tags task)]
+                ^{:key tag}
+                [tag-chip tag (contains? (:tags @(rf/subscribe [:board-filter])) tag)])])
 
            ;; Blocked by
            (when (seq (:blocked-by task))
@@ -243,12 +292,56 @@
                 (str cnt " " (get status-labels status status))])]]])])]))
 
 ;; ============================================================================
+;; Filter Bar
+;; ============================================================================
+
+(defn filter-bar
+  "Search box, min-priority select and tag chips. Options come from the
+   unfiltered task list so selecting a filter never hides its own option."
+  [all-tasks shown-count]
+  (let [{:keys [search tags min-priority] :as filter-state} @(rf/subscribe [:board-filter])
+        board-tags (task-filter/board-tags all-tasks)
+        priorities (task-filter/board-priorities all-tasks)]
+    [:div {:style {:display "flex" :gap "8px" :align-items "center" :flex-wrap "wrap"
+                   :margin-bottom "16px"}}
+     [:input {:type "search"
+              :value search
+              :placeholder "Search titles (fuzzy)\u2026"
+              :on-change #(rf/dispatch [:set-board-search (.. % -target -value)])
+              :style {:flex "0 1 260px" :padding "4px 8px" :font-size "12px"
+                      :border "1px solid #e1e4e8" :border-radius "4px"}}]
+     [:select {:value (if (some? min-priority) (str min-priority) "")
+               :on-change (fn [e]
+                            (let [v (.. e -target -value)]
+                              (rf/dispatch [:set-board-min-priority
+                                            (when-not (str/blank? v) (js/parseInt v 10))])))
+               :style {:padding "4px" :font-size "12px"
+                       :border "1px solid #e1e4e8" :border-radius "4px"}}
+      [:option {:value ""} "Any priority"]
+      (for [p priorities]
+        ^{:key p}
+        [:option {:value (str p)} (str "Priority \u2265 " p)])]
+     (for [tag board-tags]
+       ^{:key tag}
+       [tag-chip tag (contains? tags tag)])
+     (when (task-filter/active? filter-state)
+       [:<>
+        [:span {:style {:font-size "12px" :color "#6a737d"}}
+         (str shown-count " of " (count all-tasks) " tasks")]
+        [:button {:on-click #(rf/dispatch [:clear-board-filters])
+                  :style {:font-size "12px" :padding "2px 8px" :cursor "pointer"
+                          :background "none" :border "1px solid #e1e4e8"
+                          :border-radius "4px" :color "#6a737d"}}
+         "Clear filters"]])]))
+
+;; ============================================================================
 ;; Board View (Kanban)
 ;; ============================================================================
 
 (defn board-view []
   (let [repo-path @(rf/subscribe [:board-repo])
-        tasks @(rf/subscribe [:board-tasks])
+        all-tasks @(rf/subscribe [:board-tasks])
+        tasks @(rf/subscribe [:filtered-board-tasks])
         show-done @(rf/subscribe [:board-show-done])
         selected @(rf/subscribe [:selected-task])
         grouped (group-by :status tasks)
@@ -257,7 +350,7 @@
         ;; migration) can have tasks whose status isn't in it. Append any
         ;; such statuses, in stable (first-seen) order, so they still get a
         ;; column instead of silently vanishing from the board.
-        extra-statuses (->> tasks
+        extra-statuses (->> all-tasks
                             (map :status)
                             distinct
                             (remove (set status-order)))
@@ -280,6 +373,8 @@
                 :checked (boolean show-done)
                 :on-change #(rf/dispatch [:toggle-board-show-done])}]
        "Show completed"]]
+
+     [filter-bar all-tasks (count tasks)]
 
      ;; Kanban columns
      [:div {:style {:display "flex" :gap "16px" :overflow-x "auto"

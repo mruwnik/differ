@@ -2,6 +2,9 @@
   "Tests for database operations.
    Uses a separate test database to avoid affecting production data."
   (:require ["better-sqlite3" :as Database]
+            ["os" :as os]
+            ["path" :as path]
+            [clojure.string :as str]
             [clojure.test :refer [deftest testing is use-fixtures]]
             [differ.test-helpers :as helpers]
             [differ.util :as util]
@@ -159,6 +162,24 @@
                            "SELECT COUNT(*) as count FROM comments
                             WHERE session_id = ? AND resolved = 0")]
     (.-count (.get stmt session-id))))
+
+;; ============================================================================
+;; Isolation Tests
+;; ============================================================================
+
+(deftest app-db-is-isolated-from-real-data-dir-test
+  (testing "differ.db (used by app code under test) opens a temp db, never the real data dir"
+    (let [real-db-path (path/join (os/homedir) ".local" "share" "differ" "review.db")
+          app-db-path (.-name (db/db))]
+      (is (not= real-db-path app-db-path))
+      (is (str/starts-with? app-db-path (os/tmpdir))))))
+
+(deftest app-db-is-fresh-per-test-test
+  (testing "rows written through differ.db by one test are not visible to the next"
+    (db/create-session! {:id "isolation-probe" :project "p" :branch "b"
+                         :target-branch "main" :repo-path "/tmp/isolation-probe"})
+    (helpers/init-test-db!)
+    (is (nil? (db/get-session "isolation-probe")))))
 
 ;; ============================================================================
 ;; Session CRUD Tests
@@ -630,3 +651,30 @@
           (reset! db/db-instance nil)
           (.close raw-db)
           (helpers/remove-dir dir))))))
+
+;; ============================================================================
+;; Task priority/tags migration: a DB whose tasks table predates the priority
+;; column must gain it (defaulting existing rows to 0) plus the task_tags table.
+;; ============================================================================
+
+(deftest run-migrations-adds-task-priority-and-tags-test
+  (let [dir (helpers/create-temp-dir "differ-priority-migration-test")
+        raw-db (Database (str dir "/raw.db"))]
+    (try
+      (.exec raw-db "CREATE TABLE boards (id TEXT PRIMARY KEY, repo_path TEXT NOT NULL UNIQUE,
+                       statuses TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+                     CREATE TABLE tasks (id TEXT PRIMARY KEY, board_id TEXT NOT NULL, title TEXT NOT NULL,
+                       description TEXT, status TEXT NOT NULL DEFAULT 'pending', worker_name TEXT,
+                       worker_id TEXT, persist INTEGER NOT NULL DEFAULT 0,
+                       created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+                     INSERT INTO boards VALUES ('b1', '/tmp/r', '[]', 'x', 'x');
+                     INSERT INTO tasks (id, board_id, title, created_at, updated_at)
+                       VALUES ('t1', 'b1', 'old task', 'x', 'x');")
+      (db/run-migrations! raw-db)
+      (db/run-migrations! raw-db)
+      (is (= 0 (.-priority (.get (.prepare raw-db "SELECT priority FROM tasks WHERE id = 't1'")))))
+      (.run (.prepare raw-db "INSERT INTO task_tags (task_id, tag) VALUES ('t1', 'legacy')"))
+      (is (= "legacy" (.-tag (.get (.prepare raw-db "SELECT tag FROM task_tags WHERE task_id = 't1'")))))
+      (finally
+        (.close raw-db)
+        (helpers/remove-dir dir)))))

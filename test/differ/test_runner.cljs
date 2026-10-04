@@ -1,6 +1,7 @@
 (ns differ.test-runner
   "Test runner that requires all test namespaces."
   (:require [cljs.test :refer [run-tests]]
+            [differ.test-helpers :as helpers]
             ;; Require all test namespaces
             ;; Core tests
             [differ.util-test]
@@ -23,6 +24,7 @@
             [differ.github-api-test]
             [differ.github-events-test]
             [differ.github-oauth-test]
+            [differ.github-oauth-async-test]
             [differ.session-events-test]
             [differ.oauth-test]
             [differ.gdocs-test]
@@ -35,9 +37,13 @@
             [differ.client.db-test]
             [differ.client.subs-test]
             [differ.client.highlight-test]
-            [differ.client.events-test]))
+            [differ.client.events-test]
+            [differ.client.task-filter-test]))
 
 (defn main []
+  ;; Never let app code under test open the real ~/.local/share/differ db,
+  ;; even from namespaces whose fixtures don't call init-test-db!.
+  (helpers/isolate-app-db! (helpers/create-temp-dir "differ-test-app-db"))
   (run-tests
    ;; Core tests
    'differ.util-test
@@ -60,6 +66,7 @@
    'differ.github-api-test
    'differ.github-events-test
    'differ.github-oauth-test
+   'differ.github-oauth-async-test
    'differ.session-events-test
    'differ.oauth-test
    'differ.gdocs-test
@@ -72,4 +79,5 @@
    'differ.client.db-test
    'differ.client.subs-test
    'differ.client.highlight-test
-   'differ.client.events-test))
+   'differ.client.events-test
+   'differ.client.task-filter-test))

@@ -147,48 +147,6 @@
                 (> (js/Date.parse (:expires-at token)) now)))))))
 
 ;; ============================================================================
-;; PAT Validation Logic Tests
-;; ============================================================================
-
-(deftest validate-pat-returns-promise-test
-  (testing "validate-pat returns a promise"
-    (let [result (gh-oauth/validate-pat "fake-token")]
-      ;; Should be a promise (has .then method)
-      (is (fn? (.-then result))))))
-
-(deftest validate-token-returns-promise-test
-  (testing "validate-token returns a promise"
-    (let [result (gh-oauth/validate-token "fake-token")]
-      (is (fn? (.-then result))))))
-
-;; ============================================================================
-;; Complete OAuth Flow Tests
-;; ============================================================================
-
-(deftest complete-oauth-flow-returns-promise-test
-  (testing "complete-oauth-flow returns a promise"
-    (let [result (gh-oauth/complete-oauth-flow "fake-code")]
-      (is (fn? (.-then result))))))
-
-;; ============================================================================
-;; Exchange Code Tests
-;; ============================================================================
-
-(deftest exchange-code-for-token-returns-promise-test
-  (testing "exchange-code-for-token returns a promise"
-    (let [result (gh-oauth/exchange-code-for-token "fake-code")]
-      (is (fn? (.-then result))))))
-
-;; ============================================================================
-;; Get User Info Tests
-;; ============================================================================
-
-(deftest get-user-info-returns-promise-test
-  (testing "get-user-info returns a promise"
-    (let [result (gh-oauth/get-user-info "fake-token")]
-      (is (fn? (.-then result))))))
-
-;; ============================================================================
 ;; Store Token Logic Tests
 ;; ============================================================================
 

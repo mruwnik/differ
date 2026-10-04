@@ -3,7 +3,8 @@
   (:require [re-frame.core :as rf]
             [clojure.string :as str]
             [differ.client.db :as db]
-            [differ.client.api :as api]))
+            [differ.client.api :as api]
+            [differ.client.task-filter :as task-filter]))
 
 ;; LocalStorage helpers
 (defn- load-preference [key]
@@ -751,7 +752,9 @@
      {:db (-> db
               (assoc-in [:route :page] :board)
               (assoc-in [:route :board-repo] repo-path)
-              (assoc :selected-task nil))
+              (assoc :selected-task nil)
+              (cond-> (not= repo-path (get-in db [:route :board-repo]))
+                (assoc :board-filter task-filter/default-filter)))
       ;; nil means connect to the global /events SSE endpoint (no session filter),
       ;; which receives broadcast events like task-created/task-updated.
       :sse-connect nil
@@ -797,6 +800,27 @@
          repo-path (get-in db [:route :board-repo])]
      {:db (assoc db :board-show-done new-val)
       :dispatch [:load-board-tasks repo-path]})))
+
+;; Board filters (applied client-side by the :filtered-board-tasks sub)
+(rf/reg-event-db
+ :set-board-search
+ (fn [db [_ text]]
+   (assoc-in db [:board-filter :search] text)))
+
+(rf/reg-event-db
+ :toggle-board-tag-filter
+ (fn [db [_ tag]]
+   (update db :board-filter task-filter/toggle-tag tag)))
+
+(rf/reg-event-db
+ :set-board-min-priority
+ (fn [db [_ priority]]
+   (assoc-in db [:board-filter :min-priority] priority)))
+
+(rf/reg-event-db
+ :clear-board-filters
+ (fn [db _]
+   (assoc db :board-filter task-filter/default-filter)))
 
 (rf/reg-event-fx
  :update-task-from-ui

@@ -33,8 +33,16 @@
 (defonce ^:private test-db-atom (atom nil))
 (defonce ^:private test-db-path-atom (atom nil))
 
+(defn isolate-app-db!
+  "Point differ.db at a fresh database under `dir` instead of the real data
+   dir. differ.db opens $XDG_DATA_HOME/differ/review.db lazily on first use."
+  [dir]
+  (db/close!)
+  (set! (.-XDG_DATA_HOME js/process.env) dir))
+
 (defn init-test-db!
-  "Initialize a fresh test database. Returns the db instance."
+  "Initialize a fresh test database. Returns the db instance.
+   Also gives app code (differ.db) its own fresh database in the same temp dir."
   []
   (when-let [old-db @test-db-atom]
     (.close old-db))
@@ -42,6 +50,7 @@
     (remove-dir (path/dirname old-path)))
   (let [dir (create-temp-dir "differ-test-db")
         db-path (path/join dir "test.db")
+        _ (isolate-app-db! dir)
         db (Database db-path)]
     (.pragma db "journal_mode = WAL")
     (.pragma db "foreign_keys = ON")
@@ -138,6 +147,7 @@
 (defn cleanup-test-db!
   "Close and remove the test database."
   []
+  (db/close!)
   (when-let [db @test-db-atom]
     (.close db)
     (reset! test-db-atom nil))

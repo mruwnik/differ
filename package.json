@@ -15,7 +15,7 @@
     "test:watch": "shadow-cljs watch test"
   },
   "dependencies": {
-    "better-sqlite3": "^11.6.0",
+    "better-sqlite3": "^13.0.3",
     "dompurify": "^3.3.1",
     "express": "^4.21.0",
     "highlight.js": "^11.9.0",

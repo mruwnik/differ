@@ -783,7 +783,8 @@
                 :worker-id nil
                 :note nil
                 :status "ready"
-                :move-to "in_progress"}
+                :move-to "in_progress"
+                :tags nil}
                @captured))))))
 
 (deftest dep-graph-tool-schemas-test
@@ -915,3 +916,51 @@
                   (catch :default e (ex-data e)))]
       (is (= 42 (:invalid-field ed))))))
 
+
+;; ============================================================================
+;; Priority & tags pass-through (stubbed; see take-task-tool-queue-test note)
+;; ============================================================================
+
+(deftest task-tool-schemas-advertise-priority-and-tags-test
+  (let [props-of (fn [tool-name]
+                   (->> mcp/tools
+                        (filter #(= tool-name (:name %)))
+                        first
+                        :inputSchema
+                        :properties))]
+    (is (= "integer" (get-in (props-of "create_task") [:priority :type])))
+    (is (= "array" (get-in (props-of "create_task") [:tags :type])))
+    (is (= "integer" (get-in (props-of "update_task") [:priority :type])))
+    (is (= "array" (get-in (props-of "update_task") [:tags :type])))
+    (is (= "array" (get-in (props-of "list_tasks") [:tags :type])))
+    (is (= "array" (get-in (props-of "take_task") [:tags :type])))))
+
+(deftest create-task-tool-passes-priority-and-tags-test
+  (let [captured (atom nil)]
+    (with-redefs [boards/create-task! (fn [opts] (reset! captured opts) {:id "t"})]
+      (mcp/handle-tool "create_task" {:repo-path "/tmp/r" :title "T"
+                                      :priority 3 :tags ["a"]})
+      (is (= {:repo-path "/tmp/r" :title "T" :description nil :blocked-by nil
+              :priority 3 :tags ["a"]}
+             @captured)))))
+
+(deftest list-tasks-tool-passes-tags-test
+  (let [captured (atom nil)]
+    (with-redefs [boards/get-board-by-repo (fn [_] {:id "b"})
+                  boards/list-tasks (fn [_ opts] (reset! captured opts) [])]
+      (mcp/handle-tool "list_tasks" {:repo-path "/tmp/r" :tags ["sec"]})
+      (is (= ["sec"] (:tags @captured))))))
+
+(deftest take-task-tool-passes-tags-test
+  (let [captured (atom nil)]
+    (with-redefs [boards/take-task! (fn [opts] (reset! captured opts) {:id "t" :board-id "b"})
+                  boards/get-board (fn [_] {:id "b" :repo-path "/tmp/r"})]
+      (mcp/handle-tool "take_task" {:repo-path "/tmp/r" :worker-name "w" :tags ["sec"]})
+      (is (= ["sec"] (:tags @captured))))))
+
+(deftest update-task-tool-passes-priority-and-tags-test
+  (let [captured (atom nil)]
+    (with-redefs [boards/update-task! (fn [_ opts] (reset! captured opts) {:id "t" :board-id "b"})
+                  boards/get-board (fn [_] {:id "b" :repo-path "/tmp/r"})]
+      (mcp/handle-tool "update_task" {:task-id "t" :priority 2 :tags ["x"]})
+      (is (= {:priority 2 :tags ["x"]} @captured)))))
