@@ -38,7 +38,7 @@ Additional context from user: $ARGUMENTS
 ## Reporting
 
 - **To user (terminal)**: Be detailed. List all issues by severity, include file references, explain the "why"
-- **To GitHub (submit_review body)**: Be terse. Verdict + issue counts + one-liner. That's it.
+- **In the review (submit_review body)**: Be terse. Verdict + issue counts + one-liner. That's it.
 
 ## Review Style
 
