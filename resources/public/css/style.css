@@ -28,6 +28,10 @@ a:hover {
   padding: 20px;
 }
 
+.app-container.full-width {
+  max-width: none;
+}
+
 .loading {
   display: flex;
   justify-content: center;

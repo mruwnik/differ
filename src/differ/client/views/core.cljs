@@ -92,6 +92,7 @@
 
 (defn app []
   [:div.app-container
+   {:class (when (= :board @(rf/subscribe [:current-page])) "full-width")}
    [header]
    [error-banner]
    [loading-overlay]
