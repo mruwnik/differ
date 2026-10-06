@@ -28,6 +28,7 @@
      :worker-id (.-worker_id row)
      :assignee (.-assignee row)
      :parent-id (.-parent_id row)
+     :claimer-active-at (.-claimer_active_at row)
      :persist (= 1 (.-persist row))
      :priority (or (.-priority row) 0)
      :created-at (.-created_at row)
@@ -49,6 +50,14 @@
      :from-status (.-from_status row)
      :to-status (.-to_status row)
      :worker-name (.-worker_name row)
+     :created-at (.-created_at row)}))
+
+(defn- row->claim-event [^js row]
+  (when row
+    {:id (.-id row)
+     :task-id (.-task_id row)
+     :worker-name (.-worker_name row)
+     :event (.-event row)
      :created-at (.-created_at row)}))
 
 ;; ============================================================================
@@ -187,6 +196,11 @@
 ;; add-note!) already bumps tasks.updated_at, so updated_at doubles as the
 ;; lease heartbeat and no separate claimed_at column is needed. Timestamps
 ;; are ISO-8601 UTC strings from util/now-iso, so they compare lexically.
+;;
+;; Because anyone can bump updated_at, tasks.claimer_active_at separately
+;; records when the claimer itself last acted: claiming, a note recorded under
+;; the claimer's name, or an update whose explicit author is the claimer. It
+;; is NULL while the task is unclaimed.
 
 (def ^:private ms-per-hour 3600000)
 
@@ -544,6 +558,28 @@
                    VALUES (?, ?, ?, ?, ?, ?, ?)")
         (util/gen-uuid) task-id board-id from-status to-status worker-name created-at))
 
+(def claim-event-kinds
+  "task_claim_events.event values. A lapsed claim leaves no event of its own
+   (the claim simply stays on the task with claim-stale) until a takeover."
+  #{"claimed" "released" "released_by_status_change" "taken_over"})
+
+(defn record-claim-event!
+  "Append a claim lifecycle event (see claim-event-kinds) for worker-name.
+   Call inside the transaction that changes the claim."
+  [task-id worker-name event created-at]
+  (.run (.prepare (db/db)
+                  "INSERT INTO task_claim_events (id, task_id, worker_name, event, created_at)
+                   VALUES (?, ?, ?, ?, ?)")
+        (util/gen-uuid) task-id worker-name event created-at))
+
+(defn list-task-claim-events
+  "Claim lifecycle events for a task, oldest first."
+  [task-id]
+  (let [^js stmt (.prepare (db/db)
+                           "SELECT * FROM task_claim_events WHERE task_id = ?
+                            ORDER BY created_at ASC, rowid ASC")]
+    (mapv row->claim-event (.all stmt task-id))))
+
 (defn create-task!
   "Create a task, auto-creating board for repo-path if needed.
    Accepts optional :blocked-by vector of task IDs, :priority (integer,
@@ -676,9 +712,9 @@
                               (let [tid (.-id row)
                                     now (util/now-iso)
                                     ^js update-stmt (.prepare (db/db)
-                                                              "UPDATE tasks SET status = ?, worker_name = ?, worker_id = ?, updated_at = ?
+                                                              "UPDATE tasks SET status = ?, worker_name = ?, worker_id = ?, claimer_active_at = ?, updated_at = ?
                                                    WHERE id = ?")]
-                                (.run update-stmt target-status worker-name worker-id now tid)
+                                (.run update-stmt target-status worker-name worker-id now now tid)
                                 (when (not= target-status (.-status row))
                                   (record-status-event! {:task-id tid :board-id (.-board_id row)
                                                          :from-status (.-status row) :to-status target-status
@@ -687,6 +723,9 @@
                                 (let [^js board-stmt (.prepare (db/db) "UPDATE boards SET updated_at = ? WHERE id = ?")]
                                   (.run board-stmt now (.-board_id row)))
                     ;; Any remaining previous worker held a lapsed claim; record the takeover
+                                (when-let [old-worker (.-worker_name row)]
+                                  (record-claim-event! tid old-worker "taken_over" now))
+                                (record-claim-event! tid worker-name "claimed" now)
                                 (when-let [old-worker (.-worker_name row)]
                                   (when (not= old-worker worker-name)
                                     (let [^js note-stmt (.prepare (db/db)
@@ -747,6 +786,14 @@
                                     new-worker-name (when-not releasing? (:worker-name task))
                                     new-worker-id (when-not releasing? (:worker-id task))
                                     author (if (str/blank? author) (:worker-name task) author)
+                                    ;; Who acted: the note's (defaulted) author, else only an
+                                    ;; explicit author - an anonymous field edit is nobody's.
+                                    actor (if note author (:author opts))
+                                    new-claimer-active-at (cond
+                                                            releasing? nil
+                                                            (and (:worker-name task)
+                                                                 (= actor (:worker-name task))) now
+                                                            :else (:claimer-active-at task))
                                     new-title (or title (:title task))
                                     new-description (if (contains? opts :description)
                                                       (:description opts)
@@ -764,9 +811,13 @@
                                     _ (when (contains? opts :parent-id)
                                         (validate-parent task-id (:board-id task) new-parent-id))
                                     ^js stmt (.prepare (db/db)
-                                                       "UPDATE tasks SET status = ?, title = ?, description = ?, persist = ?, priority = ?, worker_name = ?, worker_id = ?, assignee = ?, parent_id = ?, updated_at = ?
+                                                       "UPDATE tasks SET status = ?, title = ?, description = ?, persist = ?, priority = ?, worker_name = ?, worker_id = ?, assignee = ?, parent_id = ?, claimer_active_at = ?, updated_at = ?
                                                         WHERE id = ?")]
-                                (.run stmt new-status new-title new-description new-persist new-priority new-worker-name new-worker-id new-assignee new-parent-id now task-id)
+                                (.run stmt new-status new-title new-description new-persist new-priority new-worker-name new-worker-id new-assignee new-parent-id new-claimer-active-at now task-id)
+                                (when (and releasing? (:worker-name task))
+                                  (record-claim-event! task-id (:worker-name task)
+                                                       (if status-changed? "released_by_status_change" "released")
+                                                       now))
                                 ;; Attribute the transition to the worker releasing the
                                 ;; claim, else to the note author.
                                 (when status-changed?
@@ -845,9 +896,12 @@
                                                        "INSERT INTO task_notes (id, task_id, author, content, created_at)
                                                         VALUES (?, ?, ?, ?, ?)")]
                                 (.run stmt id task-id author content now)
-                                ;; Update task timestamp
+                                ;; Update task timestamp (and the claimer's, when it's their note)
                                 (let [^js task-stmt (.prepare (db/db) "UPDATE tasks SET updated_at = ? WHERE id = ?")]
                                   (.run task-stmt now task-id))
+                                (when (and (:worker-name task) (= author (:worker-name task)))
+                                  (.run (.prepare (db/db) "UPDATE tasks SET claimer_active_at = ? WHERE id = ?")
+                                        now task-id))
                                 ;; Update board timestamp
                                 (let [^js board-stmt (.prepare (db/db) "UPDATE boards SET updated_at = ? WHERE id = ?")]
                                   (.run board-stmt now (:board-id task)))))))]
@@ -1003,7 +1057,7 @@
   #{:id :board-id :title :description :status :worker-name :worker-id :assignee
     :persist :priority :tags :blocked-by :created-at :updated-at
     :checklist :checklist-complete
-    :commits :parent-id :children})
+    :commits :parent-id :children :claimer-active-at})
 
 (def default-dep-graph-fields
   "Fields returned on each related task when :fields is not specified."
@@ -1369,3 +1423,151 @@
          :rates-per-hour (into {} (map (fn [[k v]] [k (round2 (/ v hours))])) totals)
          :median-cycle-minutes (some-> (median cycles) round2)
          :cycle-sample-size (count cycles)}))))
+
+;; ============================================================================
+;; Active-work view (compact rows for a coordinating lead)
+;; ============================================================================
+
+(def active-row-fields
+  "Fields of a board-active row, selectable via :fields (:id is always kept)."
+  #{:id :title :status :priority :worker :assignee :claimer-last-update-min :quiet
+    :claim-stale :updated-min :last-note-min :last-note :commits :last-commits
+    :checklist :checklist-open :parent :blocked :blocked-by :last-release})
+
+(def ^:private short-id-length 8)
+
+(def ^:private active-title-length 80)
+
+(def ^:private active-note-length 120)
+
+(defn- short-id [id]
+  (subs id 0 (min short-id-length (count id))))
+
+(defn- truncate [s n]
+  (if (> (count s) n)
+    (str (subs s 0 (dec n)) "…")
+    s))
+
+(defn- minutes-since
+  "Whole minutes from iso to now-iso."
+  [iso now-iso]
+  (quot (- (iso->ms now-iso) (iso->ms iso)) 60000))
+
+(defn- validate-minutes [param-name v]
+  (when-not (and (integer? v) (not (neg? v)))
+    (throw (ex-info (str param-name " must be a non-negative integer, got: " (pr-str v))
+                    {:invalid param-name}))))
+
+(defn- latest-per-task
+  "Map of task-id -> the newest row of `table` (by created_at, then rowid) for
+   the given task IDs, converted by row-fn. Single query."
+  [table row-fn ids]
+  (if (empty? ids)
+    {}
+    (let [placeholders (str/join "," (repeat (count ids) "?"))
+          ^js stmt (.prepare (db/db)
+                             (str "SELECT * FROM " table " x WHERE x.task_id IN (" placeholders ")"
+                                  " AND x.rowid = (SELECT y.rowid FROM " table " y WHERE y.task_id = x.task_id"
+                                  " ORDER BY y.created_at DESC, y.rowid DESC LIMIT 1)"))]
+      (into {} (map (fn [r] (let [m (row-fn r)] [(:task-id m) m])))
+            (.all stmt (to-array ids))))))
+
+(defn- status-totals-line
+  "\"pending 3 | in_progress 2 | ...\" over the whole board, in board status
+   order (statuses no longer on the board last), skipping empty columns."
+  [board]
+  (let [^js stmt (.prepare (db/db) "SELECT status, COUNT(*) AS n FROM tasks WHERE board_id = ? GROUP BY status")
+        counts (into {} (map (fn [^js r] [(.-status r) (.-n r)])) (.all stmt (:id board)))
+        order (concat (:statuses board) (sort (remove (set (:statuses board)) (keys counts))))]
+    (->> order
+         (keep (fn [s] (when-let [n (get counts s)] (str s " " n))))
+         (str/join " | "))))
+
+(defn- compact-row
+  "Drop nil, false and empty-collection values so rows only carry signal."
+  [row]
+  (into {} (remove (fn [[_ v]] (or (nil? v) (false? v) (and (coll? v) (empty? v))))) row))
+
+(defn- active-row
+  [task {:keys [now quiet-min last-note last-claim-event]}]
+  (let [worker (:worker-name task)
+        claimer-min (when worker (some-> (:claimer-active-at task) (minutes-since now)))
+        checklist (:checklist task)
+        commits (:commits task)
+        released (when (and (nil? worker)
+                            (#{"released" "released_by_status_change"} (:event last-claim-event)))
+                   last-claim-event)]
+    (compact-row
+     {:id (short-id (:id task))
+      :title (truncate (or (:title task) "") active-title-length)
+      :status (:status task)
+      :priority (:priority task)
+      :worker worker
+      :assignee (:assignee task)
+      :claimer-last-update-min claimer-min
+      :quiet (boolean (and claimer-min (> claimer-min quiet-min)))
+      :claim-stale (:claim-stale task)
+      :updated-min (minutes-since (:updated-at task) now)
+      :last-note-min (some-> (:created-at last-note) (minutes-since now))
+      :last-note (when last-note
+                   (let [line (truncate (first (str/split-lines (or (:content last-note) ""))) active-note-length)]
+                     (if (:author last-note) (str (:author last-note) ": " line) line)))
+      :commits (when (seq commits) (count commits))
+      :last-commits (mapv short-id (take-last 2 commits))
+      :checklist (when (seq checklist)
+                   (str (count (filter :done checklist)) "/" (count checklist)))
+      :checklist-open (unticked-checklist-items task)
+      :parent (some-> (:parent-id task) short-id)
+      :blocked (boolean (seq (:blocked-by task)))
+      :blocked-by (mapv short-id (:blocked-by task))
+      :last-release (when released
+                      {:worker (:worker-name released)
+                       :reason (:event released)
+                       :min (minutes-since (:created-at released) now)})})))
+
+(defn board-active
+  "Compact view of a board's active work, for a lead polling many agents.
+   Lists tasks that are claimed, or whose updated_at is within the last
+   :since-min minutes (default 30), as one small row each (see
+   active-row-fields; nil/false/empty values are omitted). A row is :quiet
+   when it is claimed and its claimer has not acted (see claimer_active_at)
+   for more than :quiet-min minutes (default 20). Quiet rows sort first,
+   then queue order.
+   opts: :since-min, :quiet-min (non-negative integers), :status (raw
+   statuses to include), :limit (positive integer), :fields (row fields).
+   Returns {:totals \"status n | ...\" :total n :quiet n :tasks [row ...]}
+   where :total and :quiet count matches before :limit; nil for an unknown
+   board."
+  [board-id {:keys [since-min quiet-min status limit fields]}]
+  (let [since-min (if (nil? since-min) 30 since-min)
+        quiet-min (if (nil? quiet-min) 20 quiet-min)
+        fields (when (seq fields) (mapv coerce-field fields))]
+    (validate-minutes "since_min" since-min)
+    (validate-minutes "quiet_min" quiet-min)
+    (when (some? limit) (validate-limit limit))
+    (some-> fields (validate-dep-graph-fields active-row-fields))
+    (when-let [board (get-board board-id)]
+      (let [now (util/now-iso)
+            since (ms->iso (- (iso->ms now) (* since-min 60000)))
+            status-sql (when (seq status)
+                         (str " AND t.status IN (" (str/join "," (repeat (count status) "?")) ")"))
+            ^js stmt (.prepare (db/db)
+                               (str "SELECT t.* FROM tasks t WHERE t.board_id = ?"
+                                    " AND (t.worker_name IS NOT NULL OR t.updated_at >= ?)"
+                                    status-sql task-order-sql))
+            raw (mapv row->task (.all stmt (to-array (into [board-id since] status))))
+            ;; Keep the stored status: blocking is reported separately.
+            tasks (mapv (fn [r e] (assoc e :status (:status r))) raw (enrich-tasks raw))
+            ids (mapv :id tasks)
+            notes (latest-per-task "task_notes" row->note ids)
+            claims (latest-per-task "task_claim_events" row->claim-event ids)
+            rows (->> tasks
+                      (map (fn [t] (active-row t {:now now :quiet-min quiet-min
+                                                  :last-note (get notes (:id t))
+                                                  :last-claim-event (get claims (:id t))})))
+                      (sort-by (comp not :quiet)))
+            page (cond->> rows limit (take limit))]
+        {:totals (status-totals-line board)
+         :total (count rows)
+         :quiet (count (filter :quiet rows))
+         :tasks (mapv (fn [row] (cond-> row fields (select-keys (conj (set fields) :id)))) page)}))))

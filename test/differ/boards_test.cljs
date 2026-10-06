@@ -1857,3 +1857,172 @@
 
 (deftest release-is-an-allowed-update-key-test
   (is (contains? boards/update-task-allowed-keys :release)))
+
+;; ============================================================================
+;; board-active: compact "who is working on what" view
+;; ============================================================================
+
+(defn- active-at
+  "board-active for repo's board at `mins` minutes after the base time."
+  [repo mins opts]
+  (at-minute mins #(boards/board-active (:id (boards/get-board-by-repo repo)) opts)))
+
+(defn- active-row [repo mins opts task-id]
+  (first (filter #(= (subs task-id 0 8) (:id %)) (:tasks (active-at repo mins opts)))))
+
+(deftest board-active-selects-claimed-or-recently-changed-test
+  (let [repo "/tmp/active-select"
+        _old (at-minute 0 #(boards/create-task! {:repo-path repo :title "old idle"}))
+        claimed (at-minute 0 #(boards/create-task! {:repo-path repo :title "claimed"}))
+        recent (at-minute 0 #(boards/create-task! {:repo-path repo :title "recent"}))]
+    (at-minute 1 #(boards/take-task! {:task-id (:id claimed) :worker-name "alice"}))
+    (at-minute 50 #(boards/update-task! (:id recent) {:priority 2}))
+    (testing "default since_min 30: claimed cards and cards changed in the last 30 minutes"
+      (is (= #{(subs (:id claimed) 0 8) (subs (:id recent) 0 8)}
+             (set (map :id (:tasks (active-at repo 60 {})))))))
+    (testing "since_min widens the change window"
+      (is (= 3 (:total (active-at repo 60 {:since-min 61})))))
+    (testing "status filter"
+      (is (= [(subs (:id claimed) 0 8)]
+             (map :id (:tasks (active-at repo 60 {:status ["in_progress"]}))))))
+    (testing "limit caps rows but total counts all matches"
+      (let [result (active-at repo 60 {:limit 1})]
+        (is (= 1 (count (:tasks result))))
+        (is (= 2 (:total result)))))))
+
+(deftest board-active-claimer-activity-ignores-others-test
+  (let [repo "/tmp/active-claimer"
+        task (at-minute 0 #(boards/create-task! {:repo-path repo :title "t"}))]
+    (at-minute 0 #(boards/take-task! {:task-id (:id task) :worker-name "alice"}))
+    (at-minute 50 #(boards/add-note! {:task-id (:id task) :author "lead" :content "status?\nmore"}))
+    (at-minute 55 #(boards/update-task! (:id task) {:priority 3}))
+    (is (= {:id (subs (:id task) 0 8)
+            :title "t"
+            :status "in_progress"
+            :priority 3
+            :worker "alice"
+            :claimer-last-update-min 60
+            :quiet true
+            :updated-min 5
+            :last-note-min 10
+            :last-note "lead: status?"}
+           (active-row repo 60 {} (:id task))))))
+
+(deftest board-active-claimer-activity-test
+  (are [action]
+       (let [repo (str "/tmp/active-act-" (random-uuid))
+             task (at-minute 0 #(boards/create-task! {:repo-path repo :title "t"}))]
+         (at-minute 0 #(boards/take-task! {:task-id (:id task) :worker-name "alice"}))
+         (at-minute 50 #(action (:id task)))
+         (let [row (active-row repo 60 {} (:id task))]
+           (and (= 10 (:claimer-last-update-min row))
+                (nil? (:quiet row)))))
+    ;; A note without author is attributed to (and counts for) the worker.
+    #(boards/add-note! {:task-id % :content "progress"})
+    #(boards/add-note! {:task-id % :author "alice" :content "progress"})
+    #(boards/update-task! % {:checklist [{:item "unit" :done true}] :author "alice"})
+    #(boards/update-task! % {:note "progress"})))
+
+(deftest board-active-update-without-claimer-author-is-not-activity-test
+  (let [repo "/tmp/active-not-act"
+        task (at-minute 0 #(boards/create-task! {:repo-path repo :title "t"}))]
+    (at-minute 0 #(boards/take-task! {:task-id (:id task) :worker-name "alice"}))
+    (at-minute 50 #(boards/update-task! (:id task) {:checklist [{:item "unit"}]}))
+    (at-minute 51 #(boards/update-task! (:id task) {:priority 1 :author "lead"}))
+    (is (= 60 (:claimer-last-update-min (active-row repo 60 {} (:id task)))))))
+
+(deftest board-active-quiet-min-test
+  (let [repo "/tmp/active-quiet"
+        task (at-minute 0 #(boards/create-task! {:repo-path repo :title "t"}))]
+    (at-minute 0 #(boards/take-task! {:task-id (:id task) :worker-name "alice"}))
+    (are [mins opts quiet] (= quiet (:quiet (active-row repo mins opts (:id task))))
+      20 {}               nil
+      21 {}               true
+      21 {:quiet-min 30}  nil
+      31 {:quiet-min 30}  true)
+    (is (= 1 (:quiet (active-at repo 21 {}))))))
+
+(deftest board-active-row-details-test
+  (let [repo "/tmp/active-details"
+        parent (at-minute 0 #(boards/create-task! {:repo-path repo :title "umbrella"}))
+        dep (at-minute 0 #(boards/create-task! {:repo-path repo :title "dep"}))
+        long-title (apply str (repeat 100 "x"))
+        task (at-minute 0 #(boards/create-task! {:repo-path repo :title long-title
+                                                 :parent-id (:id parent)
+                                                 :blocked-by [(:id dep)]
+                                                 :assignee "alice"
+                                                 :checklist ["unit" "live" "review"]
+                                                 :add-commits ["aaaa1111" "bbbb2222" "cccc3333"]}))]
+    (at-minute 1 #(boards/update-task! (:id task) {:checklist [{:item "unit" :done true}]}))
+    (let [row (active-row repo 5 {} (:id task))]
+      (is (= 80 (count (:title row))))
+      (is (= {:assignee "alice"
+              :commits 3
+              :last-commits ["bbbb2222" "cccc3333"]
+              :checklist "1/3"
+              :checklist-open ["live" "review"]
+              :parent (subs (:id parent) 0 8)
+              :blocked true
+              :blocked-by [(subs (:id dep) 0 8)]}
+             (select-keys row [:assignee :commits :last-commits :checklist :checklist-open
+                               :parent :blocked :blocked-by :worker]))))))
+
+(deftest board-active-fields-test
+  (let [repo "/tmp/active-fields"
+        task (at-minute 0 #(boards/create-task! {:repo-path repo :title "t"}))]
+    (is (= [{:id (subs (:id task) 0 8) :status "pending"}]
+           (:tasks (active-at repo 1 {:fields ["status"]}))))
+    (is (thrown-with-msg? js/Error #"Unknown fields: bogus"
+                          (active-at repo 1 {:fields ["bogus"]})))))
+
+(deftest board-active-totals-test
+  (let [repo "/tmp/active-totals"
+        a (at-minute 0 #(boards/create-task! {:repo-path repo :title "a"}))]
+    (at-minute 0 #(boards/create-task! {:repo-path repo :title "b"}))
+    (at-minute 0 #(boards/create-task! {:repo-path repo :title "c"}))
+    (at-minute 0 #(boards/update-task! (:id a) {:status "done"}))
+    (is (= "pending 2 | done 1" (:totals (active-at repo 100 {}))))))
+
+(deftest board-active-validates-params-test
+  (let [repo "/tmp/active-validate"]
+    (boards/create-task! {:repo-path repo :title "t"})
+    (are [opts re] (thrown-with-msg? js/Error re (active-at repo 0 opts))
+      {:since-min -1}   #"since_min"
+      {:since-min 1.5}  #"since_min"
+      {:quiet-min "x"}  #"quiet_min"
+      {:limit 0}        #"limit")))
+
+(deftest board-active-last-release-test
+  (are [release reason]
+       (let [repo (str "/tmp/active-release-" (random-uuid))
+             task (at-minute 0 #(boards/create-task! {:repo-path repo :title "t"}))]
+         (at-minute 0 #(boards/take-task! {:task-id (:id task) :worker-name "alice"
+                                           :status "pending" :move-to "pending"}))
+         (at-minute 10 #(release (:id task)))
+         (= {:worker "alice" :reason reason :min 5}
+            (:last-release (active-row repo 15 {} (:id task)))))
+    #(boards/update-task! % {:status "in_review"})        "released_by_status_change"
+    #(boards/release-task! % {:worker-name "alice"})      "released"
+    #(boards/update-task! % {:release true})              "released"))
+
+(deftest board-active-last-release-only-when-unclaimed-test
+  (let [repo "/tmp/active-release-claimed"
+        task (at-minute 0 #(boards/create-task! {:repo-path repo :title "t"}))]
+    (at-minute 0 #(boards/take-task! {:task-id (:id task) :worker-name "alice"}))
+    (at-minute 1 #(boards/update-task! (:id task) {:status "in_review"}))
+    (at-minute 2 #(boards/take-task! {:task-id (:id task) :worker-name "rev"
+                                      :status "in_review" :move-to "in_review"}))
+    (is (nil? (:last-release (active-row repo 3 {} (:id task)))))))
+
+(deftest claim-events-record-takeover-test
+  (let [repo "/tmp/claim-events"
+        task (at-minute 0 #(boards/create-task! {:repo-path repo :title "t"}))]
+    (with-redefs [config/claim-lease-hours (constantly 1)]
+      (at-minute 0 #(boards/take-task! {:task-id (:id task) :worker-name "alice"}))
+      (at-minute 120 #(boards/take-task! {:task-id (:id task) :worker-name "bob"
+                                          :status "in_progress" :move-to "in_progress"})))
+    (is (= [{:worker-name "alice" :event "claimed" :created-at (iso-at 0)}
+            {:worker-name "alice" :event "taken_over" :created-at (iso-at 120)}
+            {:worker-name "bob" :event "claimed" :created-at (iso-at 120)}]
+           (mapv #(select-keys % [:worker-name :event :created-at])
+                 (boards/list-task-claim-events (:id task)))))))

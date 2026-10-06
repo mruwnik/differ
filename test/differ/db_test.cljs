@@ -789,3 +789,27 @@
       (finally
         (.close raw-db)
         (helpers/remove-dir dir)))))
+
+(deftest run-migrations-adds-claimer-active-test
+  (let [dir (helpers/create-temp-dir "differ-claimer-active-migration-test")
+        raw-db (Database (str dir "/raw.db"))]
+    (try
+      (.exec raw-db "CREATE TABLE boards (id TEXT PRIMARY KEY, repo_path TEXT NOT NULL UNIQUE,
+                       statuses TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+                     CREATE TABLE tasks (id TEXT PRIMARY KEY, board_id TEXT NOT NULL, title TEXT NOT NULL,
+                       description TEXT, status TEXT NOT NULL DEFAULT 'pending', worker_name TEXT,
+                       worker_id TEXT, persist INTEGER NOT NULL DEFAULT 0,
+                       created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+                     INSERT INTO boards VALUES ('b1', '/tmp/r', '[]', 'x', 'x');
+                     INSERT INTO tasks (id, board_id, title, worker_name, created_at, updated_at)
+                       VALUES ('t1', 'b1', 'claimed', 'alice', 'x', 'u1');
+                     INSERT INTO tasks (id, board_id, title, created_at, updated_at)
+                       VALUES ('t2', 'b1', 'free', 'x', 'u2');")
+      (db/run-migrations! raw-db)
+      (is (= "u1" (.-claimer_active_at (.get (.prepare raw-db "SELECT claimer_active_at FROM tasks WHERE id = 't1'")))))
+      (is (nil? (.-claimer_active_at (.get (.prepare raw-db "SELECT claimer_active_at FROM tasks WHERE id = 't2'")))))
+      (.run (.prepare raw-db "INSERT INTO task_claim_events (id, task_id, worker_name, event, created_at)
+                              VALUES ('c1', 't1', 'alice', 'claimed', 'x')"))
+      (finally
+        (.close raw-db)
+        (helpers/remove-dir dir)))))

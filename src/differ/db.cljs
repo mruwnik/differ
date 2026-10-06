@@ -136,6 +136,7 @@
       worker_id TEXT,
       assignee TEXT,
       parent_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+      claimer_active_at TEXT,
       persist INTEGER NOT NULL DEFAULT 0,
       priority INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -199,7 +200,17 @@
     );
 
     CREATE INDEX IF NOT EXISTS idx_task_status_events_board_time ON task_status_events(board_id, created_at);
-    CREATE INDEX IF NOT EXISTS idx_task_status_events_task ON task_status_events(task_id, to_status);"))
+    CREATE INDEX IF NOT EXISTS idx_task_status_events_task ON task_status_events(task_id, to_status);
+
+    CREATE TABLE IF NOT EXISTS task_claim_events (
+      id TEXT PRIMARY KEY,
+      task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      worker_name TEXT NOT NULL,
+      event TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_task_claim_events_task ON task_claim_events(task_id, created_at);"))
 
 (defn- migrate-kanban-tables
   "Add kanban board tables for existing databases."
@@ -233,6 +244,16 @@
     (when-not (columns "parent_id")
       (.exec db "ALTER TABLE tasks ADD COLUMN parent_id TEXT REFERENCES tasks(id) ON DELETE SET NULL")))
   (.exec db "CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_id)"))
+
+(defn- migrate-task-claimer-active
+  "Add tasks.claimer_active_at for databases whose tasks table predates it.
+   Existing claims are backfilled from updated_at, the best evidence we have."
+  [^js db]
+  (let [columns (set (map (fn [^js c] (.-name c))
+                          (.all (.prepare db "PRAGMA table_info(tasks)"))))]
+    (when-not (columns "claimer_active_at")
+      (.exec db "ALTER TABLE tasks ADD COLUMN claimer_active_at TEXT")
+      (.exec db "UPDATE tasks SET claimer_active_at = updated_at WHERE worker_name IS NOT NULL"))))
 
 (defn migrate-board-statuses
   "Rewrite boards still on an old default status list to the current
@@ -434,6 +455,7 @@
   (migrate-task-priority db)
   (migrate-task-assignee db)
   (migrate-task-parent db)
+  (migrate-task-claimer-active db)
   (migrate-board-statuses db))
 
 (defn init!

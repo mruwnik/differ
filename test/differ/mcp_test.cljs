@@ -1184,3 +1184,40 @@
     (is (some? (tool "release_task")))
     (is (= "boolean" (get-in (tool "update_task") [:inputSchema :properties :release :type])))
     (is (re-find #"release_task" (:description (tool "take_task"))))))
+
+;; ============================================================================
+;; board_active
+;; ============================================================================
+
+(deftest board-active-tool-schema-test
+  (let [tool (first (filter #(= "board_active" (:name %)) mcp/tools))
+        props (get-in tool [:inputSchema :properties])]
+    (is (= ["repo_path"] (get-in tool [:inputSchema :required])))
+    (is (= {:since_min "integer" :quiet_min "integer" :limit "integer"
+            :status "array" :fields "array"}
+           (into {} (map (fn [k] [k (get-in props [k :type])]))
+                 [:since_min :quiet_min :limit :status :fields])))))
+
+(deftest board-active-tool-passes-opts-test
+  (let [captured (atom nil)]
+    (with-redefs [boards/get-board-by-repo (fn [repo] (when (= "/tmp/r" repo) {:id "b"}))
+                  boards/board-active (fn [board-id opts]
+                                        (reset! captured [board-id opts])
+                                        {:tasks []})]
+      (is (= {:tasks []}
+             (mcp/handle-tool "board_active" {:repo-path "/tmp/r" :since-min 60 :quiet-min 10
+                                              :status ["in_progress"] :limit 5 :fields ["quiet"]})))
+      (is (= ["b" {:since-min 60 :quiet-min 10 :status ["in_progress"] :limit 5 :fields ["quiet"]}]
+             @captured)))))
+
+(deftest board-active-tool-unknown-repo-test
+  (with-redefs [boards/get-board-by-repo (constantly nil)]
+    (is (thrown-with-msg? js/Error #"No board found"
+                          (mcp/handle-tool "board_active" {:repo-path "/tmp/none"})))))
+
+(deftest board-active-tool-end-to-end-test
+  (let [task (boards/create-task! {:repo-path "/tmp/mcp-active" :title "t"})]
+    (mcp/handle-tool "take_task" {:task-id (:id task) :worker-name "alice"})
+    (is (= [{:id (subs (:id task) 0 8) :worker "alice"}]
+           (:tasks (mcp/handle-tool "board_active" {:repo-path "/tmp/mcp-active"
+                                                    :fields ["worker"]}))))))

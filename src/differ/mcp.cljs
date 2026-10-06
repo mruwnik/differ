@@ -353,7 +353,7 @@
                                :note {:type "string"
                                       :description "Optional note to add with the update"}
                                :author {:type "string"
-                                        :description "Author of the note (default: the task's current worker)"}}
+                                        :description "Author of the note (default: the task's current worker). When you hold the claim, an update counts as your activity for board_active only if it carries a note or author = your worker name."}}
                   :required ["task_id"]}}
 
    {:name "get_upstream"
@@ -397,6 +397,36 @@
                                        :description "Window length in hours, 1-720 (default 24)"}
                                :bucket_minutes {:type "integer"
                                                 :description "Bucket size in minutes; must divide the window evenly, at most 1440 buckets (default 60)"}}
+                  :required ["repo_path"]}}
+
+   {:name "board_active"
+    :description (str "Compact 'who is working on what' view of a repo's kanban board, for a lead coordinating many agents. Lists cards that are claimed, or that changed in the last `since_min` minutes, one small row each (empty/false fields are omitted): "
+                      "id (8-char prefix), title (truncated), status (stored; blocking is reported separately), priority, worker, assignee, "
+                      "claimer_last_update_min (minutes since the claimer itself acted: claimed, wrote a note under its name, or updated with author = its name; unlike updated_at, others touching the card don't reset it), "
+                      "quiet (claimed and claimer_last_update_min > quiet_min: the card to chase), claim_stale (lease lapsed), updated_min, last_note_min, last_note (\"author: first line\"), "
+                      "commits (count), last_commits (last 2), checklist (\"done/total\"), checklist_open (unticked items), parent, blocked + blocked_by, "
+                      "and on unclaimed cards last_release {worker, reason: released | released_by_status_change, min} to tell a finished worker from a lapsed claim. "
+                      "Quiet cards sort first. Returns {totals: \"status n | ...\" for the whole board, total, quiet (counts before limit), tasks}.")
+    :inputSchema {:type "object"
+                  :properties {:repo_path {:type "string"
+                                           :description "Absolute path to the repo directory"}
+                               :since_min {:type "integer"
+                                           :minimum 0
+                                           :description "Also list unclaimed cards changed within this many minutes (default 30)"}
+                               :quiet_min {:type "integer"
+                                           :minimum 0
+                                           :description "A claimed card is quiet when its claimer has not acted for more than this many minutes (default 20)"}
+                               :status {:type "array"
+                                        :items {:type "string"}
+                                        :description "Only cards in these statuses"}
+                               :limit {:type "integer"
+                                       :minimum 1
+                                       :description "Return at most this many rows; compare with total"}
+                               :fields {:type "array"
+                                        :items {:type "string"}
+                                        :description (str "Trim each row to these fields (id always included). Allowed: "
+                                                         (str/join ", " (sort (map #(str/replace (name %) "-" "_")
+                                                                                   boards/active-row-fields))))}}
                   :required ["repo_path"]}}
 
    {:name "random_name"
@@ -999,6 +1029,13 @@
         board (boards/get-board (:board-id task))]
     (sse/broadcast-all! :task-updated {:task task :repo-path (:repo-path board)})
     {:task task}))
+
+(defmethod handle-tool "board_active" [_ {:keys [repo-path since-min quiet-min status limit fields]}]
+  (let [board (boards/get-board-by-repo repo-path)]
+    (when-not board
+      (throw (js/Error. (str "No board found for repo: " repo-path))))
+    (boards/board-active (:id board) {:since-min since-min :quiet-min quiet-min
+                                      :status status :limit limit :fields fields})))
 
 (defmethod handle-tool "board_stats" [_ {:keys [repo-path hours bucket-minutes]}]
   (let [board (boards/get-board-by-repo repo-path)]
