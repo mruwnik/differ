@@ -1004,3 +1004,113 @@
   (let [task (boards/create-task! {:repo-path "/tmp/new-statuses" :title "t"})]
     (is (= "needs_owner" (:status (boards/update-task! (:id task) {:status "needs_owner"}))))
     (is (= "testing" (:status (boards/update-task! (:id task) {:status "testing"}))))))
+
+;; ============================================================================
+;; Checklist (ordered per-task "owed" verification items)
+;; ============================================================================
+
+(deftest create-task-checklist-defaults-test
+  (let [task (boards/create-task! {:repo-path "/tmp/cl-default" :title "t"})]
+    (is (= [] (:checklist task)))
+    (is (true? (:checklist-complete task)))))
+
+(deftest create-task-checklist-test
+  (let [task (boards/create-task! {:repo-path "/tmp/cl-create" :title "t"
+                                   :checklist [" unit " "integration" "live" "review" "unit"]})]
+    (testing "items are trimmed, deduped, unticked and kept in the given order"
+      (is (= [{:item "unit" :done false} {:item "integration" :done false}
+              {:item "live" :done false} {:item "review" :done false}]
+             (:checklist task))))
+    (testing "an unticked checklist is not complete"
+      (is (false? (:checklist-complete task))))
+    (testing "get-task returns the same checklist"
+      (is (= (:checklist task) (:checklist (boards/get-task (:id task))))))))
+
+(deftest create-task-rejects-blank-checklist-item-test
+  (is (thrown-with-msg? js/Error #"blank"
+                        (boards/create-task! {:repo-path "/tmp/cl-blank" :title "t"
+                                              :checklist ["unit" "  "]}))))
+
+(deftest update-task-checklist-merge-test
+  (let [task (boards/create-task! {:repo-path "/tmp/cl-merge" :title "t"
+                                   :checklist ["unit" "integration" "live"]})]
+    (testing "omitting checklist leaves it untouched"
+      (is (= (:checklist task) (:checklist (boards/update-task! (:id task) {:title "x"})))))
+    (testing "existing items get their done flag set; new items are appended"
+      (is (= [{:item "unit" :done true} {:item "integration" :done false}
+              {:item "live" :done false} {:item "review" :done false}]
+             (:checklist (boards/update-task! (:id task)
+                                              {:checklist [{:item " review "}
+                                                           {:item "unit" :done true}]})))))
+    (testing "an item can be unticked again"
+      (is (= {:item "unit" :done false}
+             (first (:checklist (boards/update-task! (:id task)
+                                                     {:checklist [{:item "unit" :done false}]}))))))
+    (testing "omitting :done on an existing item keeps its flag"
+      (boards/update-task! (:id task) {:checklist [{:item "live" :done true}]})
+      (is (= {:item "live" :done true}
+             (nth (:checklist (boards/update-task! (:id task) {:checklist [{:item "live"}]})) 2))))))
+
+(deftest update-task-checklist-complete-test
+  (let [task (boards/create-task! {:repo-path "/tmp/cl-complete" :title "t"
+                                   :checklist ["unit" "review"]})
+        updated (boards/update-task! (:id task) {:checklist [{:item "unit" :done true}
+                                                             {:item "review" :done true}]})]
+    (is (true? (:checklist-complete updated)))))
+
+(deftest update-task-remove-checklist-items-test
+  (let [task (boards/create-task! {:repo-path "/tmp/cl-remove" :title "t"
+                                   :checklist ["unit" "integration" "live"]})]
+    (testing "removes the named items (trimmed), ignoring unknown ones"
+      (is (= ["unit" "live"]
+             (mapv :item (:checklist (boards/update-task! (:id task)
+                                                          {:remove-checklist-items [" integration " "nope"]}))))))
+    (testing "removal happens before merge, so remove+add re-appends the item"
+      (is (= ["live" "unit"]
+             (mapv :item (:checklist (boards/update-task! (:id task)
+                                                          {:remove-checklist-items ["unit"]
+                                                           :checklist [{:item "unit"}]}))))))))
+
+(deftest update-task-checklist-validation-test
+  (let [task (boards/create-task! {:repo-path "/tmp/cl-validate" :title "t" :checklist ["unit"]})]
+    (testing "blank item names are rejected"
+      (is (thrown-with-msg? js/Error #"blank"
+                            (boards/update-task! (:id task) {:checklist [{:item " " :done true}]}))))
+    (testing "non-boolean done is rejected"
+      (is (thrown-with-msg? js/Error #"done must be a boolean"
+                            (boards/update-task! (:id task) {:checklist [{:item "unit" :done "yes"}]}))))
+    (testing "a rejected update changes nothing"
+      (is (= [{:item "unit" :done false}] (:checklist (boards/get-task (:id task))))))))
+
+(deftest moving-to-done-with-unticked-items-is-allowed-test
+  (let [task (boards/create-task! {:repo-path "/tmp/cl-done" :title "t" :checklist ["live"]})
+        updated (boards/update-task! (:id task) {:status "done"})]
+    (is (= "done" (:status updated)))
+    (is (false? (:checklist-complete updated)))))
+
+(deftest list-tasks-carries-checklists-test
+  (let [repo "/tmp/cl-list"
+        board (boards/get-or-create-board! repo)
+        _a (boards/create-task! {:repo-path repo :title "a" :checklist ["unit"]})
+        _b (boards/create-task! {:repo-path repo :title "b"})]
+    (is (= [[{:item "unit" :done false}] []]
+           (mapv :checklist (boards/list-tasks (:id board) {}))))))
+
+(deftest checklist-deleted-with-task-test
+  (let [task (boards/create-task! {:repo-path "/tmp/cl-cascade" :title "t" :checklist ["unit"]})]
+    (.run (.prepare (db/db) "DELETE FROM tasks WHERE id = ?") (:id task))
+    (is (= 0 (.-n (.get (.prepare (db/db) "SELECT COUNT(*) AS n FROM task_checklist WHERE task_id = ?")
+                        (:id task)))))))
+
+(deftest unticked-checklist-items-test
+  (is (= ["live" "review"]
+         (boards/unticked-checklist-items {:checklist [{:item "unit" :done true}
+                                                       {:item "live" :done false}
+                                                       {:item "review" :done false}]})))
+  (is (= [] (boards/unticked-checklist-items {:checklist []}))))
+
+(deftest checklist-is-an-allowed-update-and-graph-field-test
+  (is (contains? boards/update-task-allowed-keys :checklist))
+  (is (contains? boards/update-task-allowed-keys :remove-checklist-items))
+  (is (contains? boards/dep-graph-fields :checklist))
+  (is (contains? boards/dep-graph-fields :checklist-complete)))

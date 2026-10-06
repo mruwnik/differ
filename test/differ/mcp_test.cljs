@@ -941,7 +941,7 @@
       (mcp/handle-tool "create_task" {:repo-path "/tmp/r" :title "T"
                                       :priority 3 :tags ["a"] :assignee "alice"})
       (is (= {:repo-path "/tmp/r" :title "T" :description nil :blocked-by nil
-              :priority 3 :tags ["a"] :assignee "alice"}
+              :priority 3 :tags ["a"] :assignee "alice" :checklist nil}
              @captured)))))
 
 (deftest list-tasks-tool-passes-tags-test
@@ -964,3 +964,57 @@
                   boards/get-board (fn [_] {:id "b" :repo-path "/tmp/r"})]
       (mcp/handle-tool "update_task" {:task-id "t" :priority 2 :tags ["x"]})
       (is (= {:priority 2 :tags ["x"]} @captured)))))
+
+;; ============================================================================
+;; Checklist pass-through and done-with-unticked-items warning (stubbed)
+;; ============================================================================
+
+(defn- tool-named [tool-name]
+  (first (filter #(= tool-name (:name %)) mcp/tools)))
+
+(deftest task-tool-schemas-advertise-checklist-test
+  (is (= "string" (get-in (tool-named "create_task") [:inputSchema :properties :checklist :items :type])))
+  (is (= "object" (get-in (tool-named "update_task") [:inputSchema :properties :checklist :items :type])))
+  (is (= "array" (get-in (tool-named "update_task") [:inputSchema :properties :remove_checklist_items :type]))))
+
+(deftest task-tool-descriptions-say-tick-only-with-results-test
+  (is (re-find #"results, not plans"
+               (get-in (tool-named "create_task") [:inputSchema :properties :checklist :description])))
+  (is (re-find #"results, not plans"
+               (get-in (tool-named "update_task") [:inputSchema :properties :checklist :description]))))
+
+(deftest create-task-tool-passes-checklist-test
+  (let [captured (atom nil)]
+    (with-redefs [boards/create-task! (fn [opts] (reset! captured opts) {:id "t"})]
+      (mcp/handle-tool "create_task" {:repo-path "/tmp/r" :title "T" :checklist ["unit" "live"]})
+      (is (= ["unit" "live"] (:checklist @captured))))))
+
+(deftest update-task-tool-passes-checklist-test
+  (let [captured (atom nil)]
+    (with-redefs [boards/update-task! (fn [_ opts] (reset! captured opts) {:id "t" :board-id "b"})
+                  boards/get-board (fn [_] {:id "b" :repo-path "/tmp/r"})]
+      (mcp/handle-tool "update_task" {:task-id "t" :checklist [{:item "unit" :done true}]
+                                      :remove-checklist-items ["live"]})
+      (is (= {:checklist [{:item "unit" :done true}] :remove-checklist-items ["live"]}
+             @captured)))))
+
+(deftest update-task-tool-warns-on-done-with-unticked-items-test
+  (with-redefs [boards/update-task! (fn [_ _] {:id "t" :board-id "b" :status "done"
+                                               :checklist [{:item "unit" :done true}
+                                                           {:item "live" :done false}]})
+                boards/get-board (fn [_] {:id "b" :repo-path "/tmp/r"})]
+    (is (re-find #"unticked checklist items: live"
+                 (:warning (mcp/handle-tool "update_task" {:task-id "t" :status "done"}))))))
+
+(deftest update-task-tool-no-warning-when-checklist-complete-test
+  (with-redefs [boards/update-task! (fn [_ _] {:id "t" :board-id "b" :status "done"
+                                               :checklist [{:item "unit" :done true}]})
+                boards/get-board (fn [_] {:id "b" :repo-path "/tmp/r"})]
+    (is (= {:task {:id "t" :board-id "b" :status "done" :checklist [{:item "unit" :done true}]}}
+           (mcp/handle-tool "update_task" {:task-id "t" :status "done"})))))
+
+(deftest update-task-tool-no-warning-when-not-done-test
+  (with-redefs [boards/update-task! (fn [_ _] {:id "t" :board-id "b" :status "testing"
+                                               :checklist [{:item "live" :done false}]})
+                boards/get-board (fn [_] {:id "b" :repo-path "/tmp/r"})]
+    (is (nil? (:warning (mcp/handle-tool "update_task" {:task-id "t" :status "testing"}))))))
