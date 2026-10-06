@@ -84,6 +84,21 @@
    tag])
 
 ;; ============================================================================
+;; Stale claims
+;; ============================================================================
+
+(defn stale-claim-badge
+  "Warning badge for a claim whose lease lapsed (worker idle too long)."
+  [task]
+  (when (:claim-stale task)
+    [:span {:title (str "Stale claim: no activity for " (format-age (:updated-at task)))
+            :style {:font-size "10px" :font-weight "600" :padding "0 5px"
+                    :border-radius "8px" :white-space "nowrap"
+                    :background "#fff8c5" :color "#9a6700"
+                    :border "1px solid #d4a72c"}}
+     "⚠ stale"]))
+
+;; ============================================================================
 ;; Task Card
 ;; ============================================================================
 
@@ -112,6 +127,7 @@
        (when (:worker-name task)
          [:span {:style {:font-size "11px" :color "#6a737d"}}
           (:worker-name task)])
+       [stale-claim-badge task]
        (when (and (:assignee task) (not= (:assignee task) (:worker-name task)))
          [:span {:title "Assigned to"
                  :style {:font-size "11px" :color "#8250df"}}
@@ -211,6 +227,7 @@
             (when (:worker-name task)
               [:span {:style {:font-size "12px" :color "#6a737d"}}
                (str "Worker: " (:worker-name task))])
+            [stale-claim-badge task]
             (when (:worker-id task)
               [:span {:style {:font-size "11px" :color "#959da5"}}
                (str "(" (:worker-id task) ")")])
@@ -385,6 +402,7 @@
         tasks @(rf/subscribe [:filtered-board-tasks])
         show-done @(rf/subscribe [:board-show-done])
         selected @(rf/subscribe [:selected-task])
+        stale-count (count (filter :claim-stale all-tasks))
         grouped (group-by :status tasks)
         ;; status-order is the hardcoded canonical order; boards with
         ;; customized statuses (deliberately untouched by the statuses
@@ -407,7 +425,11 @@
       [:div
        [:h2 {:style {:margin "0" :color "#24292e"}}
         (extract-repo-name repo-path)]
-       [:span {:style {:color "#6a737d" :font-size "12px"}} repo-path]]
+       [:span {:style {:color "#6a737d" :font-size "12px"}} repo-path]
+       (when (pos? stale-count)
+         [:span {:title "Claimed tasks whose worker has gone quiet past the claim lease"
+                 :style {:margin-left "8px" :font-size "12px" :color "#9a6700"}}
+          (str "⚠ " stale-count " stale")])]
       [:label {:style {:font-size "12px" :color "#6a737d" :cursor "pointer"
                        :display "flex" :align-items "center" :gap "4px"}}
        [:input {:type "checkbox"

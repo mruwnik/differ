@@ -998,7 +998,7 @@
       (mcp/handle-tool "update_task" {:task-id "t" :priority 2 :tags ["x"]})
       (is (= {:priority 2 :tags ["x"]} @captured)))))
 
-;; ============================================================================
+;; =====================================================================
 ;; Task ID prefixes (real DB: init-test-db! isolates differ.db per test)
 ;; ============================================================================
 
@@ -1024,3 +1024,18 @@
     (is (re-find #"unique prefix" (desc "get_upstream" :task_id)))
     (is (re-find #"unique prefix" (desc "update_task" :blocked_by)))
     (is (re-find #"unique prefix" (desc "create_task" :blocked_by)))))
+=======
+(deftest list-tasks-tool-passes-stale-test
+  (let [captured (atom nil)]
+    (with-redefs [boards/get-board-by-repo (fn [_] {:id "b"})
+                  boards/list-tasks (fn [_ opts] (reset! captured opts) [])]
+      (mcp/handle-tool "list_tasks" {:repo-path "/tmp/r" :stale true})
+      (is (true? (:stale @captured))))))
+
+(deftest claim-lease-tool-descriptions-test
+  (let [tool (fn [tool-name] (first (filter #(= tool-name (:name %)) mcp/tools)))
+        take-desc (:description (tool "take_task"))]
+    (is (= "boolean" (get-in (tool "list_tasks") [:inputSchema :properties :stale :type])))
+    (is (re-find #"lapses after \d+ idle hours" take-desc))
+    (is (re-find #"add_note" take-desc))
+    (is (re-find #"update_task" take-desc))))

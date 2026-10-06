@@ -3,6 +3,7 @@
   (:require [clojure.test :refer [deftest testing is use-fixtures]]
             [differ.test-helpers :as helpers]
             [differ.boards :as boards]
+            [differ.config :as config]
             [differ.db :as db]
             [differ.util :as util]))
 
@@ -1007,7 +1008,7 @@
 
 ;; ============================================================================
 ;; Task ID prefix resolution
-;; =====================================================================
+;; ==============================================================
 
 (defn- insert-task-with-id!
   "Insert a task with a chosen id (create-task! always generates a UUID)."
@@ -1210,3 +1211,109 @@
     (testing "include_notes without fields returns full tasks with notes"
       (is (= "hello" (-> (boards/query-tasks (:id board) {:include-notes true})
                          :tasks first :notes first :content))))))
+=======
+;; Claim leases (a claim lapses after N hours without task activity)
+;; ============================================================================
+
+(def ^:private t0 "2026-01-01T00:00:00.000Z")
+
+(defn- hours-after-t0 [h]
+  (.toISOString (js/Date. (+ (js/Date.parse t0) (* h 3600000)))))
+
+(defn- at
+  "Run f with util/now-iso pinned `h` hours after t0 and a 4h claim lease."
+  [h f]
+  (with-redefs [util/now-iso (constantly (hours-after-t0 h))
+                config/claim-lease-hours (constantly 4)]
+    (f)))
+
+(defn- claimed-task!
+  "Create a task in `repo` and have `worker` claim it at t0 (-> in_progress)."
+  [repo worker]
+  (at 0 (fn []
+          (let [task (boards/create-task! {:repo-path repo :title "t"})]
+            (boards/take-task! {:task-id (:id task) :worker-name worker})))))
+
+(deftest claim-stale-flag-test
+  (let [task (claimed-task! "/tmp/lease-flag" "alice")
+        unclaimed (at 0 #(boards/create-task! {:repo-path "/tmp/lease-flag" :title "u"}))]
+    (is (false? (at 0 #(:claim-stale (boards/get-task (:id task))))))
+    (is (false? (at 3.9 #(:claim-stale (boards/get-task (:id task))))))
+    (is (true? (at 4 #(:claim-stale (boards/get-task (:id task))))))
+    (is (false? (at 10 #(:claim-stale (boards/get-task (:id unclaimed))))))))
+
+(deftest claim-lease-renewed-by-add-note-test
+  (let [task (claimed-task! "/tmp/lease-note" "alice")]
+    (at 3 #(boards/add-note! {:task-id (:id task) :author "alice" :content "still here"}))
+    (is (false? (at 6 #(:claim-stale (boards/get-task (:id task))))))
+    (is (true? (at 7 #(:claim-stale (boards/get-task (:id task))))))))
+
+(deftest claim-lease-renewed-by-update-task-test
+  (let [task (claimed-task! "/tmp/lease-update" "alice")]
+    (at 3 #(boards/update-task! (:id task) {:description "progress"}))
+    (is (false? (at 6 #(:claim-stale (boards/get-task (:id task))))))
+    (is (= "alice" (:worker-name (at 6 #(boards/get-task (:id task))))))))
+
+(deftest status-change-still-releases-claim-test
+  (let [task (claimed-task! "/tmp/lease-release" "alice")
+        updated (at 5 #(boards/update-task! (:id task) {:status "testing"}))]
+    (is (nil? (:worker-name updated)))
+    (is (false? (:claim-stale updated)))))
+
+(deftest take-task-explicit-respects-live-claim-test
+  (let [task (claimed-task! "/tmp/lease-live" "alice")]
+    (is (thrown-with-msg? js/Error #"already claimed by alice"
+                          (at 3 #(boards/take-task! {:task-id (:id task) :worker-name "bob"
+                                                     :status "in_progress"}))))))
+
+(deftest take-task-explicit-takes-over-lapsed-claim-test
+  (let [task (claimed-task! "/tmp/lease-explicit" "alice")
+        taken (at 5 #(boards/take-task! {:task-id (:id task) :worker-name "bob"
+                                         :status "in_progress"}))
+        notes (boards/list-notes (:id task))]
+    (is (= "bob" (:worker-name taken)))
+    (is (false? (:claim-stale taken)))
+    (is (= ["Claim taken over from alice (lease expired, idle 5h)"] (mapv :content notes)))
+    (is (= ["bob"] (mapv :author notes)))))
+
+(deftest take-task-takeover-note-precedes-claim-note-test
+  (let [task (claimed-task! "/tmp/lease-notes" "alice")]
+    (at 4.5 #(boards/take-task! {:task-id (:id task) :worker-name "bob"
+                                 :status "in_progress" :note "resuming"}))
+    (is (= ["Claim taken over from alice (lease expired, idle 4.5h)" "resuming"]
+           (mapv :content (boards/list-notes (:id task)))))))
+
+(deftest take-task-reclaiming-own-lapsed-claim-adds-no-note-test
+  (let [task (claimed-task! "/tmp/lease-self" "alice")
+        taken (at 5 #(boards/take-task! {:task-id (:id task) :worker-name "alice"
+                                         :status "in_progress"}))]
+    (is (= "alice" (:worker-name taken)))
+    (is (empty? (boards/list-notes (:id task))))))
+
+(deftest take-task-auto-assign-skips-live-claims-test
+  (let [repo "/tmp/lease-auto-live"]
+    (claimed-task! repo "alice")
+    (is (thrown-with-msg? js/Error #"No available tasks"
+                          (at 3 #(boards/take-task! {:repo-path repo :worker-name "bob"
+                                                     :status "in_progress"}))))))
+
+(deftest take-task-auto-assign-takes-over-lapsed-claim-test
+  (let [repo "/tmp/lease-auto"
+        task (claimed-task! repo "alice")
+        taken (at 6 #(boards/take-task! {:repo-path repo :worker-name "bob"
+                                         :status "in_progress"}))]
+    (is (= (:id task) (:id taken)))
+    (is (= "bob" (:worker-name taken)))
+    (is (= ["Claim taken over from alice (lease expired, idle 6h)"]
+           (mapv :content (boards/list-notes (:id task)))))))
+
+(deftest list-tasks-stale-filter-test
+  (let [repo "/tmp/lease-list"
+        board (boards/get-or-create-board! repo)
+        stale (claimed-task! repo "alice")
+        fresh (at 3 #(boards/take-task! {:task-id (:id (boards/create-task! {:repo-path repo :title "f"}))
+                                         :worker-name "bob"}))
+        _unclaimed (at 0 #(boards/create-task! {:repo-path repo :title "u"}))]
+    (is (= [(:id stale)] (at 5 #(mapv :id (boards/list-tasks (:id board) {:stale true})))))
+    (is (= #{(:id stale) (:id fresh)}
+           (at 5 #(set (map :id (filter :worker-name (boards/list-tasks (:id board) {})))))))))

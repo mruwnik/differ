@@ -114,6 +114,27 @@
               (aset js/process.env "DIFFER_EVENT_BUFFER_SIZE" orig)
               (js-delete js/process.env "DIFFER_EVENT_BUFFER_SIZE"))))))))
 
+(deftest claim-lease-hours-test
+  (let [orig (aget js/process.env "DIFFER_CLAIM_LEASE_HOURS")]
+    (try
+      (js-delete js/process.env "DIFFER_CLAIM_LEASE_HOURS")
+      (testing "defaults to 4 hours"
+        (is (= 4 (get-in config/defaults [:kanban :claim-lease-hours]))))
+      (testing "returns the config value"
+        (with-redefs [config/get-config (fn [] {:kanban {:claim-lease-hours 2}})]
+          (is (= 2 (config/claim-lease-hours)))))
+      (testing "falls back to the default when the config block omits it"
+        (with-redefs [config/get-config (fn [] {:kanban {}})]
+          (is (= 4 (config/claim-lease-hours)))))
+      (testing "DIFFER_CLAIM_LEASE_HOURS env var overrides config"
+        (aset js/process.env "DIFFER_CLAIM_LEASE_HOURS" "7")
+        (with-redefs [config/get-config (fn [] {:kanban {:claim-lease-hours 2}})]
+          (is (= 7 (config/claim-lease-hours)))))
+      (finally
+        (if orig
+          (aset js/process.env "DIFFER_CLAIM_LEASE_HOURS" orig)
+          (js-delete js/process.env "DIFFER_CLAIM_LEASE_HOURS"))))))
+
 ;; ============================================================================
 ;; client-config-keys tests
 ;; ============================================================================
