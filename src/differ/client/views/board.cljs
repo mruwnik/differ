@@ -3,7 +3,8 @@
   (:require [re-frame.core :as rf]
             [reagent.core :as r]
             [clojure.string :as str]
-            [differ.client.task-filter :as task-filter]))
+            [differ.client.task-filter :as task-filter]
+            [differ.client.board-stats :as board-stats]))
 
 (def status-order ["pending" "needs_owner" "planning" "plan_review" "ready" "in_progress" "blocked" "testing" "in_review" "done" "rejected"])
 
@@ -376,6 +377,142 @@
          "Clear filters"]])]))
 
 ;; ============================================================================
+;; Throughput Stats
+;; ============================================================================
+
+(def stats-chart-dims
+  {:slot-width 20 :bar-width 7 :gap 2 :plot-height 56})
+
+(defn clock-label [iso]
+  (.toLocaleTimeString (js/Date. iso) #js [] #js {:hour "2-digit" :minute "2-digit"}))
+
+(defn bucket-label
+  "\"14:00–15:00\" for a bucket starting at `iso`."
+  [iso bucket-minutes]
+  (str (clock-label iso) "–"
+       (clock-label (+ (.getTime (js/Date. iso)) (* bucket-minutes 60000)))))
+
+(defn bucket-summary [bucket bucket-minutes]
+  (str (bucket-label (:start bucket) bucket-minutes) ": "
+       (:done bucket 0) " done, " (:reverted bucket 0) " reverted"))
+
+(defn stat-tile [label value hint]
+  [:div {:style {:min-width "92px" :padding "6px 10px" :background "#fff"
+                 :border "1px solid #e1e4e8" :border-radius "6px"}}
+   [:div {:style {:font-size "11px" :color "#6a737d"}} label]
+   [:div {:style {:font-size "18px" :font-weight "600" :color "#24292e"}} value]
+   [:div {:style {:font-size "10px" :color "#959da5"}} hint]])
+
+(defn throughput-chart
+  "Grouped columns of done vs reverted per bucket. Hovering or focusing a
+   bucket highlights it and shows its counts in the caption below."
+  [_buckets _bucket-minutes]
+  (let [hovered (r/atom nil)]
+    (fn [buckets bucket-minutes]
+      (let [{:keys [slot-width plot-height]} stats-chart-dims
+            {:keys [y-max bars]} (board-stats/chart-bars buckets stats-chart-dims)
+            axis-w 24
+            top 6
+            n (count buckets)
+            width (+ axis-w (* slot-width n))
+            y0 (+ top plot-height)
+            slot-x (fn [i] (+ axis-w (* i slot-width)))
+            axis-text {:font-size 10 :fill "#6a737d"}]
+        [:div
+         [:div {:style {:display "flex" :gap "12px" :font-size "11px" :color "#24292e"
+                        :margin-bottom "4px"}}
+          (for [{:keys [key label color]} board-stats/series]
+            ^{:key key}
+            [:span {:style {:display "flex" :align-items "center" :gap "4px"}}
+             [:span {:style {:width "8px" :height "8px" :border-radius "2px" :background color}}]
+             label])]
+         [:svg {:width width :height (+ y0 14) :role "img"
+                :aria-label (str "Done and reverted transitions per " bucket-minutes
+                                 " minutes over the last " n " buckets")
+                :style {:display "block"}}
+          [:line {:x1 axis-w :x2 width :y1 top :y2 top :stroke "#eaecef" :stroke-width 1}]
+          [:line {:x1 axis-w :x2 width :y1 y0 :y2 y0 :stroke "#d1d5da" :stroke-width 1}]
+          [:text (merge axis-text {:x (- axis-w 4) :y (+ top 4) :text-anchor "end"}) y-max]
+          [:text (merge axis-text {:x (- axis-w 4) :y y0 :text-anchor "end"}) 0]
+          (when-let [i @hovered]
+            [:rect {:x (slot-x i) :y top :width slot-width :height plot-height :fill "#f1f8ff"}])
+          (for [{:keys [bucket key x w h color]} bars]
+            ^{:key (str bucket "-" (name key))}
+            [:path {:d (board-stats/bar-path (+ axis-w x) y0 w h) :fill color}])
+          (when (pos? n)
+            [:<>
+             [:text (merge axis-text {:x axis-w :y (+ y0 12)}) (clock-label (:start (first buckets)))]
+             [:text (merge axis-text {:x width :y (+ y0 12) :text-anchor "end"}) "now"]])
+          ;; Hit targets span the full slot height, wider than the bars.
+          (for [[i bucket] (map-indexed vector buckets)]
+            ^{:key i}
+            [:rect {:x (slot-x i) :y top :width slot-width :height plot-height
+                    :fill "transparent" :tab-index 0
+                    :on-mouse-enter #(reset! hovered i)
+                    :on-mouse-leave #(reset! hovered nil)
+                    :on-focus #(reset! hovered i)
+                    :on-blur #(reset! hovered nil)}
+             [:title (bucket-summary bucket bucket-minutes)]])]
+         [:div {:style {:font-size "11px" :color "#6a737d" :min-height "15px"}}
+          (when-let [bucket (some->> @hovered (get buckets))]
+            (bucket-summary bucket bucket-minutes))]]))))
+
+(defn stats-table [buckets bucket-minutes]
+  (let [cell {:padding "1px 8px" :text-align "right"
+              :font-variant-numeric "tabular-nums"}]
+    [:details {:style {:font-size "11px" :color "#6a737d"}}
+     [:summary {:style {:cursor "pointer"}} "Table view"]
+     [:table {:style {:border-collapse "collapse" :color "#24292e" :margin-top "4px"}}
+      [:thead
+       [:tr
+        [:th {:style (assoc cell :text-align "left")} "Time"]
+        (for [k ["Done" "Reverted" "Rejected" "Created" "Reopened"]]
+          ^{:key k} [:th {:style cell} k])]]
+      [:tbody
+       (for [b buckets]
+         ^{:key (:start b)}
+         [:tr
+          [:td {:style (assoc cell :text-align "left")} (bucket-label (:start b) bucket-minutes)]
+          (for [k [:done :reverted :rejected :created :reopened]]
+            ^{:key k} [:td {:style cell} (get b k 0)])])]]]))
+
+(defn stats-strip
+  "Collapsible throughput strip: per-hour rate tiles plus an hourly chart."
+  []
+  (let [stats @(rf/subscribe [:board-stats])
+        collapsed? @(rf/subscribe [:board-stats-collapsed])
+        {:keys [hours bucket-minutes buckets rates-per-hour]} stats
+        window (str "last " hours "h")]
+    (when stats
+      [:div {:style {:margin-bottom "16px" :padding "8px 12px" :background "#f6f8fa"
+                     :border "1px solid #e1e4e8" :border-radius "6px"}}
+       [:button {:aria-expanded (not collapsed?)
+                 :on-click #(rf/dispatch [:toggle-board-stats-collapsed])
+                 :style {:background "none" :border "none" :padding "0" :cursor "pointer"
+                         :font-size "12px" :font-weight "600" :color "#24292e"}}
+        (str (if collapsed? "▸" "▾") " Throughput · " window)
+        (when collapsed?
+          [:span {:style {:font-weight "400" :color "#6a737d" :margin-left "8px"}}
+           (str (board-stats/format-rate (:done rates-per-hour)) " done/h · "
+                (board-stats/format-rate (:reverted rates-per-hour)) " reverted/h")])]
+       (when-not collapsed?
+         (if-not (board-stats/active? stats)
+           [:p {:style {:margin "8px 0 0" :font-size "12px" :color "#6a737d"}}
+            "No activity recorded yet. Status changes are logged from this version onward; earlier history isn't counted."]
+           [:div {:style {:display "flex" :gap "16px" :flex-wrap "wrap" :align-items "flex-start"
+                          :margin-top "8px"}}
+            [:div {:style {:display "flex" :gap "8px" :flex-wrap "wrap"}}
+             [stat-tile "Done per hour" (board-stats/format-rate (:done rates-per-hour)) window]
+             [stat-tile "Reverted per hour" (board-stats/format-rate (:reverted rates-per-hour)) window]
+             [stat-tile "Done" (board-stats/last-bucket-count stats :done) (str "last " bucket-minutes "m")]
+             [stat-tile "Reverted" (board-stats/last-bucket-count stats :reverted) (str "last " bucket-minutes "m")]
+             [stat-tile "Median cycle" (board-stats/format-minutes (:median-cycle-minutes stats))
+              (str "in progress → done, n=" (:cycle-sample-size stats))]]
+            [:div {:style {:overflow-x "auto" :max-width "100%"}}
+             [throughput-chart buckets bucket-minutes]
+             [stats-table buckets bucket-minutes]]]))])))
+
+;; ============================================================================
 ;; Board View (Kanban)
 ;; ============================================================================
 
@@ -414,6 +551,8 @@
                 :checked (boolean show-done)
                 :on-change #(rf/dispatch [:toggle-board-show-done])}]
        "Show completed"]]
+
+     [stats-strip]
 
      [filter-bar all-tasks (count tasks)]
 

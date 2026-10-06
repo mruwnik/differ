@@ -39,6 +39,16 @@
      :content (.-content row)
      :created-at (.-created_at row)}))
 
+(defn- row->status-event [^js row]
+  (when row
+    {:id (.-id row)
+     :task-id (.-task_id row)
+     :board-id (.-board_id row)
+     :from-status (.-from_status row)
+     :to-status (.-to_status row)
+     :worker-name (.-worker_name row)
+     :created-at (.-created_at row)}))
+
 ;; ============================================================================
 ;; Priority, tag & assignee helpers
 ;; ============================================================================
@@ -268,6 +278,15 @@
     (throw (js/Error. (str "Invalid status '" status "'. Allowed: "
                            (str/join ", " (:statuses board)))))))
 
+(defn record-status-event!
+  "Append a status transition to the task_status_events log (from-status nil
+   = task creation). Call inside the transaction that changes the status."
+  [{:keys [task-id board-id from-status to-status worker-name created-at]}]
+  (.run (.prepare (db/db)
+                  "INSERT INTO task_status_events (id, task_id, board_id, from_status, to_status, worker_name, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)")
+        (util/gen-uuid) task-id board-id from-status to-status worker-name created-at))
+
 (defn create-task!
   "Create a task, auto-creating board for repo-path if needed.
    Accepts optional :blocked-by vector of task IDs, :priority (integer,
@@ -287,6 +306,9 @@
                                     (normalize-assignee assignee) now now))
                             (let [^js update-stmt (.prepare (db/db) "UPDATE boards SET updated_at = ? WHERE id = ?")]
                               (.run update-stmt now (:id board)))
+                            ;; New tasks take the tasks.status column default.
+                            (record-status-event! {:task-id id :board-id (:id board)
+                                                   :to-status "pending" :created-at now})
                             (when (seq blocked-by)
                               (set-task-dependencies! id blocked-by))
                             (when (seq tags)
@@ -385,6 +407,10 @@
                                                               "UPDATE tasks SET status = ?, worker_name = ?, worker_id = ?, updated_at = ?
                                                    WHERE id = ?")]
                                 (.run update-stmt target-status worker-name worker-id now tid)
+                                (when (not= target-status (.-status row))
+                                  (record-status-event! {:task-id tid :board-id (.-board_id row)
+                                                         :from-status (.-status row) :to-status target-status
+                                                         :worker-name worker-name :created-at now}))
                     ;; Update board timestamp
                                 (let [^js board-stmt (.prepare (db/db) "UPDATE boards SET updated_at = ? WHERE id = ?")]
                                   (.run board-stmt now (.-board_id row)))
@@ -440,6 +466,13 @@
                                                        "UPDATE tasks SET status = ?, title = ?, description = ?, persist = ?, priority = ?, worker_name = ?, worker_id = ?, assignee = ?, updated_at = ?
                                                         WHERE id = ?")]
                                 (.run stmt new-status new-title new-description new-persist new-priority new-worker-name new-worker-id new-assignee now task-id)
+                                ;; Attribute the transition to the worker releasing the
+                                ;; claim, else to the note author.
+                                (when status-changed?
+                                  (record-status-event! {:task-id task-id :board-id (:board-id task)
+                                                         :from-status (:status task) :to-status status
+                                                         :worker-name (or (:worker-name task) author)
+                                                         :created-at now}))
                                 ;; Update board timestamp
                                 (let [^js board-stmt (.prepare (db/db) "UPDATE boards SET updated_at = ? WHERE id = ?")]
                                   (.run board-stmt now (:board-id task)))
@@ -749,3 +782,143 @@
                                               rows))]
               (assoc board :task-counts status-counts)))
           boards)))
+
+;; ============================================================================
+;; Status history & throughput stats
+;; ============================================================================
+
+(defn list-task-status-events
+  "Status transitions recorded for a task, oldest first."
+  [task-id]
+  (let [^js stmt (.prepare (db/db)
+                           "SELECT * FROM task_status_events WHERE task_id = ?
+                            ORDER BY created_at ASC, rowid ASC")]
+    (mapv row->status-event (.all stmt task-id))))
+
+(defn classify-transition
+  "Classify a status transition using the board's status order `statuses`:
+     :created  - from nil (task creation)
+     :done     - to done
+     :rejected - to rejected
+     :reopened - out of done/rejected to anything else
+     :reverted - to a status earlier in `statuses` than from
+     :advanced - to a status later in `statuses` than from
+     :moved    - either status isn't in `statuses` (e.g. removed from the board)"
+  [statuses from to]
+  (let [position (fn [s] (let [i (.indexOf statuses s)] (when-not (neg? i) i)))
+        from-i (position from)
+        to-i (position to)]
+    (cond
+      (nil? from) :created
+      (= "done" to) :done
+      (= "rejected" to) :rejected
+      (#{"done" "rejected"} from) :reopened
+      (or (nil? from-i) (nil? to-i)) :moved
+      (< to-i from-i) :reverted
+      (> to-i from-i) :advanced
+      :else :moved)))
+
+(def stat-kinds
+  "Transition kinds counted by board-stats (:moved is not)."
+  [:created :advanced :done :reverted :rejected :reopened])
+
+(def ^:private max-stats-hours 720)
+
+(def ^:private max-stats-buckets 1440)
+
+(defn- validate-stats-opts [hours bucket-minutes]
+  (when-not (and (integer? hours) (<= 1 hours max-stats-hours))
+    (throw (js/Error. (str "hours must be an integer between 1 and " max-stats-hours
+                           ", got: " (pr-str hours)))))
+  (let [window-minutes (* 60 hours)]
+    (when-not (and (integer? bucket-minutes)
+                   (pos? bucket-minutes)
+                   (zero? (mod window-minutes bucket-minutes)))
+      (throw (js/Error. (str "bucket_minutes must be a positive integer dividing the "
+                             window-minutes "-minute window, got: " (pr-str bucket-minutes)))))
+    (when (> (quot window-minutes bucket-minutes) max-stats-buckets)
+      (throw (js/Error. (str "bucket_minutes too small: at most " max-stats-buckets
+                             " buckets per window"))))))
+
+(defn- round2 [x]
+  (/ (js/Math.round (* x 100)) 100))
+
+(defn- median [xs]
+  (when (seq xs)
+    (let [v (vec (sort xs))
+          mid (quot (count v) 2)]
+      (if (odd? (count v))
+        (v mid)
+        (/ (+ (v (dec mid)) (v mid)) 2)))))
+
+(defn- iso->ms [iso] (.getTime (js/Date. iso)))
+
+(defn- ms->iso [ms] (.toISOString (js/Date. ms)))
+
+(defn- cycle-minutes
+  "Minutes from each task's first in_progress to its last done, for tasks
+   done within [window-start, window-end]. Tasks never in_progress are skipped."
+  [board-id window-start window-end]
+  (let [^js stmt (.prepare (db/db)
+                           "SELECT d.task_id, MAX(d.created_at) AS done_at,
+                                   (SELECT MIN(s.created_at) FROM task_status_events s
+                                    WHERE s.task_id = d.task_id AND s.to_status = 'in_progress') AS started_at
+                            FROM task_status_events d
+                            WHERE d.board_id = ? AND d.to_status = 'done'
+                              AND d.created_at >= ? AND d.created_at <= ?
+                            GROUP BY d.task_id")]
+    (->> (.all stmt board-id window-start window-end)
+         (keep (fn [^js r]
+                 (when-let [started (.-started_at r)]
+                   (let [minutes (/ (- (iso->ms (.-done_at r)) (iso->ms started)) 60000)]
+                     (when-not (neg? minutes) minutes))))))))
+
+(defn board-stats
+  "Throughput over the trailing window ending now, from task_status_events.
+   opts: :hours (integer 1-720, default 24), :bucket-minutes (positive integer
+   dividing the window, default 60, at most 1440 buckets). Validates opts
+   before looking up the board; returns nil for an unknown board.
+
+   Returns {:hours :bucket-minutes :window-start :window-end
+            :buckets [{:start iso <kind> n ...}]  ; every bucket, even empty
+            :totals {<kind> n} :rates-per-hour {<kind> x}
+            :median-cycle-minutes x-or-nil :cycle-sample-size n}
+   where <kind> is each of stat-kinds (see classify-transition). History only
+   exists from when the event log was introduced; nothing is backfilled."
+  [board-id {:keys [hours bucket-minutes]}]
+  (let [hours (if (nil? hours) 24 hours)
+        bucket-minutes (if (nil? bucket-minutes) 60 bucket-minutes)]
+    (validate-stats-opts hours bucket-minutes)
+    (when-let [board (get-board board-id)]
+      (let [end-ms (iso->ms (util/now-iso))
+            bucket-ms (* bucket-minutes 60000)
+            n (quot (* 60 hours) bucket-minutes)
+            start-ms (- end-ms (* n bucket-ms))
+            window-start (ms->iso start-ms)
+            window-end (ms->iso end-ms)
+            zero-counts (zipmap stat-kinds (repeat 0))
+            ^js stmt (.prepare (db/db)
+                               "SELECT from_status, to_status, created_at FROM task_status_events
+                                WHERE board_id = ? AND created_at >= ? AND created_at <= ?")
+            counts (reduce (fn [acc ^js r]
+                             (let [kind (classify-transition (:statuses board)
+                                                             (.-from_status r) (.-to_status r))
+                                   ;; An event at exactly window-end belongs to the last bucket.
+                                   idx (min (dec n) (quot (- (iso->ms (.-created_at r)) start-ms) bucket-ms))]
+                               (if (contains? zero-counts kind)
+                                 (update-in acc [idx kind] inc)
+                                 acc)))
+                           (vec (repeat n zero-counts))
+                           (.all stmt board-id window-start window-end))
+            totals (apply merge-with + zero-counts counts)
+            cycles (cycle-minutes board-id window-start window-end)]
+        {:hours hours
+         :bucket-minutes bucket-minutes
+         :window-start window-start
+         :window-end window-end
+         :buckets (into [] (map-indexed (fn [i c] (assoc c :start (ms->iso (+ start-ms (* i bucket-ms))))))
+                        counts)
+         :totals totals
+         :rates-per-hour (into {} (map (fn [[k v]] [k (round2 (/ v hours))])) totals)
+         :median-cycle-minutes (some-> (median cycles) round2)
+         :cycle-sample-size (count cycles)}))))

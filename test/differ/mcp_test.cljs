@@ -964,3 +964,36 @@
                   boards/get-board (fn [_] {:id "b" :repo-path "/tmp/r"})]
       (mcp/handle-tool "update_task" {:task-id "t" :priority 2 :tags ["x"]})
       (is (= {:priority 2 :tags ["x"]} @captured)))))
+
+;; ============================================================================
+;; board_stats (stubbed; see take-task-tool-queue-test note)
+;; ============================================================================
+
+(deftest board-stats-tool-schema-test
+  (let [tool (first (filter #(= "board_stats" (:name %)) mcp/tools))
+        props (get-in tool [:inputSchema :properties])]
+    (is (= ["repo_path"] (get-in tool [:inputSchema :required])))
+    (is (= "integer" (get-in props [:hours :type])))
+    (is (= "integer" (get-in props [:bucket_minutes :type])))))
+
+(deftest board-stats-tool-passes-opts-test
+  (let [captured (atom nil)]
+    (with-redefs [boards/get-board-by-repo (fn [repo] (when (= "/tmp/r" repo) {:id "b"}))
+                  boards/board-stats (fn [board-id opts]
+                                       (reset! captured [board-id opts])
+                                       {:buckets []})]
+      (is (= {:buckets []}
+             (mcp/handle-tool "board_stats" {:repo-path "/tmp/r" :hours 6 :bucket-minutes 30})))
+      (is (= ["b" {:hours 6 :bucket-minutes 30}] @captured)))))
+
+(deftest board-stats-tool-coerces-numeric-strings-test
+  (let [coerced (#'mcp/validate-tool-args "board_stats"
+                                          (util/keys->kebab {:repo_path "/tmp/r"
+                                                             :hours "12"
+                                                             :bucket_minutes "15"}))]
+    (is (= {:repo-path "/tmp/r" :hours 12 :bucket-minutes 15} coerced))))
+
+(deftest board-stats-tool-unknown-repo-test
+  (with-redefs [boards/get-board-by-repo (constantly nil)]
+    (is (thrown-with-msg? js/Error #"No board found"
+                          (mcp/handle-tool "board_stats" {:repo-path "/tmp/none"})))))
