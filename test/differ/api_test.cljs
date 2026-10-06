@@ -720,3 +720,15 @@
     (is (pos? (index-of "/api/boards/:id/stats")))
     (is (< (index-of "/api/boards/:id/stats") (index-of "/api/boards/:id")))
     (is (< (index-of "/api/boards/:id/tasks") (index-of "/api/boards/:id")))))
+
+;; ============================================================================
+;; Board tasks endpoint
+;; ============================================================================
+
+(deftest list-board-tasks-handler-returns-statuses-test
+  (let [board (boards/get-or-create-board! "/tmp/api-board-statuses")
+        _ (boards/add-board-status! (:id board) "qa" {})
+        [res get-response] (make-mock-res)]
+    (api/list-board-tasks-handler
+     (make-mock-req :params {:id (js/encodeURIComponent "/tmp/api-board-statuses")}) res)
+    (is (= "qa" (last (get-in (get-response) [:data :statuses]))))))

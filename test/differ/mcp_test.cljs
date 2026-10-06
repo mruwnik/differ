@@ -1,6 +1,6 @@
 (ns differ.mcp-test
   "Tests for MCP (Model Context Protocol) JSON-RPC handlers."
-  (:require [clojure.test :refer [deftest testing is use-fixtures async]]
+  (:require [clojure.test :refer [deftest testing is are use-fixtures async]]
             [differ.test-helpers :as helpers]
             [differ.mcp :as mcp]
             [differ.boards :as boards]
@@ -1221,3 +1221,34 @@
     (is (= [{:id (subs (:id task) 0 8) :worker "alice"}]
            (:tasks (mcp/handle-tool "board_active" {:repo-path "/tmp/mcp-active"
                                                     :fields ["worker"]}))))))
+
+;; ============================================================================
+;; add_board_column / remove_board_column
+;; ============================================================================
+
+(deftest board-column-tools-schema-test
+  (are [tool-name required props]
+       (let [tool (first (filter #(= tool-name (:name %)) mcp/tools))]
+         (and (= required (get-in tool [:inputSchema :required]))
+              (= props (set (keys (get-in tool [:inputSchema :properties]))))))
+    "add_board_column"    ["repo_path" "status"] #{:repo_path :status :after}
+    "remove_board_column" ["repo_path" "status"] #{:repo_path :status :move_to}))
+
+(deftest board-column-tools-end-to-end-test
+  (let [repo (str "/tmp/mcp-columns-" (random-uuid))
+        task (boards/create-task! {:repo-path repo :title "t"})]
+    (is (= ["in_review" "qa" "done"]
+           (->> (mcp/handle-tool "add_board_column" {:repo-path repo :status "qa" :after "in_review"})
+                :statuses (drop 7) (take 3))))
+    (boards/update-task! (:id task) {:status "qa"})
+    (is (not (some #{"qa"} (:statuses (mcp/handle-tool "remove_board_column"
+                                                       {:repo-path repo :status "qa" :move-to "done"})))))
+    (is (= "done" (:status (boards/get-task (:id task)))))))
+
+(deftest add-board-column-creates-board-test
+  (let [repo (str "/tmp/mcp-columns-new-" (random-uuid))]
+    (is (= "qa" (last (:statuses (mcp/handle-tool "add_board_column" {:repo-path repo :status "qa"})))))))
+
+(deftest remove-board-column-unknown-repo-test
+  (is (thrown-with-msg? js/Error #"No board found"
+                        (mcp/handle-tool "remove_board_column" {:repo-path "/tmp/none-columns" :status "qa"}))))

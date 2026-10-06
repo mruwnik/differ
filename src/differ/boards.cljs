@@ -549,6 +549,74 @@
     (throw (js/Error. (str "Invalid status '" status "'. Allowed: "
                            (str/join ", " (:statuses board)))))))
 
+;; ============================================================================
+;; Board columns (statuses)
+;; ============================================================================
+
+(defn- require-board [board-id]
+  (or (get-board board-id)
+      (throw (js/Error. (str "Board not found: " board-id)))))
+
+(defn- require-existing-status [board status]
+  (when-not (some #{status} (:statuses board))
+    (throw (js/Error. (str "Unknown status '" status "'. Board statuses: "
+                           (str/join ", " (:statuses board)))))))
+
+(defn- save-board-statuses! [board-id statuses]
+  (.run (.prepare (db/db) "UPDATE boards SET statuses = ?, updated_at = ? WHERE id = ?")
+        (db/statuses-json statuses) (util/now-iso) board-id)
+  (get-board board-id))
+
+(defn add-board-status!
+  "Add a status column to a board. Inserted right after `:after` (an
+   existing status), else appended. Statuses are lowercase snake_case ids;
+   'blocked' is reserved because it is computed from dependencies.
+   Returns the updated board."
+  [board-id status {:keys [after]}]
+  (when-not (and (string? status) (re-matches #"[a-z][a-z0-9_]*" status))
+    (throw (js/Error. (str "Invalid status '" status "': use lowercase letters, digits and underscores, starting with a letter"))))
+  (when (= "blocked" status)
+    (throw (js/Error. "'blocked' is computed from task dependencies and can't be a board column")))
+  (let [board (require-board board-id)
+        statuses (:statuses board)]
+    (when (some #{status} statuses)
+      (throw (js/Error. (str "Status '" status "' already exists on this board"))))
+    (when after (require-existing-status board after))
+    (save-board-statuses! board-id
+                          (if after
+                            (let [[before-after from-after] (split-with #(not= after %) statuses)]
+                              (vec (concat before-after [after status] (rest from-after))))
+                            (conj statuses status)))))
+
+(declare update-task!)
+
+(defn remove-board-status!
+  "Remove a status column from a board. Tasks currently in it must be moved
+   with `:move-to` (another board status); they go through update-task!, so
+   their claims are released and status events recorded. 'pending' can't be
+   removed: new tasks start there. Returns the updated board."
+  [board-id status {:keys [move-to]}]
+  (let [board (require-board board-id)]
+    (require-existing-status board status)
+    (when (= "pending" status)
+      (throw (js/Error. "Can't remove 'pending': new tasks start in it")))
+    (when move-to
+      (when (= status move-to)
+        (throw (js/Error. "move_to cannot be the removed status")))
+      (require-existing-status board move-to))
+    (let [txn (.transaction (db/db)
+                            (fn []
+                              (let [task-ids (->> (.all (.prepare (db/db) "SELECT id FROM tasks WHERE board_id = ? AND status = ?")
+                                                        board-id status)
+                                                  (map #(.-id ^js %)))]
+                                (when (and (seq task-ids) (not move-to))
+                                  (throw (js/Error. (str "Status '" status "' still has " (count task-ids)
+                                                         " task(s); pass move_to to move them to another status"))))
+                                (doseq [id task-ids]
+                                  (update-task! id {:status move-to}))
+                                (save-board-statuses! board-id (vec (remove #{status} (:statuses board)))))))]
+      (txn))))
+
 (defn record-status-event!
   "Append a status transition to the task_status_events log (from-status nil
    = task creation). Call inside the transaction that changes the status."

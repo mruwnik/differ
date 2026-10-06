@@ -874,7 +874,8 @@
         commit (.. req -query -commit)
         parent-id (.. req -query -parent_id)]
     (if-let [board (boards/get-board-by-repo repo-path)]
-      (json-response res {:tasks (boards/list-tasks (:id board)
+      (json-response res {:statuses (:statuses board)
+                          :tasks (boards/list-tasks (:id board)
                                                     {:show-done show-done
                                                      :include-notes include-notes
                                                      :commit commit

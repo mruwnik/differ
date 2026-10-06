@@ -7,8 +7,6 @@
             [differ.client.board-dnd :as board-dnd]
             [differ.client.board-stats :as board-stats]))
 
-(def status-order ["pending" "needs_owner" "planning" "plan_review" "ready" "in_progress" "blocked" "testing" "in_review" "done" "rejected"])
-
 (def status-labels
   {"pending" "Pending"
    "needs_owner" "Needs Owner"
@@ -522,7 +520,7 @@
              [:span {:style {:color "#6a737d" :font-size "12px" :margin-left "8px"}}
               (:repo-path board)]]
             [:div {:style {:display "flex" :gap "6px" :flex-wrap "wrap"}}
-             (for [[status cnt] (sort-by (fn [[s _]] (.indexOf status-order s))
+             (for [[status cnt] (sort-by (fn [[s _]] (.indexOf board-dnd/default-columns s))
                                          (:task-counts board))
                    :when (pos? cnt)]
                ^{:key status}
@@ -723,19 +721,8 @@
         selected @(rf/subscribe [:selected-task])
         stale-count (count (filter :claim-stale all-tasks))
         grouped (group-by :status tasks)
-        ;; status-order is the hardcoded canonical order; boards with
-        ;; customized statuses (deliberately untouched by the statuses
-        ;; migration) can have tasks whose status isn't in it. Append any
-        ;; such statuses, in stable (first-seen) order, so they still get a
-        ;; column instead of silently vanishing from the board.
-        extra-statuses (->> all-tasks
-                            (map :status)
-                            distinct
-                            (remove (set status-order)))
-        all-statuses (into status-order extra-statuses)
-        visible-statuses (if show-done
-                           all-statuses
-                           (remove #(#{"done" "rejected"} %) all-statuses))]
+        visible-statuses (board-dnd/board-columns @(rf/subscribe [:board-statuses])
+                                                  all-tasks show-done)]
     [:div {:style {:padding-right (when selected "420px")
                    :transition "padding-right 0.2s"}}
      ;; Header

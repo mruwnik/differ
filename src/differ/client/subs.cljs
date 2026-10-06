@@ -363,6 +363,7 @@
 ;; Board/Kanban subscriptions
 (rf/reg-sub :boards (fn [db _] (:boards db)))
 (rf/reg-sub :board-tasks (fn [db _] (:board-tasks db)))
+(rf/reg-sub :board-statuses (fn [db _] (:board-statuses db)))
 (rf/reg-sub :selected-task (fn [db _] (:selected-task db)))
 (rf/reg-sub :board-show-done (fn [db _] (:board-show-done db)))
 (rf/reg-sub :board-drag (fn [db _] (:board-drag db)))

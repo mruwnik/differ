@@ -786,7 +786,7 @@
 (rf/reg-event-db
  :board-tasks-loaded
  (fn [db [_ response]]
-   (assoc db :board-tasks (:tasks response))))
+   (assoc db :board-tasks (:tasks response) :board-statuses (:statuses response))))
 
 (rf/reg-event-fx
  :load-board-stats

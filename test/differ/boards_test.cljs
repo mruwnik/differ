@@ -2026,3 +2026,84 @@
             {:worker-name "bob" :event "claimed" :created-at (iso-at 120)}]
            (mapv #(select-keys % [:worker-name :event :created-at])
                  (boards/list-task-claim-events (:id task)))))))
+
+;; ============================================================================
+;; Board columns (statuses)
+;; ============================================================================
+
+(defn- fresh-board []
+  (boards/get-or-create-board! (str "/tmp/columns-" (random-uuid))))
+
+(deftest add-board-status-test
+  (are [opts expected]
+       (let [board (fresh-board)]
+         (= expected
+            (:statuses (boards/add-board-status! (:id board) "qa" opts))))
+    {}                 (conj db/default-board-statuses "qa")
+    {:after "testing"} ["pending" "needs_owner" "planning" "plan_review" "ready"
+                        "in_progress" "testing" "qa" "in_review" "done" "rejected"]
+    {:after "rejected"} (conj db/default-board-statuses "qa")))
+
+(deftest add-board-status-persists-test
+  (let [board (fresh-board)]
+    (boards/add-board-status! (:id board) "qa" {:after "testing"})
+    (is (= "qa" (nth (:statuses (boards/get-board (:id board))) 7)))))
+
+(deftest add-board-status-allows-tasks-in-new-column-test
+  (let [board (fresh-board)
+        task (boards/create-task! {:repo-path (:repo-path board) :title "t"})]
+    (boards/add-board-status! (:id board) "qa" {})
+    (is (= "qa" (:status (boards/update-task! (:id task) {:status "qa"}))))))
+
+(deftest add-board-status-rejects-test
+  (are [status opts re]
+       (thrown-with-msg? js/Error re
+                         (boards/add-board-status! (:id (fresh-board)) status opts))
+    "testing" {}            #"already exists"
+    "blocked" {}            #"computed"
+    ""        {}            #"lowercase"
+    "QA"      {}            #"lowercase"
+    "has space" {}          #"lowercase"
+    "qa"      {:after "nope"} #"Unknown status 'nope'"))
+
+(deftest add-board-status-unknown-board-test
+  (is (thrown-with-msg? js/Error #"Board not found"
+                        (boards/add-board-status! "no-such-board" "qa" {}))))
+
+(deftest remove-board-status-test
+  (let [board (fresh-board)
+        updated (boards/remove-board-status! (:id board) "needs_owner" {})]
+    (is (= (vec (remove #{"needs_owner"} db/default-board-statuses))
+           (:statuses updated)
+           (:statuses (boards/get-board (:id board)))))))
+
+(deftest remove-board-status-rejects-test
+  (are [status opts re]
+       (thrown-with-msg? js/Error re
+                         (boards/remove-board-status! (:id (fresh-board)) status opts))
+    "nope"    {}                     #"Unknown status 'nope'"
+    "pending" {}                     #"new tasks start in"
+    "testing" {:move-to "testing"}   #"cannot be the removed status"
+    "testing" {:move-to "nope"}      #"Unknown status 'nope'"))
+
+(deftest remove-board-status-with-tasks-requires-move-to-test
+  (let [board (fresh-board)
+        task (boards/create-task! {:repo-path (:repo-path board) :title "t"})]
+    (boards/update-task! (:id task) {:status "testing"})
+    (is (thrown-with-msg? js/Error #"1 task.*move_to"
+                          (boards/remove-board-status! (:id board) "testing" {})))
+    (is (some #{"testing"} (:statuses (boards/get-board (:id board)))))))
+
+(deftest remove-board-status-moves-tasks-test
+  (let [board (fresh-board)
+        repo (:repo-path board)
+        moved (boards/create-task! {:repo-path repo :title "moved"})
+        untouched (boards/create-task! {:repo-path repo :title "untouched"})]
+    (boards/update-task! (:id moved) {:status "testing"})
+    (boards/take-task! {:task-id (:id moved) :worker-name "alice"
+                        :status "testing" :move-to "testing"})
+    (boards/remove-board-status! (:id board) "testing" {:move-to "in_review"})
+    (is (= {:status "in_review" :worker-name nil}
+           (select-keys (boards/get-task (:id moved)) [:status :worker-name])))
+    (is (= "pending" (:status (boards/get-task (:id untouched)))))
+    (is (not (some #{"testing"} (:statuses (boards/get-board (:id board))))))))

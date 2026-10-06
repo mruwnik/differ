@@ -76,6 +76,11 @@
                          (let [data (js->clj (js/JSON.parse (.-data e)) :keywordize-keys true)]
                            (rf/dispatch [:sse-task-changed data]))))
 
+    (.addEventListener es "board-updated"
+                       (fn [e]
+                         (let [data (js->clj (js/JSON.parse (.-data e)) :keywordize-keys true)]
+                           (rf/dispatch [:sse-task-changed data]))))
+
     (reset! event-source es)))
 
 (defn disconnect! []

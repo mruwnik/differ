@@ -388,6 +388,28 @@
                                         :description "Note author (default: worker_name, else the releasing worker)"}}
                   :required ["task_id"]}}
 
+   {:name "add_board_column"
+    :description "Add a status column to a repo's kanban board (creating the board if needed). Statuses are lowercase snake_case ids, e.g. 'qa'; 'blocked' is reserved (computed from dependencies). Column order matters: board_stats classifies moves as advanced/reverted by it. Returns the board with its updated `statuses`."
+    :inputSchema {:type "object"
+                  :properties {:repo_path {:type "string"
+                                           :description "Absolute path to the repo directory"}
+                               :status {:type "string"
+                                        :description "New status id (lowercase letters, digits, underscores)"}
+                               :after {:type "string"
+                                       :description "Existing status to insert the new column after (default: append at the end)"}}
+                  :required ["repo_path" "status"]}}
+
+   {:name "remove_board_column"
+    :description "Remove a status column from a repo's kanban board. If tasks are in it, pass move_to to move them to another status first (this releases their claims, like any status change); otherwise the call fails. 'pending' can't be removed since new tasks start there. Returns the board with its updated `statuses`."
+    :inputSchema {:type "object"
+                  :properties {:repo_path {:type "string"
+                                           :description "Absolute path to the repo directory"}
+                               :status {:type "string"
+                                        :description "Status column to remove"}
+                               :move_to {:type "string"
+                                         :description "Status to move the column's tasks to (required when it has tasks)"}}
+                  :required ["repo_path" "status"]}}
+
    {:name "board_stats"
     :description "Throughput statistics for a repo's kanban board over a trailing window ending now, from the task status-transition log. Returns per-bucket counts (every bucket present, even with zero activity), window totals, rates per hour, and the median minutes from a task's first in_progress to done for tasks finished in the window. Transition kinds: created, advanced (later in the board's status order), done, reverted (earlier in the order), rejected, reopened (out of done/rejected). History only exists from when status logging was deployed; earlier activity is not counted."
     :inputSchema {:type "object"
@@ -1030,7 +1052,20 @@
     (sse/broadcast-all! :task-updated {:task task :repo-path (:repo-path board)})
     {:task task}))
 
-(defmethod handle-tool "board_active" [_ {:keys [repo-path since-min quiet-min status limit fields]}]
+(defmethod handle-tool "add_board_column" [_ {:keys [repo-path status after]}]
+  (let [board (boards/add-board-status! (:id (boards/get-or-create-board! repo-path)) status {:after after})]
+    (sse/broadcast-all! :board-updated {:repo-path repo-path})
+    board))
+
+(defmethod handle-tool "remove_board_column" [_ {:keys [repo-path status move-to]}]
+  (let [board (boards/get-board-by-repo repo-path)]
+    (when-not board
+      (throw (js/Error. (str "No board found for repo: " repo-path))))
+    (let [updated (boards/remove-board-status! (:id board) status {:move-to move-to})]
+      (sse/broadcast-all! :board-updated {:repo-path repo-path})
+      updated)))
+
+(defmethod handle-tool "board_active"[_ {:keys [repo-path since-min quiet-min status limit fields]}]
   (let [board (boards/get-board-by-repo repo-path)]
     (when-not board
       (throw (js/Error. (str "No board found for repo: " repo-path))))
