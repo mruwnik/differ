@@ -941,7 +941,7 @@
       (mcp/handle-tool "create_task" {:repo-path "/tmp/r" :title "T"
                                       :priority 3 :tags ["a"] :assignee "alice"})
       (is (= {:repo-path "/tmp/r" :title "T" :description nil :blocked-by nil
-              :priority 3 :tags ["a"] :assignee "alice"}
+              :priority 3 :tags ["a"] :assignee "alice" :add-commits nil :parent-id nil}
              @captured)))))
 
 (deftest list-tasks-tool-passes-tags-test
@@ -964,3 +964,46 @@
                   boards/get-board (fn [_] {:id "b" :repo-path "/tmp/r"})]
       (mcp/handle-tool "update_task" {:task-id "t" :priority 2 :tags ["x"]})
       (is (= {:priority 2 :tags ["x"]} @captured)))))
+
+;; ============================================================================
+;; Commits & parent links pass-through
+;; ============================================================================
+
+(deftest task-tool-schemas-advertise-commits-and-parent-test
+  (let [props-of (fn [tool-name]
+                   (->> mcp/tools
+                        (filter #(= tool-name (:name %)))
+                        first
+                        :inputSchema
+                        :properties))]
+    (is (= "array" (get-in (props-of "create_task") [:add_commits :type])))
+    (is (= "string" (get-in (props-of "create_task") [:parent_id :type])))
+    (is (= "array" (get-in (props-of "update_task") [:add_commits :type])))
+    (is (= "array" (get-in (props-of "update_task") [:remove_commits :type])))
+    (is (= "string" (get-in (props-of "update_task") [:parent_id :type])))
+    (is (= "string" (get-in (props-of "list_tasks") [:commit :type])))
+    (is (= "string" (get-in (props-of "list_tasks") [:parent_id :type])))))
+
+(deftest create-task-tool-passes-commits-and-parent-test
+  (let [captured (atom nil)]
+    (with-redefs [boards/create-task! (fn [opts] (reset! captured opts) {:id "t"})]
+      (mcp/handle-tool "create_task" {:repo-path "/tmp/r" :title "T"
+                                      :add-commits ["abcd123"] :parent-id "p"})
+      (is (= ["abcd123"] (:add-commits @captured)))
+      (is (= "p" (:parent-id @captured))))))
+
+(deftest list-tasks-tool-passes-commit-and-parent-test
+  (let [captured (atom nil)]
+    (with-redefs [boards/get-board-by-repo (fn [_] {:id "b"})
+                  boards/list-tasks (fn [_ opts] (reset! captured opts) [])]
+      (mcp/handle-tool "list_tasks" {:repo-path "/tmp/r" :commit "abcd123" :parent-id "p"})
+      (is (= "abcd123" (:commit @captured)))
+      (is (= "p" (:parent-id @captured))))))
+
+(deftest update-task-tool-passes-commits-and-parent-test
+  (let [captured (atom nil)]
+    (with-redefs [boards/update-task! (fn [_ opts] (reset! captured opts) {:id "t" :board-id "b"})
+                  boards/get-board (fn [_] {:id "b" :repo-path "/tmp/r"})]
+      (mcp/handle-tool "update_task" {:task-id "t" :add-commits ["a1b2"] :remove-commits ["c3d4"]
+                                      :parent-id ""})
+      (is (= {:add-commits ["a1b2"] :remove-commits ["c3d4"] :parent-id ""} @captured)))))

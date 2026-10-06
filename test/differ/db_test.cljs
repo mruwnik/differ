@@ -633,6 +633,28 @@
         (.close raw-db)
         (helpers/remove-dir dir)))))
 
+(deftest run-migrations-adds-task-parent-and-commits-test
+  (let [dir (helpers/create-temp-dir "differ-parent-migration-test")
+        raw-db (Database (str dir "/raw.db"))]
+    (try
+      (.exec raw-db "CREATE TABLE boards (id TEXT PRIMARY KEY, repo_path TEXT NOT NULL UNIQUE,
+                       statuses TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+                     CREATE TABLE tasks (id TEXT PRIMARY KEY, board_id TEXT NOT NULL, title TEXT NOT NULL,
+                       description TEXT, status TEXT NOT NULL DEFAULT 'pending', worker_name TEXT,
+                       worker_id TEXT, persist INTEGER NOT NULL DEFAULT 0,
+                       created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+                     INSERT INTO boards VALUES ('b1', '/tmp/r', '[]', 'x', 'x');
+                     INSERT INTO tasks (id, board_id, title, created_at, updated_at)
+                       VALUES ('t1', 'b1', 'old task', 'x', 'x');")
+      (db/run-migrations! raw-db)
+      (db/run-migrations! raw-db)
+      (is (nil? (.-parent_id (.get (.prepare raw-db "SELECT parent_id FROM tasks WHERE id = 't1'")))))
+      (.run (.prepare raw-db "INSERT INTO task_commits (task_id, sha, created_at) VALUES ('t1', 'abcd123', 'x')"))
+      (is (= "abcd123" (.-sha (.get (.prepare raw-db "SELECT sha FROM task_commits WHERE task_id = 't1'")))))
+      (finally
+        (.close raw-db)
+        (helpers/remove-dir dir)))))
+
 ;; ============================================================================
 ;; run-migrations! wiring test
 ;; Uses a raw better-sqlite3 Database (bypassing differ.db/init! and

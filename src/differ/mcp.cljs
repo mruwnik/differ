@@ -36,7 +36,7 @@
                 :fields {:type "array"
                          :items {:type "string"}
                          :uniqueItems true
-                         :description "Fields to include per task (in addition to id and depth). Default: [\"title\", \"status\", \"blocked_by\"]. Allowed: id, board_id, title, description, status, worker_name, worker_id, assignee, persist, priority, tags, blocked_by, created_at, updated_at."}}
+                         :description "Fields to include per task (in addition to id and depth). Default: [\"title\", \"status\", \"blocked_by\"]. Allowed: id, board_id, title, description, status, worker_name, worker_id, assignee, persist, priority, tags, blocked_by, created_at, updated_at, commits, parent_id, children."}}
    :required ["task_id"]})
 
 ;; Tool definitions
@@ -230,7 +230,12 @@
                                       :items {:type "string"}
                                       :description "Tags/labels (optional). Normalized: trimmed, lowercased, deduped."}
                                :assignee {:type "string"
-                                          :description "Agent name this task is reserved for (optional). Only a take_task with this worker_name can claim it."}}
+                                          :description "Agent name this task is reserved for (optional). Only a take_task with this worker_name can claim it."}
+                               :add_commits {:type "array"
+                                             :items {:type "string"}
+                                             :description "Commit hashes (4-40 hex chars, short or full) related to this task (optional). Normalized: trimmed, lowercased, deduped."}
+                               :parent_id {:type "string"
+                                           :description "Umbrella/parent task ID on the same board (optional). Grouping only: unlike blocked_by it never blocks claiming."}}
                   :required ["repo_path" "title"]}}
 
    {:name "list_tasks"
@@ -248,6 +253,10 @@
                                :tags {:type "array"
                                       :items {:type "string"}
                                       :description "Only tasks having ANY of these tags"}
+                               :commit {:type "string"
+                                        :description "Only tasks with a commit matching this hash (short and full hashes match each other by prefix)"}
+                               :parent_id {:type "string"
+                                           :description "Only children of this parent task"}
                                :include_notes {:type "boolean"
                                                :description "Include notes on each task"}
                                :show_done {:type "boolean"
@@ -277,7 +286,7 @@
                   :required ["worker_name"]}}
 
    {:name "update_task"
-    :description "Update a task's status, title, description, persist flag, priority, tags, assignee, or dependencies. Status is validated against the board's allowed statuses (default lifecycle: pending, needs_owner, planning, plan_review, ready, in_progress, testing, in_review, done, rejected). Changing status releases the task's worker so the next phase can be claimed with take_task; the assignee is kept. 'blocked' is a computed status based on dependencies."
+    :description "Update a task's status, title, description, persist flag, priority, tags, assignee, commits, parent, or dependencies. Status is validated against the board's allowed statuses (default lifecycle: pending, needs_owner, planning, plan_review, ready, in_progress, testing, in_review, done, rejected). Changing status releases the task's worker so the next phase can be claimed with take_task; the assignee is kept. 'blocked' is a computed status based on dependencies."
     :inputSchema {:type "object"
                   :properties {:task_id {:type "string"
                                          :description "Task ID to update"}
@@ -299,6 +308,14 @@
                                       :description "Replace all tags with these ([] clears them)"}
                                :assignee {:type "string"
                                           :description "Reserve the task for this agent name (\"\" clears). Survives status changes."}
+                               :add_commits {:type "array"
+                                             :items {:type "string"}
+                                             :description "Commit hashes (4-40 hex chars) to append; already-present ones are ignored"}
+                               :remove_commits {:type "array"
+                                                :items {:type "string"}
+                                                :description "Commit hashes to remove (exact match after normalization; applied before add_commits)"}
+                               :parent_id {:type "string"
+                                           :description "Set the umbrella/parent task (\"\" clears). Must be on the same board and must not create a cycle. Grouping only; never blocks claiming."}
                                :note {:type "string"
                                       :description "Optional note to add with the update"}
                                :author {:type "string"
@@ -846,17 +863,18 @@
 
 ;; Kanban board tool handlers
 
-(defmethod handle-tool "create_task" [_ {:keys [repo-path title description blocked-by priority tags assignee]}]
+(defmethod handle-tool "create_task" [_ {:keys [repo-path title description blocked-by priority tags assignee add-commits parent-id]}]
   (let [task (boards/create-task! {:repo-path repo-path :title title :description description
                                    :blocked-by blocked-by :priority priority :tags tags
-                                   :assignee assignee})]
+                                   :assignee assignee :add-commits add-commits :parent-id parent-id})]
     (sse/broadcast-all! :task-created {:task task :repo-path repo-path})
     {:task task}))
 
-(defmethod handle-tool "list_tasks" [_ {:keys [repo-path status worker-id assignee tags include-notes show-done]}]
+(defmethod handle-tool "list_tasks" [_ {:keys [repo-path status worker-id assignee tags commit parent-id include-notes show-done]}]
   (if-let [board (boards/get-board-by-repo repo-path)]
     {:tasks (boards/list-tasks (:id board)
                                {:status status :worker-id worker-id :assignee assignee :tags tags
+                                :commit commit :parent-id parent-id
                                 :include-notes include-notes :show-done show-done})}
     {:tasks []}))
 

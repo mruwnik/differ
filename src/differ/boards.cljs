@@ -26,6 +26,7 @@
      :worker-name (.-worker_name row)
      :worker-id (.-worker_id row)
      :assignee (.-assignee row)
+     :parent-id (.-parent_id row)
      :persist (= 1 (.-persist row))
      :priority (or (.-priority row) 0)
      :created-at (.-created_at row)
@@ -83,6 +84,83 @@
       [(str "EXISTS (SELECT 1 FROM task_tags tt WHERE tt.task_id = t.id AND tt.tag IN ("
             (str/join "," (repeat (count tags) "?")) "))")
        tags])))
+
+(defn normalize-sha
+  "Trimmed, lowercased commit hash. Throws unless it's 4-40 hex chars
+   (abbreviated or full SHA-1)."
+  [sha]
+  (let [s (when (string? sha) (str/lower-case (str/trim sha)))]
+    (when-not (and s (re-matches #"[0-9a-f]{4,40}" s))
+      (throw (js/Error. (str "Invalid commit sha: " (pr-str sha)
+                             " (expected 4-40 hex characters)"))))
+    s))
+
+(defn- normalize-commits
+  "Normalize (see normalize-sha) and dedupe, keeping first-seen order."
+  [shas]
+  (into [] (comp (map normalize-sha) (distinct)) shas))
+
+(defn add-task-commits!
+  "Append commit hashes to a task, ignoring ones it already has."
+  [task-id shas]
+  (let [^js stmt (.prepare (db/db)
+                           "INSERT OR IGNORE INTO task_commits (task_id, sha, created_at) VALUES (?, ?, ?)")
+        now (util/now-iso)]
+    (doseq [sha (normalize-commits shas)]
+      (.run stmt task-id sha now))))
+
+(defn remove-task-commits!
+  "Remove commit hashes (exact match after normalization) from a task."
+  [task-id shas]
+  (let [^js stmt (.prepare (db/db) "DELETE FROM task_commits WHERE task_id = ? AND sha = ?")]
+    (doseq [sha (normalize-commits shas)]
+      (.run stmt task-id sha))))
+
+(defn- commit-clause
+  "SQL condition (on task alias t) matching tasks having a commit where either
+   hash is a prefix of the other, so short and full hashes match each other,
+   plus its params. LIKE is safe because normalize-sha only admits hex.
+   Returns nil when commit is blank."
+  [commit]
+  (when-not (str/blank? commit)
+    (let [sha (normalize-sha commit)]
+      [(str "EXISTS (SELECT 1 FROM task_commits tc WHERE tc.task_id = t.id"
+            " AND (tc.sha LIKE ? || '%' OR ? LIKE tc.sha || '%'))")
+       [sha sha]])))
+
+(defn normalize-parent-id
+  "Trimmed parent task id, or nil when absent/blank (i.e. no parent)."
+  [parent-id]
+  (when-not (str/blank? parent-id)
+    (str/trim parent-id)))
+
+(defn- parent-cycle?
+  "True if making parent-id the parent of task-id would create a cycle, i.e.
+   task-id is parent-id or one of its ancestors. UNION (not UNION ALL) keeps
+   the recursive walk finite even over pre-existing cyclic data."
+  [task-id parent-id]
+  (let [^js stmt (.prepare (db/db)
+                           "WITH RECURSIVE anc(id) AS (
+                              SELECT ?
+                              UNION
+                              SELECT t.parent_id FROM tasks t JOIN anc ON t.id = anc.id
+                              WHERE t.parent_id IS NOT NULL)
+                            SELECT 1 AS hit FROM anc WHERE id = ?")]
+    (some? (.get stmt parent-id task-id))))
+
+(defn- validate-parent
+  "Throw unless parent-id (already normalized; nil = no parent) is an existing
+   task on board-id that isn't task-id itself or one of its descendants.
+   task-id is nil for tasks being created (which can't be in a cycle yet)."
+  [task-id board-id parent-id]
+  (when parent-id
+    (let [^js row (.get (.prepare (db/db) "SELECT board_id FROM tasks WHERE id = ?") parent-id)]
+      (when-not row
+        (throw (js/Error. (str "Parent task not found: " parent-id))))
+      (when-not (= board-id (.-board_id row))
+        (throw (js/Error. "Parent task must be on the same board")))
+      (when (and task-id (parent-cycle? task-id parent-id))
+        (throw (js/Error. "Parent link would create a cycle"))))))
 
 (def ^:private task-order-sql
   "Queue/listing order: most urgent first, then oldest. rowid breaks
@@ -178,8 +256,36 @@
             {}
             (.all stmt (to-array ids)))))
 
+(defn- commits-by-task
+  "Map of task-id -> commit sha vector (insertion order) for the given task
+   IDs (single query). Tasks without commits are omitted."
+  [ids]
+  (let [placeholders (str/join "," (repeat (count ids) "?"))
+        ^js stmt (.prepare (db/db)
+                           (str "SELECT task_id, sha FROM task_commits WHERE task_id IN ("
+                                placeholders ") ORDER BY rowid ASC"))]
+    (reduce (fn [m ^js r] (update m (.-task_id r) (fnil conj []) (.-sha r)))
+            {}
+            (.all stmt (to-array ids)))))
+
+(defn- children-by-task
+  "Map of task-id -> {:total n :done d} child-progress summary for the given
+   task IDs (single query). Rejected children are excluded entirely, so an
+   umbrella whose remaining children are all done reads as complete. Tasks
+   without (non-rejected) children are omitted."
+  [ids]
+  (let [placeholders (str/join "," (repeat (count ids) "?"))
+        ^js stmt (.prepare (db/db)
+                           (str "SELECT parent_id, COUNT(*) AS total, SUM(status = 'done') AS done"
+                                " FROM tasks WHERE parent_id IN (" placeholders ")"
+                                " AND status != 'rejected' GROUP BY parent_id"))]
+    (into {}
+          (map (fn [^js r] [(.-parent_id r) {:total (.-total r) :done (.-done r)}]))
+          (.all stmt (to-array ids)))))
+
 (defn- enrich-tasks
-  "Batch-enrich multiple tasks with effective status, blocked-by and tags.
+  "Batch-enrich multiple tasks with effective status, blocked-by, tags,
+   commits and child progress (:children, only on tasks that have children).
    Uses one query per concern instead of N+1."
   [tasks]
   (if (empty? tasks)
@@ -193,14 +299,18 @@
           ^js stmt (.prepare (db/db) sql)
           rows (.all stmt (to-array ids))
           deps-by-task (group-by (fn [^js r] (.-task_id r)) rows)
-          tags (tags-by-task ids)]
+          tags (tags-by-task ids)
+          commits (commits-by-task ids)
+          children (children-by-task ids)]
       (mapv (fn [task]
               (let [unresolved (mapv (fn [^js r] (.-depends_on_task_id r)) (get deps-by-task (:id task) []))
                     effective-status (if (seq unresolved) "blocked" (:status task))]
-                (assoc task
-                       :status effective-status
-                       :blocked-by unresolved
-                       :tags (get tags (:id task) []))))
+                (cond-> (assoc task
+                               :status effective-status
+                               :blocked-by unresolved
+                               :tags (get tags (:id task) [])
+                               :commits (get commits (:id task) []))
+                  (get children (:id task)) (assoc :children (get children (:id task))))))
             tasks))))
 
 (defn- enrich-task
@@ -271,26 +381,32 @@
 (defn create-task!
   "Create a task, auto-creating board for repo-path if needed.
    Accepts optional :blocked-by vector of task IDs, :priority (integer,
-   higher = more urgent, default 0), :tags (seq of strings) and :assignee
-   (agent name; only that agent may claim the task)."
-  [{:keys [repo-path title description blocked-by priority tags assignee]}]
+   higher = more urgent, default 0), :tags (seq of strings), :assignee
+   (agent name; only that agent may claim the task), :add-commits (seq of
+   commit hashes) and :parent-id (umbrella task on the same board; grouping
+   only, never blocks claiming)."
+  [{:keys [repo-path title description blocked-by priority tags assignee add-commits parent-id]}]
   (validate-priority priority)
   (let [board (get-or-create-board! repo-path)
         id (util/gen-uuid)
         now (util/now-iso)
+        parent-id (normalize-parent-id parent-id)
         txn (.transaction (db/db)
                           (fn []
+                            (validate-parent nil (:id board) parent-id)
                             (let [^js stmt (.prepare (db/db)
-                                                     "INSERT INTO tasks (id, board_id, title, description, priority, assignee, created_at, updated_at)
-                                                      VALUES (?, ?, ?, ?, ?, ?, ?, ?)")]
+                                                     "INSERT INTO tasks (id, board_id, title, description, priority, assignee, parent_id, created_at, updated_at)
+                                                      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")]
                               (.run stmt id (:id board) title description (or priority 0)
-                                    (normalize-assignee assignee) now now))
+                                    (normalize-assignee assignee) parent-id now now))
                             (let [^js update-stmt (.prepare (db/db) "UPDATE boards SET updated_at = ? WHERE id = ?")]
                               (.run update-stmt now (:id board)))
                             (when (seq blocked-by)
                               (set-task-dependencies! id blocked-by))
                             (when (seq tags)
-                              (set-task-tags! id tags))))]
+                              (set-task-tags! id tags))
+                            (when (seq add-commits)
+                              (add-task-commits! id add-commits))))]
     (txn)
     (get-task id)))
 
@@ -405,8 +521,11 @@
    Optionally adds a note when :note and :author are provided.
    Accepts optional :blocked-by to set task dependencies, :priority (integer),
    :tags (replaces all tags; [] clears them) and :assignee (nil/blank clears;
-   unlike the worker, it survives status changes).
-   :description and :assignee use contains? to distinguish 'not provided' from 'set to nil'.
+   unlike the worker, it survives status changes), :add-commits /
+   :remove-commits (seqs of commit hashes; removals apply first) and
+   :parent-id (nil/blank clears; must be on the same board and must not
+   create a cycle).
+   :description, :assignee and :parent-id use contains? to distinguish 'not provided' from 'set to nil'.
    Wrapped in a transaction to prevent race conditions between concurrent agents."
   [task-id opts]
   (let [{:keys [status title persist note author priority]} opts
@@ -436,10 +555,15 @@
                                     new-assignee (if (contains? opts :assignee)
                                                    (normalize-assignee (:assignee opts))
                                                    (:assignee task))
+                                    new-parent-id (if (contains? opts :parent-id)
+                                                    (normalize-parent-id (:parent-id opts))
+                                                    (:parent-id task))
+                                    _ (when (contains? opts :parent-id)
+                                        (validate-parent task-id (:board-id task) new-parent-id))
                                     ^js stmt (.prepare (db/db)
-                                                       "UPDATE tasks SET status = ?, title = ?, description = ?, persist = ?, priority = ?, worker_name = ?, worker_id = ?, assignee = ?, updated_at = ?
+                                                       "UPDATE tasks SET status = ?, title = ?, description = ?, persist = ?, priority = ?, worker_name = ?, worker_id = ?, assignee = ?, parent_id = ?, updated_at = ?
                                                         WHERE id = ?")]
-                                (.run stmt new-status new-title new-description new-persist new-priority new-worker-name new-worker-id new-assignee now task-id)
+                                (.run stmt new-status new-title new-description new-persist new-priority new-worker-name new-worker-id new-assignee new-parent-id now task-id)
                                 ;; Update board timestamp
                                 (let [^js board-stmt (.prepare (db/db) "UPDATE boards SET updated_at = ? WHERE id = ?")]
                                   (.run board-stmt now (:board-id task)))
@@ -448,6 +572,10 @@
                                   (set-task-dependencies! task-id (:blocked-by opts)))
                                 (when (contains? opts :tags)
                                   (set-task-tags! task-id (:tags opts)))
+                                (when (seq (:remove-commits opts))
+                                  (remove-task-commits! task-id (:remove-commits opts)))
+                                (when (seq (:add-commits opts))
+                                  (add-task-commits! task-id (:add-commits opts)))
                                 ;; Add note if provided
                                 (when (and note author)
                                   (let [note-id (util/gen-uuid)
@@ -505,9 +633,11 @@
      :worker-id   - filter by worker
      :assignee    - filter by assigned agent name
      :tags        - only tasks having any of these tags
+     :commit      - only tasks having a commit matching this hash (prefix either way)
+     :parent-id   - only children of this task
      :show-done   - if false (default), exclude done+rejected
      :include-notes - if true, attach :notes array to each task"
-  [board-id {:keys [status worker-id assignee tags show-done include-notes]}]
+  [board-id {:keys [status worker-id assignee tags commit parent-id show-done include-notes]}]
   (let [conditions ["t.board_id = ?"]
         params [board-id]
         ;; Build status filter
@@ -536,6 +666,15 @@
         (if-let [[tag-sql tag-params] (tags-in-clause tags)]
           [(conj conditions tag-sql) (into params tag-params)]
           [conditions params])
+        [conditions params]
+        (if-let [[commit-sql commit-params] (commit-clause commit)]
+          [(conj conditions commit-sql) (into params commit-params)]
+          [conditions params])
+        [conditions params]
+        (if parent-id
+          [(conj conditions "t.parent_id = ?")
+           (conj params parent-id)]
+          [conditions params])
         where-clause (str/join " AND " conditions)
         sql (str "SELECT t.* FROM tasks t WHERE " where-clause task-order-sql)
         ^js stmt (.prepare (db/db) sql)
@@ -554,7 +693,8 @@
 (def update-task-allowed-keys
   "Keys that callers may pass through to update-task!. Used by both the REST API
    and the MCP handler to whitelist incoming fields."
-  #{:status :title :description :persist :note :author :blocked-by :priority :tags :assignee})
+  #{:status :title :description :persist :note :author :blocked-by :priority :tags :assignee
+    :add-commits :remove-commits :parent-id})
 
 ;; ============================================================================
 ;; Dependency graph traversal
@@ -566,7 +706,8 @@
    is synthesized by the traversal (hop count). Listing :depth in :fields
    raises 'Unknown fields: depth' — it's not a column, so just omit it."
   #{:id :board-id :title :description :status :worker-name :worker-id :assignee
-    :persist :priority :tags :blocked-by :created-at :updated-at})
+    :persist :priority :tags :blocked-by :created-at :updated-at
+    :commits :parent-id :children})
 
 (def default-dep-graph-fields
   "Fields returned on each related task when :fields is not specified."
