@@ -947,3 +947,60 @@
 (deftest update-task-allowed-keys-include-priority-and-tags-test
   (is (contains? boards/update-task-allowed-keys :priority))
   (is (contains? boards/update-task-allowed-keys :tags)))
+
+;; ============================================================================
+;; Assignee (optional pre-assignment of a task to a named agent)
+;; ============================================================================
+
+(deftest create-task-assignee-test
+  (testing "defaults to nil"
+    (is (nil? (:assignee (boards/create-task! {:repo-path "/tmp/as-create" :title "t"})))))
+  (testing "is stored when given"
+    (is (= "alice" (:assignee (boards/create-task! {:repo-path "/tmp/as-create" :title "t"
+                                                    :assignee "alice"})))))
+  (testing "blank assignee is stored as nil"
+    (is (nil? (:assignee (boards/create-task! {:repo-path "/tmp/as-create" :title "t"
+                                               :assignee "  "}))))))
+
+(deftest update-task-assignee-test
+  (let [task (boards/create-task! {:repo-path "/tmp/as-update" :title "t"})]
+    (testing "sets the assignee"
+      (is (= "bob" (:assignee (boards/update-task! (:id task) {:assignee "bob"})))))
+    (testing "omitting assignee leaves it unchanged"
+      (is (= "bob" (:assignee (boards/update-task! (:id task) {:title "renamed"})))))
+    (testing "status change keeps the assignee (unlike the worker claim)"
+      (is (= "bob" (:assignee (boards/update-task! (:id task) {:status "testing"})))))
+    (testing "nil clears it"
+      (is (nil? (:assignee (boards/update-task! (:id task) {:assignee nil})))))
+    (testing "blank clears it"
+      (boards/update-task! (:id task) {:assignee "bob"})
+      (is (nil? (:assignee (boards/update-task! (:id task) {:assignee ""})))))))
+
+(deftest take-task-respects-assignee-test
+  (let [repo "/tmp/as-take"
+        for-alice (boards/create-task! {:repo-path repo :title "alice's" :priority 5
+                                        :assignee "alice"})
+        open (boards/create-task! {:repo-path repo :title "open"})]
+    (testing "auto-assign skips tasks assigned to someone else"
+      (is (= (:id open) (:id (boards/take-task! {:repo-path repo :worker-name "bob"})))))
+    (testing "explicit claim of another agent's task is refused"
+      (is (thrown-with-msg? js/Error #"assigned to alice"
+                            (boards/take-task! {:task-id (:id for-alice) :worker-name "bob"}))))
+    (testing "the assignee auto-assigns their own task"
+      (is (= (:id for-alice) (:id (boards/take-task! {:repo-path repo :worker-name "alice"})))))))
+
+(deftest list-tasks-assignee-filter-test
+  (let [repo "/tmp/as-list"
+        board (boards/get-or-create-board! repo)
+        a (boards/create-task! {:repo-path repo :title "a" :assignee "alice"})
+        _b (boards/create-task! {:repo-path repo :title "b"})]
+    (is (= [(:id a)] (mapv :id (boards/list-tasks (:id board) {:assignee "alice"}))))))
+
+(deftest assignee-is-an-allowed-update-and-graph-field-test
+  (is (contains? boards/update-task-allowed-keys :assignee))
+  (is (contains? boards/dep-graph-fields :assignee)))
+
+(deftest new-statuses-are-valid-test
+  (let [task (boards/create-task! {:repo-path "/tmp/new-statuses" :title "t"})]
+    (is (= "needs_owner" (:status (boards/update-task! (:id task) {:status "needs_owner"}))))
+    (is (= "testing" (:status (boards/update-task! (:id task) {:status "testing"}))))))

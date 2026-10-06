@@ -5,26 +5,30 @@
             [clojure.string :as str]
             [differ.client.task-filter :as task-filter]))
 
-(def status-order ["pending" "planning" "plan_review" "ready" "in_progress" "blocked" "in_review" "done" "rejected"])
+(def status-order ["pending" "needs_owner" "planning" "plan_review" "ready" "in_progress" "blocked" "testing" "in_review" "done" "rejected"])
 
 (def status-labels
   {"pending" "Pending"
+   "needs_owner" "Needs Owner"
    "planning" "Planning"
    "plan_review" "Plan Review"
    "ready" "Ready"
    "in_progress" "In Progress"
    "blocked" "Blocked"
+   "testing" "Testing"
    "in_review" "In Review"
    "done" "Done"
    "rejected" "Rejected"})
 
 (def status-colors
   {"pending" "#6a737d"
+   "needs_owner" "#bf3989"
    "planning" "#6f42c1"
    "plan_review" "#b08800"
    "ready" "#00838f"
    "in_progress" "#0366d6"
    "blocked" "#d73a49"
+   "testing" "#1b7c83"
    "in_review" "#e36209"
    "done" "#28a745"
    "rejected" "#959da5"})
@@ -108,6 +112,10 @@
        (when (:worker-name task)
          [:span {:style {:font-size "11px" :color "#6a737d"}}
           (:worker-name task)])
+       (when (and (:assignee task) (not= (:assignee task) (:worker-name task)))
+         [:span {:title "Assigned to"
+                 :style {:font-size "11px" :color "#8250df"}}
+          (str "\u2192 " (:assignee task))])
        (when (seq (:blocked-by task))
          [:span {:style {:font-size "10px" :color "#d73a49" :font-weight "500"}}
           (str "blocked by " (count (:blocked-by task)))])]
@@ -139,6 +147,37 @@
 ;; ============================================================================
 ;; Task Detail Panel
 ;; ============================================================================
+
+(defn assignee-editor
+  "Inline editor for the optional assignee. Suggests names of agents already
+   seen on this board."
+  [task]
+  (let [draft (r/atom (or (:assignee task) ""))]
+    (fn [task]
+      (let [known (->> @(rf/subscribe [:board-tasks])
+                       (mapcat (juxt :worker-name :assignee))
+                       (remove str/blank?)
+                       distinct
+                       sort)
+            changed? (not= (str/trim @draft) (or (:assignee task) ""))]
+        [:div {:style {:display "flex" :gap "6px" :align-items "center" :margin-bottom "12px"}}
+         [:label {:style {:font-size "12px" :color "#6a737d"}} "Assignee"]
+         [:input {:value @draft
+                  :list "board-agent-names"
+                  :placeholder "Anyone"
+                  :on-change #(reset! draft (.. % -target -value))
+                  :style {:flex "1" :padding "2px 6px" :font-size "12px"
+                          :border "1px solid #e1e4e8" :border-radius "4px"}}]
+         [:datalist {:id "board-agent-names"}
+          (for [n known] ^{:key n} [:option {:value n}])]
+         [:button {:disabled (not changed?)
+                   :on-click #(rf/dispatch [:update-task-from-ui (:id task)
+                                            {:assignee (str/trim @draft)}])
+                   :style {:font-size "12px" :padding "2px 8px" :cursor "pointer"
+                           :opacity (if changed? "1" "0.5")
+                           :background "#fff" :border "1px solid #e1e4e8"
+                           :border-radius "4px"}}
+          "Save"]]))))
 
 (defn task-detail []
   (let [note-text (r/atom "")]
@@ -176,6 +215,8 @@
               [:span {:style {:font-size "11px" :color "#959da5"}}
                (str "(" (:worker-id task) ")")])
             [priority-badge (:priority task)]]
+
+           [assignee-editor task]
 
            ;; Tags
            (when (seq (:tags task))

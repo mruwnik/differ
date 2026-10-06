@@ -36,7 +36,7 @@
                 :fields {:type "array"
                          :items {:type "string"}
                          :uniqueItems true
-                         :description "Fields to include per task (in addition to id and depth). Default: [\"title\", \"status\", \"blocked_by\"]. Allowed: id, board_id, title, description, status, worker_name, worker_id, persist, priority, tags, blocked_by, created_at, updated_at."}}
+                         :description "Fields to include per task (in addition to id and depth). Default: [\"title\", \"status\", \"blocked_by\"]. Allowed: id, board_id, title, description, status, worker_name, worker_id, assignee, persist, priority, tags, blocked_by, created_at, updated_at."}}
    :required ["task_id"]})
 
 ;; Tool definitions
@@ -228,7 +228,9 @@
                                           :description "Priority: higher = more urgent. Default 0; negative = low. take_task auto-assign picks highest priority first, then oldest."}
                                :tags {:type "array"
                                       :items {:type "string"}
-                                      :description "Tags/labels (optional). Normalized: trimmed, lowercased, deduped."}}
+                                      :description "Tags/labels (optional). Normalized: trimmed, lowercased, deduped."}
+                               :assignee {:type "string"
+                                          :description "Agent name this task is reserved for (optional). Only a take_task with this worker_name can claim it."}}
                   :required ["repo_path" "title"]}}
 
    {:name "list_tasks"
@@ -241,6 +243,8 @@
                                         :description "Filter by status (e.g. [\"pending\", \"in_progress\"])"}
                                :worker_id {:type "string"
                                            :description "Filter by worker ID"}
+                               :assignee {:type "string"
+                                          :description "Filter by assigned agent name"}
                                :tags {:type "array"
                                       :items {:type "string"}
                                       :description "Only tasks having ANY of these tags"}
@@ -251,7 +255,7 @@
                   :required ["repo_path"]}}
 
    {:name "take_task"
-    :description "Atomically claim a task from a queue. Pulls from the `status` queue (default: pending) and moves the task to `move_to` (default: in_progress), assigning you as worker. If task_id is omitted, auto-assigns the highest-priority (then oldest) unclaimed, unblocked task in the queue, optionally restricted to tasks having any of `tags`. Changing a task's status via update_task releases the worker, so each lifecycle phase (planning, plan_review checking, implementation, review) is claimed separately. To claim in place (e.g. reviewing a plan without moving it), set move_to to the same status as the queue. Returns full task details."
+    :description "Atomically claim a task from a queue. Pulls from the `status` queue (default: pending) and moves the task to `move_to` (default: in_progress), assigning you as worker. If task_id is omitted, auto-assigns the highest-priority (then oldest) unclaimed, unblocked task in the queue that is unassigned or assigned to you, optionally restricted to tasks having any of `tags`. Tasks assigned to another agent cannot be claimed. Changing a task's status via update_task releases the worker, so each lifecycle phase (planning, plan_review checking, implementation, review) is claimed separately. To claim in place (e.g. reviewing a plan without moving it), set move_to to the same status as the queue. Returns full task details."
     :inputSchema {:type "object"
                   :properties {:task_id {:type "string"
                                          :description "Task ID to claim (optional - omit to auto-assign next available task)"}
@@ -273,7 +277,7 @@
                   :required ["worker_name"]}}
 
    {:name "update_task"
-    :description "Update a task's status, title, description, persist flag, priority, tags, or dependencies. Status is validated against the board's allowed statuses (default lifecycle: pending, planning, plan_review, ready, in_progress, in_review, done, rejected). Changing status releases the task's worker so the next phase can be claimed with take_task. 'blocked' is a computed status based on dependencies."
+    :description "Update a task's status, title, description, persist flag, priority, tags, assignee, or dependencies. Status is validated against the board's allowed statuses (default lifecycle: pending, needs_owner, planning, plan_review, ready, in_progress, testing, in_review, done, rejected). Changing status releases the task's worker so the next phase can be claimed with take_task; the assignee is kept. 'blocked' is a computed status based on dependencies."
     :inputSchema {:type "object"
                   :properties {:task_id {:type "string"
                                          :description "Task ID to update"}
@@ -293,6 +297,8 @@
                                :tags {:type "array"
                                       :items {:type "string"}
                                       :description "Replace all tags with these ([] clears them)"}
+                               :assignee {:type "string"
+                                          :description "Reserve the task for this agent name (\"\" clears). Survives status changes."}
                                :note {:type "string"
                                       :description "Optional note to add with the update"}
                                :author {:type "string"
@@ -840,16 +846,17 @@
 
 ;; Kanban board tool handlers
 
-(defmethod handle-tool "create_task" [_ {:keys [repo-path title description blocked-by priority tags]}]
+(defmethod handle-tool "create_task" [_ {:keys [repo-path title description blocked-by priority tags assignee]}]
   (let [task (boards/create-task! {:repo-path repo-path :title title :description description
-                                   :blocked-by blocked-by :priority priority :tags tags})]
+                                   :blocked-by blocked-by :priority priority :tags tags
+                                   :assignee assignee})]
     (sse/broadcast-all! :task-created {:task task :repo-path repo-path})
     {:task task}))
 
-(defmethod handle-tool "list_tasks" [_ {:keys [repo-path status worker-id tags include-notes show-done]}]
+(defmethod handle-tool "list_tasks" [_ {:keys [repo-path status worker-id assignee tags include-notes show-done]}]
   (if-let [board (boards/get-board-by-repo repo-path)]
     {:tasks (boards/list-tasks (:id board)
-                               {:status status :worker-id worker-id :tags tags
+                               {:status status :worker-id worker-id :assignee assignee :tags tags
                                 :include-notes include-notes :show-done show-done})}
     {:tasks []}))
 

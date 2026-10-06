@@ -939,9 +939,9 @@
   (let [captured (atom nil)]
     (with-redefs [boards/create-task! (fn [opts] (reset! captured opts) {:id "t"})]
       (mcp/handle-tool "create_task" {:repo-path "/tmp/r" :title "T"
-                                      :priority 3 :tags ["a"]})
+                                      :priority 3 :tags ["a"] :assignee "alice"})
       (is (= {:repo-path "/tmp/r" :title "T" :description nil :blocked-by nil
-              :priority 3 :tags ["a"]}
+              :priority 3 :tags ["a"] :assignee "alice"}
              @captured)))))
 
 (deftest list-tasks-tool-passes-tags-test

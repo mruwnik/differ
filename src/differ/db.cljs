@@ -94,15 +94,22 @@
   "Canonical task lifecycle for new boards. Also interpolated into the
    boards.statuses column default in kanban-ddl, and used as the JSON
    parse fallback in boards/row->board."
-  ["pending" "planning" "plan_review" "ready" "in_progress" "in_review" "done" "rejected"])
+  ["pending" "needs_owner" "planning" "plan_review" "ready"
+   "in_progress" "testing" "in_review" "done" "rejected"])
 
-(def ^:private historical-default-statuses
-  "Status lists written by previous versions' column defaults. Boards
-   still on any of these are non-customized and get migrated. The
-   blocked-variant is the one real production DBs actually carry (verified
-   via .schema on the live DB); the plain variant covers older/other DDLs."
+(def ^:private pre-phase-claim-statuses
+  "Status lists written by versions where only 'in_progress' meant claimed.
+   Boards still on any of these are non-customized and get migrated, and
+   their stale workers cleared. The blocked-variant is the one real
+   production DBs actually carry (verified via .schema on the live DB); the
+   plain variant covers older/other DDLs."
   [["pending" "in_progress" "done" "rejected" "in_review"]
    ["pending" "in_progress" "done" "rejected" "blocked" "in_review"]])
+
+(def ^:private superseded-default-statuses
+  "Previous defaults that already used per-phase claims. Boards on these are
+   migrated to the current default, but their workers are live claims."
+  [["pending" "planning" "plan_review" "ready" "in_progress" "in_review" "done" "rejected"]])
 
 (defn statuses-json [statuses]
   (js/JSON.stringify (clj->js statuses)))
@@ -127,6 +134,7 @@
       status TEXT NOT NULL DEFAULT 'pending',
       worker_name TEXT,
       worker_id TEXT,
+      assignee TEXT,
       persist INTEGER NOT NULL DEFAULT 0,
       priority INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -176,12 +184,20 @@
     (when-not (columns "priority")
       (.exec db "ALTER TABLE tasks ADD COLUMN priority INTEGER NOT NULL DEFAULT 0"))))
 
-(defn migrate-board-statuses
-  "Rewrite boards still on the old default status list to the current
-   default (adds the planning lifecycle columns). Boards with customized
-   statuses are untouched. Idempotent.
+(defn- migrate-task-assignee
+  "Add tasks.assignee for databases whose tasks table predates it."
+  [^js db]
+  (let [columns (set (map (fn [^js c] (.-name c))
+                          (.all (.prepare db "PRAGMA table_info(tasks)"))))]
+    (when-not (columns "assignee")
+      (.exec db "ALTER TABLE tasks ADD COLUMN assignee TEXT"))))
 
-   Also clears stale worker assignments on the boards migrated in THIS run:
+(defn migrate-board-statuses
+  "Rewrite boards still on an old default status list to the current
+   default. Boards with customized statuses are untouched. Idempotent.
+
+   Also clears stale worker assignments on the pre-phase-claim boards
+   migrated in THIS run:
    under the old lifecycle only 'in_progress' meant actively claimed, so a
    worker on a pending/in_review row is stale attribution that would make
    the task permanently unclaimable under the new worker-IS-NULL
@@ -199,20 +215,21 @@
    (matching only old-default boards) would then never match again —
    permanently stranding the stale workers with no automatic recovery."
   [^js db]
-  (let [historical-json (mapv statuses-json historical-default-statuses)
+  (let [stale-worker-json (mapv statuses-json pre-phase-claim-statuses)
+        historical-json (into stale-worker-json (map statuses-json) superseded-default-statuses)
         txn (.transaction db
                           (fn []
                             (let [^js select-stmt (.prepare db
                                                             (str "SELECT id FROM boards WHERE statuses IN ("
-                                                                 (in-clause (count historical-json)) ")"))
-                                  rows (.all select-stmt (to-array historical-json))
-                                  board-ids (mapv (fn [^js r] (.-id r)) rows)]
+                                                                 (in-clause (count stale-worker-json)) ")"))
+                                  rows (.all select-stmt (to-array stale-worker-json))
+                                  board-ids (mapv (fn [^js r] (.-id r)) rows)
+                                  ^js update-stmt (.prepare db
+                                                            (str "UPDATE boards SET statuses = ? WHERE statuses IN ("
+                                                                 (in-clause (count historical-json)) ")"))]
+                              (.run update-stmt (to-array (into [(statuses-json default-board-statuses)]
+                                                                historical-json)))
                               (when (seq board-ids)
-                                (let [^js update-stmt (.prepare db
-                                                                (str "UPDATE boards SET statuses = ? WHERE statuses IN ("
-                                                                     (in-clause (count historical-json)) ")"))]
-                                  (.run update-stmt (to-array (into [(statuses-json default-board-statuses)]
-                                                                    historical-json))))
                                 (let [^js clear-stmt (.prepare db
                                                                (str "UPDATE tasks SET worker_name = NULL, worker_id = NULL
                                                                      WHERE board_id IN (" (in-clause (count board-ids)) ")
@@ -373,6 +390,7 @@
   (migrate-github-tokens-table db)
   (migrate-kanban-tables db)
   (migrate-task-priority db)
+  (migrate-task-assignee db)
   (migrate-board-statuses db))
 
 (defn init!

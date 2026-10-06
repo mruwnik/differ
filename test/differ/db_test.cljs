@@ -476,13 +476,16 @@
         (reset! db/db-instance nil)
         (helpers/cleanup-test-db!)))))
 
+(def expected-default-statuses
+  ["pending" "needs_owner" "planning" "plan_review" "ready"
+   "in_progress" "testing" "in_review" "done" "rejected"])
+
 (deftest default-board-statuses-test
   (with-test-db-for-boards
     (fn []
       (testing "new boards get the full planning lifecycle"
         (let [board (boards/get-or-create-board! "/tmp/statuses-default-repo")]
-          (is (= ["pending" "planning" "plan_review" "ready"
-                  "in_progress" "in_review" "done" "rejected"]
+          (is (= expected-default-statuses
                  (:statuses board))))))))
 
 (deftest migrate-board-statuses-test
@@ -495,8 +498,7 @@
           (.run stmt "old-board" "/tmp/old-default-repo"
                 "[\"pending\",\"in_progress\",\"done\",\"rejected\",\"in_review\"]"))
         (db/migrate-board-statuses (db/db))
-        (is (= ["pending" "planning" "plan_review" "ready"
-                "in_progress" "in_review" "done" "rejected"]
+        (is (= expected-default-statuses
                (:statuses (boards/get-board "old-board")))))
 
       (testing "boards on the blocked-variant old default (real production DDL) are rewritten"
@@ -506,9 +508,18 @@
           (.run stmt "blocked-variant-board" "/tmp/blocked-variant-repo"
                 "[\"pending\",\"in_progress\",\"done\",\"rejected\",\"blocked\",\"in_review\"]"))
         (db/migrate-board-statuses (db/db))
-        (is (= ["pending" "planning" "plan_review" "ready"
-                "in_progress" "in_review" "done" "rejected"]
+        (is (= expected-default-statuses
                (:statuses (boards/get-board "blocked-variant-board")))))
+
+      (testing "boards on the planning-lifecycle default gain testing/needs_owner"
+        (let [^js stmt (.prepare (db/db)
+                                 "INSERT INTO boards (id, repo_path, statuses, created_at, updated_at)
+                                  VALUES (?, ?, ?, datetime('now'), datetime('now'))")]
+          (.run stmt "planning-board" "/tmp/planning-default-repo"
+                "[\"pending\",\"planning\",\"plan_review\",\"ready\",\"in_progress\",\"in_review\",\"done\",\"rejected\"]"))
+        (db/migrate-board-statuses (db/db))
+        (is (= expected-default-statuses
+               (:statuses (boards/get-board "planning-board")))))
 
       (testing "customized boards are untouched"
         (let [^js stmt (.prepare (db/db)
@@ -522,8 +533,7 @@
       (testing "migration is idempotent"
         (db/migrate-board-statuses (db/db))
         (db/migrate-board-statuses (db/db))
-        (is (= ["pending" "planning" "plan_review" "ready"
-                "in_progress" "in_review" "done" "rejected"]
+        (is (= expected-default-statuses
                (:statuses (boards/get-board "old-board"))))))))
 
 (deftest migrate-board-statuses-clears-stale-workers-test
@@ -562,8 +572,7 @@
         (is (nil? (:worker-id (boards/get-task "t-in-review")))))
 
       (testing "blocked-variant board is migrated and its stale worker cleared"
-        (is (= ["pending" "planning" "plan_review" "ready"
-                "in_progress" "in_review" "done" "rejected"]
+        (is (= expected-default-statuses
                (:statuses (boards/get-board "blocked-variant-board"))))
         (is (nil? (:worker-name (boards/get-task "t-bv-pending"))))
         (is (nil? (:worker-id (boards/get-task "t-bv-pending")))))
@@ -587,6 +596,42 @@
           (is (= "new-agent" (:worker-name claimed))))
         (db/migrate-board-statuses (db/db))
         (is (= "new-agent" (:worker-name (boards/get-task "t-pending"))))))))
+
+(deftest migrate-board-statuses-keeps-workers-on-planning-boards-test
+  (with-test-db-for-boards
+    (fn []
+      (.run (.prepare (db/db)
+                      "INSERT INTO boards (id, repo_path, statuses, created_at, updated_at)
+                       VALUES (?, ?, ?, datetime('now'), datetime('now'))")
+            "planning-board" "/tmp/planning-worker-repo"
+            "[\"pending\",\"planning\",\"plan_review\",\"ready\",\"in_progress\",\"in_review\",\"done\",\"rejected\"]")
+      (.run (.prepare (db/db)
+                      "INSERT INTO tasks (id, board_id, title, status, worker_name, worker_id, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))")
+            "t-planning" "planning-board" "Live planning claim" "planning" "planner" "w-plan")
+      (db/migrate-board-statuses (db/db))
+      (testing "per-phase claims under the planning lifecycle are live, not stale"
+        (is (= "planner" (:worker-name (boards/get-task "t-planning"))))))))
+
+(deftest run-migrations-adds-task-assignee-test
+  (let [dir (helpers/create-temp-dir "differ-assignee-migration-test")
+        raw-db (Database (str dir "/raw.db"))]
+    (try
+      (.exec raw-db "CREATE TABLE boards (id TEXT PRIMARY KEY, repo_path TEXT NOT NULL UNIQUE,
+                       statuses TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+                     CREATE TABLE tasks (id TEXT PRIMARY KEY, board_id TEXT NOT NULL, title TEXT NOT NULL,
+                       description TEXT, status TEXT NOT NULL DEFAULT 'pending', worker_name TEXT,
+                       worker_id TEXT, persist INTEGER NOT NULL DEFAULT 0,
+                       created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+                     INSERT INTO boards VALUES ('b1', '/tmp/r', '[]', 'x', 'x');
+                     INSERT INTO tasks (id, board_id, title, created_at, updated_at)
+                       VALUES ('t1', 'b1', 'old task', 'x', 'x');")
+      (db/run-migrations! raw-db)
+      (db/run-migrations! raw-db)
+      (is (nil? (.-assignee (.get (.prepare raw-db "SELECT assignee FROM tasks WHERE id = 't1'")))))
+      (finally
+        (.close raw-db)
+        (helpers/remove-dir dir)))))
 
 ;; ============================================================================
 ;; run-migrations! wiring test
@@ -614,8 +659,7 @@
 
         (let [^js row (.get (.prepare raw-db "SELECT statuses FROM boards WHERE id = ?")
                             "raw-old-board")]
-          (is (= ["pending" "planning" "plan_review" "ready"
-                  "in_progress" "in_review" "done" "rejected"]
+          (is (= expected-default-statuses
                  (js->clj (js/JSON.parse (.-statuses row))))))
         (finally
           (.close raw-db)
@@ -644,8 +688,7 @@
       (reset! db/db-instance raw-db)
       (try
         (let [board (boards/get-or-create-board! "/tmp/stale-default-repo")]
-          (is (= ["pending" "planning" "plan_review" "ready"
-                  "in_progress" "in_review" "done" "rejected"]
+          (is (= expected-default-statuses
                  (:statuses board))))
         (finally
           (reset! db/db-instance nil)

@@ -25,6 +25,7 @@
      :status (.-status row)
      :worker-name (.-worker_name row)
      :worker-id (.-worker_id row)
+     :assignee (.-assignee row)
      :persist (= 1 (.-persist row))
      :priority (or (.-priority row) 0)
      :created-at (.-created_at row)
@@ -39,7 +40,7 @@
      :created-at (.-created_at row)}))
 
 ;; ============================================================================
-;; Priority & tag helpers
+;; Priority, tag & assignee helpers
 ;; ============================================================================
 
 (defn validate-priority
@@ -48,6 +49,12 @@
   [priority]
   (when-not (or (nil? priority) (integer? priority))
     (throw (js/Error. (str "priority must be an integer, got: " (pr-str priority))))))
+
+(defn normalize-assignee
+  "Trimmed assignee name, or nil when absent/blank (i.e. unassigned)."
+  [assignee]
+  (when-not (str/blank? assignee)
+    (str/trim assignee)))
 
 (defn normalize-tags
   "Trim, lowercase, drop blanks, dedupe and sort a seq of tag strings."
@@ -264,8 +271,9 @@
 (defn create-task!
   "Create a task, auto-creating board for repo-path if needed.
    Accepts optional :blocked-by vector of task IDs, :priority (integer,
-   higher = more urgent, default 0) and :tags (seq of strings)."
-  [{:keys [repo-path title description blocked-by priority tags]}]
+   higher = more urgent, default 0), :tags (seq of strings) and :assignee
+   (agent name; only that agent may claim the task)."
+  [{:keys [repo-path title description blocked-by priority tags assignee]}]
   (validate-priority priority)
   (let [board (get-or-create-board! repo-path)
         id (util/gen-uuid)
@@ -273,9 +281,10 @@
         txn (.transaction (db/db)
                           (fn []
                             (let [^js stmt (.prepare (db/db)
-                                                     "INSERT INTO tasks (id, board_id, title, description, priority, created_at, updated_at)
-                                                      VALUES (?, ?, ?, ?, ?, ?, ?)")]
-                              (.run stmt id (:id board) title description (or priority 0) now now))
+                                                     "INSERT INTO tasks (id, board_id, title, description, priority, assignee, created_at, updated_at)
+                                                      VALUES (?, ?, ?, ?, ?, ?, ?, ?)")]
+                              (.run stmt id (:id board) title description (or priority 0)
+                                    (normalize-assignee assignee) now now))
                             (let [^js update-stmt (.prepare (db/db) "UPDATE boards SET updated_at = ? WHERE id = ?")]
                               (.run update-stmt now (:id board)))
                             (when (seq blocked-by)
@@ -287,15 +296,16 @@
 
 (defn- find-next-available-task-row
   "Find the most urgent (highest priority, then oldest) unclaimed task in the
-   given queue with no unresolved dependencies, optionally restricted to tasks
-   having any of `tags`. Returns raw JS row or nil. Must be called inside a
-   transaction."
-  [board-id queue-status tags]
+   given queue with no unresolved dependencies, that is unassigned or assigned
+   to `worker-name`, optionally restricted to tasks having any of `tags`.
+   Returns raw JS row or nil. Must be called inside a transaction."
+  [board-id queue-status worker-name tags]
   (let [[tag-sql tag-params] (tags-in-clause tags)
         sql (str "SELECT t.* FROM tasks t
                   WHERE t.board_id = ?
                   AND t.status = ?
                   AND t.worker_name IS NULL
+                  AND (t.assignee IS NULL OR t.assignee = ?)
                   AND NOT EXISTS (
                     SELECT 1 FROM task_dependencies td
                     JOIN tasks dep ON dep.id = td.depends_on_task_id
@@ -305,7 +315,7 @@
                  task-order-sql
                  " LIMIT 1")
         ^js stmt (.prepare (db/db) sql)]
-    (.get stmt (to-array (into [board-id queue-status] tag-params)))))
+    (.get stmt (to-array (into [board-id queue-status worker-name] tag-params)))))
 
 (defn take-task!
   "Atomically claim a task from a queue.
@@ -316,7 +326,8 @@
    With :task-id, claims that specific task (must be in the queue, unclaimed,
    and unblocked). Otherwise auto-assigns the highest-priority (then oldest)
    available task on the board identified by :repo-path, restricted to tasks
-   having any of :tags when given (:tags is ignored with :task-id). Claiming sets the worker; a status change
+   having any of :tags when given (:tags is ignored with :task-id). Tasks
+   with an assignee can only be claimed by that worker-name. Claiming sets the worker; a status change
    via update-task! releases it again, so each lifecycle phase is claimed
    separately. Uses better-sqlite3 transaction for atomicity."
   [{:keys [task-id repo-path worker-name worker-id note status move-to tags]}]
@@ -343,6 +354,8 @@
                                                                "' (status: " (.-status r) ")"))))
                                       (when (.-worker_name r)
                                         (throw (js/Error. (str "Task is already claimed by " (.-worker_name r)))))
+                                      (when (and (.-assignee r) (not= (.-assignee r) worker-name))
+                                        (throw (js/Error. (str "Task is assigned to " (.-assignee r)))))
                                       r)
                         ;; Auto-assign: find next available task in the queue
                                     (let [board (get-board-by-repo repo-path)]
@@ -350,7 +363,7 @@
                                         (throw (js/Error. (str "No board found for repo: " repo-path))))
                                       (validate-board-status board queue-status)
                                       (validate-board-status board target-status)
-                                      (let [^js r (find-next-available-task-row (:id board) queue-status tags)]
+                                      (let [^js r (find-next-available-task-row (:id board) queue-status worker-name tags)]
                                         (when-not r
                                           (throw (js/Error. (str "No available tasks in queue '" queue-status "'"
                                                                  (when (seq tags)
@@ -390,9 +403,10 @@
    Changing status releases the task's worker (worker_name/worker_id set to NULL)
    so the next phase can be claimed via take-task!.
    Optionally adds a note when :note and :author are provided.
-   Accepts optional :blocked-by to set task dependencies, :priority (integer)
-   and :tags (replaces all tags; [] clears them).
-   The :description field uses contains? to distinguish 'not provided' from 'set to nil'.
+   Accepts optional :blocked-by to set task dependencies, :priority (integer),
+   :tags (replaces all tags; [] clears them) and :assignee (nil/blank clears;
+   unlike the worker, it survives status changes).
+   :description and :assignee use contains? to distinguish 'not provided' from 'set to nil'.
    Wrapped in a transaction to prevent race conditions between concurrent agents."
   [task-id opts]
   (let [{:keys [status title persist note author priority]} opts
@@ -419,10 +433,13 @@
                                                   (if persist 1 0)
                                                   (if (:persist task) 1 0))
                                     new-priority (if (some? priority) priority (:priority task))
+                                    new-assignee (if (contains? opts :assignee)
+                                                   (normalize-assignee (:assignee opts))
+                                                   (:assignee task))
                                     ^js stmt (.prepare (db/db)
-                                                       "UPDATE tasks SET status = ?, title = ?, description = ?, persist = ?, priority = ?, worker_name = ?, worker_id = ?, updated_at = ?
+                                                       "UPDATE tasks SET status = ?, title = ?, description = ?, persist = ?, priority = ?, worker_name = ?, worker_id = ?, assignee = ?, updated_at = ?
                                                         WHERE id = ?")]
-                                (.run stmt new-status new-title new-description new-persist new-priority new-worker-name new-worker-id now task-id)
+                                (.run stmt new-status new-title new-description new-persist new-priority new-worker-name new-worker-id new-assignee now task-id)
                                 ;; Update board timestamp
                                 (let [^js board-stmt (.prepare (db/db) "UPDATE boards SET updated_at = ? WHERE id = ?")]
                                   (.run board-stmt now (:board-id task)))
@@ -486,10 +503,11 @@
    Options:
      :status      - vector of status strings to include
      :worker-id   - filter by worker
+     :assignee    - filter by assigned agent name
      :tags        - only tasks having any of these tags
      :show-done   - if false (default), exclude done+rejected
      :include-notes - if true, attach :notes array to each task"
-  [board-id {:keys [status worker-id tags show-done include-notes]}]
+  [board-id {:keys [status worker-id assignee tags show-done include-notes]}]
   (let [conditions ["t.board_id = ?"]
         params [board-id]
         ;; Build status filter
@@ -507,6 +525,11 @@
         (if worker-id
           [(conj conditions "t.worker_id = ?")
            (conj params worker-id)]
+          [conditions params])
+        [conditions params]
+        (if assignee
+          [(conj conditions "t.assignee = ?")
+           (conj params assignee)]
           [conditions params])
         ;; Build tag filter
         [conditions params]
@@ -531,7 +554,7 @@
 (def update-task-allowed-keys
   "Keys that callers may pass through to update-task!. Used by both the REST API
    and the MCP handler to whitelist incoming fields."
-  #{:status :title :description :persist :note :author :blocked-by :priority :tags})
+  #{:status :title :description :persist :note :author :blocked-by :priority :tags :assignee})
 
 ;; ============================================================================
 ;; Dependency graph traversal
@@ -542,7 +565,7 @@
    :id is always included in the result regardless of :fields, and :depth
    is synthesized by the traversal (hop count). Listing :depth in :fields
    raises 'Unknown fields: depth' — it's not a column, so just omit it."
-  #{:id :board-id :title :description :status :worker-name :worker-id
+  #{:id :board-id :title :description :status :worker-name :worker-id :assignee
     :persist :priority :tags :blocked-by :created-at :updated-at})
 
 (def default-dep-graph-fields
