@@ -870,11 +870,15 @@
   [^js req res]
   (let [repo-path (js/decodeURIComponent (.. req -params -id))
         show-done (= "true" (.. req -query -show_done))
-        include-notes (= "true" (.. req -query -include_notes))]
+        include-notes (= "true" (.. req -query -include_notes))
+        commit (.. req -query -commit)
+        parent-id (.. req -query -parent_id)]
     (if-let [board (boards/get-board-by-repo repo-path)]
       (json-response res {:tasks (boards/list-tasks (:id board)
                                                     {:show-done show-done
-                                                     :include-notes include-notes})})
+                                                     :include-notes include-notes
+                                                     :commit commit
+                                                     :parent-id parent-id})})
       (json-response res {:tasks []}))))
 
 (defn get-task-handler

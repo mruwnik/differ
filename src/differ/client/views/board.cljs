@@ -166,6 +166,76 @@
            "Add"]]]))))
 
 ;; ============================================================================
+;; Commits & parent/child links
+;; ============================================================================
+
+(defn short-sha [sha]
+  (subs sha 0 (min 8 (count sha))))
+
+(defn task-by-id
+  "The loaded board task with this id, or nil (e.g. done tasks while
+   'Show completed' is off)."
+  [tasks id]
+  (some #(when (= id (:id %)) %) tasks))
+
+(defn children-label [{:keys [total done]}]
+  (str done "/" total " done"))
+
+(defn task-link
+  "Clickable task title that selects that task in the detail panel."
+  [task]
+  [:span {:title "Open task"
+          :style {:color "#0366d6" :cursor "pointer"}
+          :on-click (fn [e]
+                      (.stopPropagation e)
+                      (rf/dispatch [:select-task task]))}
+   (:title task)])
+
+(defn detail-commits [commits]
+  (when (seq commits)
+    [:div {:style {:margin-bottom "12px"}}
+     [:div {:style {:font-size "12px" :font-weight "600" :color "#24292e" :margin-bottom "4px"}}
+      "Commits"]
+     [:div {:style {:display "flex" :gap "6px" :flex-wrap "wrap"}}
+      (for [sha commits]
+        ^{:key sha}
+        [:code {:title sha
+                :style {:font-size "11px" :padding "1px 6px" :border-radius "4px"
+                        :background "#f6f8fa" :border "1px solid #e1e4e8" :color "#24292e"}}
+         (short-sha sha)])]]))
+
+(defn detail-family
+  "Parent link and child list for the detail panel."
+  [task]
+  (let [tasks @(rf/subscribe [:board-tasks])
+        parent-id (:parent-id task)
+        parent (when parent-id (task-by-id tasks parent-id))
+        children (filter #(= (:id task) (:parent-id %)) tasks)]
+    [:<>
+     (when parent-id
+       [:div {:style {:font-size "12px" :color "#6a737d" :margin-bottom "12px"}}
+        "Parent: "
+        (if parent
+          [task-link parent]
+          [:span {:style {:font-family "monospace"}} parent-id])])
+     (when (or (seq children) (:children task))
+       [:div {:style {:margin-bottom "12px"}}
+        [:div {:style {:font-size "12px" :font-weight "600" :color "#24292e" :margin-bottom "4px"}}
+         "Children"
+         (when (:children task)
+           [:span {:style {:font-weight "400" :color "#6a737d" :margin-left "6px"}}
+            (children-label (:children task))])]
+        (for [child children]
+          ^{:key (:id child)}
+          [:div {:style {:display "flex" :gap "6px" :align-items "center"
+                         :font-size "12px" :margin-bottom "2px"}}
+           [:span {:style {:font-size "10px" :padding "0 6px" :border-radius "8px"
+                           :white-space "nowrap" :color "white"
+                           :background (get status-colors (:status child) "#e1e4e8")}}
+            (get status-labels (:status child) (:status child))]
+           [task-link child]])])]))
+
+;; ============================================================================
 ;; Task Card
 ;; ============================================================================
 
@@ -189,6 +259,11 @@
         (for [tag (:tags task)]
           ^{:key tag}
           [tag-chip tag (contains? selected-tags tag)])])
+     (when-let [parent (some->> (:parent-id task) (task-by-id @(rf/subscribe [:board-tasks])))]
+       [:div {:title (str "Part of: " (:title parent))
+              :style {:font-size "11px" :color "#6a737d" :margin-bottom "4px"
+                      :overflow "hidden" :text-overflow "ellipsis" :white-space "nowrap"}}
+        (str "↳ " (:title parent))])
      [:div {:style {:display "flex" :justify-content "space-between" :align-items "center"}}
       [:div {:style {:display "flex" :gap "6px" :align-items "center"}}
        (when (:worker-name task)
@@ -202,7 +277,15 @@
        (when (seq (:blocked-by task))
          [:span {:style {:font-size "10px" :color "#d73a49" :font-weight "500"}}
           (str "blocked by " (count (:blocked-by task)))])
-       [checklist-chip (:checklist task)]]
+       [checklist-chip (:checklist task)]
+       (when (:children task)
+         [:span {:title "Child tasks done"
+                 :style {:font-size "10px" :color "#6a737d"}}
+          (children-label (:children task))])
+       (when (seq (:commits task))
+         [:span {:title (str/join "\n" (:commits task))
+                 :style {:font-size "10px" :color "#6a737d" :font-family "monospace"}}
+          (str (count (:commits task)) (if (= 1 (count (:commits task))) " commit" " commits"))])]
       [:span {:style {:font-size "11px" :color "#959da5"}}
        (format-age (:created-at task))]]]))
 
@@ -324,6 +407,8 @@
                  dep-id])])
 
            [checklist-editor task]
+           [detail-family task]
+           [detail-commits (:commits task)]
 
            ;; Description
            (when (seq (:description task))

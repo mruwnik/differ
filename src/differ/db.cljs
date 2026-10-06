@@ -135,6 +135,7 @@
       worker_name TEXT,
       worker_id TEXT,
       assignee TEXT,
+      parent_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
       persist INTEGER NOT NULL DEFAULT 0,
       priority INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -176,7 +177,16 @@
       done INTEGER NOT NULL DEFAULT 0,
       position INTEGER NOT NULL,
       PRIMARY KEY (task_id, item)
-    );"))
+    );
+
+    CREATE TABLE IF NOT EXISTS task_commits (
+      task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      sha TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (task_id, sha)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_task_commits_sha ON task_commits(sha);"))
 
 (defn- migrate-kanban-tables
   "Add kanban board tables for existing databases."
@@ -199,6 +209,17 @@
                           (.all (.prepare db "PRAGMA table_info(tasks)"))))]
     (when-not (columns "assignee")
       (.exec db "ALTER TABLE tasks ADD COLUMN assignee TEXT"))))
+
+(defn- migrate-task-parent
+  "Add tasks.parent_id for databases whose tasks table predates it. The index
+   lives here rather than in kanban-ddl because on old databases kanban-ddl
+   runs before this column exists."
+  [^js db]
+  (let [columns (set (map (fn [^js c] (.-name c))
+                          (.all (.prepare db "PRAGMA table_info(tasks)"))))]
+    (when-not (columns "parent_id")
+      (.exec db "ALTER TABLE tasks ADD COLUMN parent_id TEXT REFERENCES tasks(id) ON DELETE SET NULL")))
+  (.exec db "CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_id)"))
 
 (defn migrate-board-statuses
   "Rewrite boards still on an old default status list to the current
@@ -399,6 +420,7 @@
   (migrate-kanban-tables db)
   (migrate-task-priority db)
   (migrate-task-assignee db)
+  (migrate-task-parent db)
   (migrate-board-statuses db))
 
 (defn init!

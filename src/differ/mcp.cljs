@@ -37,7 +37,7 @@
                 :fields {:type "array"
                          :items {:type "string"}
                          :uniqueItems true
-                         :description "Fields to include per task (in addition to id and depth). Default: [\"title\", \"status\", \"blocked_by\"]. Allowed: id, board_id, title, description, status, worker_name, worker_id, assignee, persist, priority, tags, blocked_by, created_at, updated_at, checklist, checklist_complete."}}
+                         :description "Fields to include per task (in addition to id and depth). Default: [\"title\", \"status\", \"blocked_by\"]. Allowed: id, board_id, title, description, status, worker_name, worker_id, assignee, persist, priority, tags, blocked_by, created_at, updated_at, checklist, checklist_complete, commits, parent_id, children."}}
    :required ["task_id"]})
 
 ;; Tool definitions
@@ -234,7 +234,12 @@
                                           :description "Agent name this task is reserved for (optional). Only a take_task with this worker_name can claim it."}
                                :checklist {:type "array"
                                            :items {:type "string"}
-                                           :description "Ordered verification items still owed (optional), all starting unticked. For code tasks use e.g. [\"unit\", \"integration\", \"live\", \"review\"]. Tick items via update_task only with results, not plans."}}
+                                           :description "Ordered verification items still owed (optional), all starting unticked. For code tasks use e.g. [\"unit\", \"integration\", \"live\", \"review\"]. Tick items via update_task only with results, not plans."}
+                               :add_commits {:type "array"
+                                             :items {:type "string"}
+                                             :description "Commit hashes (4-40 hex chars, short or full) related to this task (optional). Normalized: trimmed, lowercased, deduped."}
+                               :parent_id {:type "string"
+                                           :description "Umbrella/parent task ID on the same board (optional). Grouping only: unlike blocked_by it never blocks claiming."}}
                   :required ["repo_path" "title"]}}
 
    {:name "list_tasks"
@@ -254,6 +259,10 @@
                                       :description "Only tasks having ANY of these tags"}
                                :stale {:type "boolean"
                                        :description "Only tasks whose claim lease has lapsed (worker set but no activity for the lease period; see take_task)"}
+                               :commit {:type "string"
+                                        :description "Only tasks with a commit matching this hash (short and full hashes match each other by prefix)"}
+                               :parent_id {:type "string"
+                                           :description "Only children of this parent task"}
                                :include_notes {:type "boolean"
                                                :description "Include notes on each task"}
                                :show_done {:type "boolean"
@@ -300,7 +309,7 @@
                   :required ["worker_name"]}}
 
    {:name "update_task"
-    :description "Update a task's status, title, description, persist flag, priority, tags, assignee, or dependencies. Status is validated against the board's allowed statuses (default lifecycle: pending, needs_owner, planning, plan_review, ready, in_progress, testing, in_review, done, rejected). Changing status releases the task's worker so the next phase can be claimed with take_task; the assignee is kept. 'blocked' is a computed status based on dependencies. The returned task carries its `checklist` and `checklist_complete`; moving to done with unticked checklist items is allowed but the response includes a `warning` naming them."
+    :description "Update a task's status, title, description, persist flag, priority, tags, assignee, checklist, commits, parent, or dependencies. Status is validated against the board's allowed statuses (default lifecycle: pending, needs_owner, planning, plan_review, ready, in_progress, testing, in_review, done, rejected). Changing status releases the task's worker so the next phase can be claimed with take_task; the assignee is kept. 'blocked' is a computed status based on dependencies. The returned task carries its `checklist` and `checklist_complete`; moving to done with unticked checklist items is allowed but the response includes a `warning` naming them."
     :inputSchema {:type "object"
                   :properties {:task_id {:type "string"
                                          :description "Task ID (or unique prefix) to update"}
@@ -331,6 +340,14 @@
                                :remove_checklist_items {:type "array"
                                                         :items {:type "string"}
                                                         :description "Checklist item names to remove (applied before `checklist`)"}
+                               :add_commits {:type "array"
+                                             :items {:type "string"}
+                                             :description "Commit hashes (4-40 hex chars) to append; already-present ones are ignored"}
+                               :remove_commits {:type "array"
+                                                :items {:type "string"}
+                                                :description "Commit hashes to remove (exact match after normalization; applied before add_commits)"}
+                               :parent_id {:type "string"
+                                           :description "Set the umbrella/parent task (\"\" clears). Must be on the same board and must not create a cycle. Grouping only; never blocks claiming."}
                                :note {:type "string"
                                       :description "Optional note to add with the update"}
                                :author {:type "string"
@@ -878,18 +895,20 @@
 
 ;; Kanban board tool handlers
 
-(defmethod handle-tool "create_task" [_ {:keys [repo-path title description blocked-by priority tags assignee checklist]}]
+(defmethod handle-tool "create_task" [_ {:keys [repo-path title description blocked-by priority tags assignee checklist add-commits parent-id]}]
   (let [task (boards/create-task! {:repo-path repo-path :title title :description description
                                    :blocked-by blocked-by :priority priority :tags tags
-                                   :assignee assignee :checklist checklist})]
+                                   :assignee assignee :checklist checklist
+                                   :add-commits add-commits :parent-id parent-id})]
     (sse/broadcast-all! :task-created {:task task :repo-path repo-path})
     {:task task}))
 
-(defmethod handle-tool "list_tasks" [_ {:keys [repo-path status worker-id assignee tags stale include-notes show-done
+(defmethod handle-tool "list_tasks" [_ {:keys [repo-path status worker-id assignee tags stale commit parent-id include-notes show-done
                                                 min-priority updated-since search fields limit]}]
   (if-let [board (boards/get-board-by-repo repo-path)]
     (boards/query-tasks (:id board)
                         {:status status :worker-id worker-id :assignee assignee :tags tags :stale stale
+                         :commit commit :parent-id parent-id
                          :include-notes include-notes :show-done show-done
                          :min-priority min-priority :updated-since updated-since
                          :search search :fields fields :limit limit})

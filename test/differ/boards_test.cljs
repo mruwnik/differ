@@ -1428,3 +1428,166 @@
   (is (contains? boards/update-task-allowed-keys :remove-checklist-items))
   (is (contains? boards/dep-graph-fields :checklist))
   (is (contains? boards/dep-graph-fields :checklist-complete)))
+
+;; Commits (structured commit hashes attached to a task)
+;; ============================================================================
+
+(deftest normalize-sha-test
+  (is (= "abc1234" (boards/normalize-sha "  ABC1234 ")))
+  (is (= "0123456789abcdef0123456789abcdef01234567"
+         (boards/normalize-sha "0123456789ABCDEF0123456789abcdef01234567"))))
+
+(deftest normalize-sha-rejects-invalid-test
+  (doseq [bad ["" "  " "abc" "xyz1234" "abc 123" "0123456789abcdef0123456789abcdef012345678" nil 1234]]
+    (is (thrown-with-msg? js/Error #"Invalid commit sha"
+                          (boards/normalize-sha bad))
+        (pr-str bad))))
+
+(deftest create-task-commits-test
+  (testing "defaults to empty"
+    (is (= [] (:commits (boards/create-task! {:repo-path "/tmp/c-create" :title "t"})))))
+  (testing "stored normalized, deduped, in insertion order"
+    (is (= ["ffff111" "aaaa222"]
+           (:commits (boards/create-task! {:repo-path "/tmp/c-create" :title "t"
+                                           :add-commits ["FFFF111" "aaaa222" " ffff111 "]}))))))
+
+(deftest create-task-rejects-invalid-commit-test
+  (is (thrown-with-msg? js/Error #"Invalid commit sha"
+                        (boards/create-task! {:repo-path "/tmp/c-bad" :title "t"
+                                              :add-commits ["not-a-sha"]})))
+  (is (= [] (boards/list-tasks (:id (boards/get-or-create-board! "/tmp/c-bad")) {}))))
+
+(deftest update-task-commits-test
+  (let [task (boards/create-task! {:repo-path "/tmp/c-update" :title "t" :add-commits ["bbbb111"]})]
+    (testing "add-commits appends and dedupes"
+      (is (= ["bbbb111" "cccc222" "aaaa333"]
+             (:commits (boards/update-task! (:id task) {:add-commits ["cccc222" "BBBB111" "aaaa333"]})))))
+    (testing "omitting commits leaves them unchanged"
+      (is (= ["bbbb111" "cccc222" "aaaa333"]
+             (:commits (boards/update-task! (:id task) {:title "renamed"})))))
+    (testing "remove-commits removes (normalized)"
+      (is (= ["bbbb111" "aaaa333"]
+             (:commits (boards/update-task! (:id task) {:remove-commits [" CCCC222"]})))))
+    (testing "invalid sha rejects the whole update"
+      (is (thrown-with-msg? js/Error #"Invalid commit sha"
+                            (boards/update-task! (:id task) {:title "x" :add-commits ["zz"]})))
+      (is (= "renamed" (:title (boards/get-task (:id task))))))))
+
+(deftest list-tasks-commit-filter-test
+  (let [repo "/tmp/c-list"
+        board (boards/get-or-create-board! repo)
+        full "0123456789abcdef0123456789abcdef01234567"
+        a (boards/create-task! {:repo-path repo :title "a" :add-commits [full]})
+        b (boards/create-task! {:repo-path repo :title "b" :add-commits ["fedcba98"]})
+        _c (boards/create-task! {:repo-path repo :title "c"})
+        ids-for (fn [commit] (mapv :id (boards/list-tasks (:id board) {:commit commit})))]
+    (testing "short query matches stored full hash"
+      (is (= [(:id a)] (ids-for "0123456"))))
+    (testing "full query matches stored short hash"
+      (is (= [(:id b)] (ids-for "FEDCBA98765432100000000000000000000000ab"))))
+    (testing "exact match"
+      (is (= [(:id a)] (ids-for full))))
+    (testing "no match"
+      (is (= [] (ids-for "1111111"))))))
+
+(deftest commits-are-allowed-update-and-graph-fields-test
+  (is (contains? boards/update-task-allowed-keys :add-commits))
+  (is (contains? boards/update-task-allowed-keys :remove-commits))
+  (is (contains? boards/dep-graph-fields :commits)))
+
+(deftest dep-graph-commits-field-test
+  (let [repo "/tmp/c-graph"
+        a (boards/create-task! {:repo-path repo :title "A" :add-commits ["abcd1234"]})
+        b (boards/create-task! {:repo-path repo :title "B" :blocked-by [(:id a)]})
+        [entry] (boards/get-upstream (:id b) {:fields [:commits]})]
+    (is (= ["abcd1234"] (:commits entry)))))
+
+;; ============================================================================
+;; Parent / umbrella links (grouping only; distinct from blocked_by)
+;; ============================================================================
+
+(deftest create-task-parent-test
+  (let [repo "/tmp/p-create"
+        parent (boards/create-task! {:repo-path repo :title "diagnosis"})]
+    (testing "defaults to nil"
+      (is (nil? (:parent-id parent))))
+    (testing "is stored when given"
+      (is (= (:id parent) (:parent-id (boards/create-task! {:repo-path repo :title "fix"
+                                                            :parent-id (:id parent)})))))
+    (testing "blank parent is stored as nil"
+      (is (nil? (:parent-id (boards/create-task! {:repo-path repo :title "fix" :parent-id ""})))))
+    (testing "unknown parent is rejected"
+      (is (thrown-with-msg? js/Error #"Parent task not found"
+                            (boards/create-task! {:repo-path repo :title "fix" :parent-id "nope"}))))))
+
+(deftest parent-must-be-on-same-board-test
+  (let [other (boards/create-task! {:repo-path "/tmp/p-board-a" :title "elsewhere"})]
+    (is (thrown-with-msg? js/Error #"same board"
+                          (boards/create-task! {:repo-path "/tmp/p-board-b" :title "fix"
+                                                :parent-id (:id other)})))))
+
+(deftest update-task-parent-test
+  (let [repo "/tmp/p-update"
+        parent (boards/create-task! {:repo-path repo :title "diagnosis"})
+        task (boards/create-task! {:repo-path repo :title "fix"})]
+    (testing "sets the parent"
+      (is (= (:id parent) (:parent-id (boards/update-task! (:id task) {:parent-id (:id parent)})))))
+    (testing "omitting parent leaves it unchanged"
+      (is (= (:id parent) (:parent-id (boards/update-task! (:id task) {:title "renamed"})))))
+    (testing "blank clears it"
+      (is (nil? (:parent-id (boards/update-task! (:id task) {:parent-id ""})))))
+    (testing "nil clears it"
+      (boards/update-task! (:id task) {:parent-id (:id parent)})
+      (is (nil? (:parent-id (boards/update-task! (:id task) {:parent-id nil})))))
+    (testing "unknown parent is rejected"
+      (is (thrown-with-msg? js/Error #"Parent task not found"
+                            (boards/update-task! (:id task) {:parent-id "nope"}))))))
+
+(deftest update-task-parent-rejects-cycles-test
+  (let [repo "/tmp/p-cycle"
+        a (boards/create-task! {:repo-path repo :title "a"})
+        b (boards/create-task! {:repo-path repo :title "b" :parent-id (:id a)})
+        c (boards/create-task! {:repo-path repo :title "c" :parent-id (:id b)})]
+    (testing "a task cannot be its own parent"
+      (is (thrown-with-msg? js/Error #"cycle"
+                            (boards/update-task! (:id a) {:parent-id (:id a)}))))
+    (testing "a task cannot become a child of its own descendant"
+      (is (thrown-with-msg? js/Error #"cycle"
+                            (boards/update-task! (:id a) {:parent-id (:id c)})))
+      (is (nil? (:parent-id (boards/get-task (:id a))))))
+    (testing "re-parenting within the tree without a cycle is fine"
+      (is (= (:id a) (:parent-id (boards/update-task! (:id c) {:parent-id (:id a)})))))))
+
+(deftest children-progress-summary-test
+  (let [repo "/tmp/p-children"
+        parent (boards/create-task! {:repo-path repo :title "diagnosis"})
+        kids (mapv #(boards/create-task! {:repo-path repo :title (str "fix " %) :parent-id (:id parent)})
+                   (range 4))]
+    (boards/update-task! (:id (kids 0)) {:status "done"})
+    (boards/update-task! (:id (kids 1)) {:status "done"})
+    (boards/update-task! (:id (kids 2)) {:status "rejected"})
+    (testing "parent carries total (excluding rejected) and done counts"
+      (is (= {:total 3 :done 2} (:children (boards/get-task (:id parent))))))
+    (testing "childless tasks carry no summary"
+      (is (nil? (:children (boards/get-task (:id (kids 3)))))))))
+
+(deftest parent-does-not-block-claiming-test
+  (let [repo "/tmp/p-claim"
+        parent (boards/create-task! {:repo-path repo :title "diagnosis"})
+        child (boards/create-task! {:repo-path repo :title "fix" :parent-id (:id parent)})]
+    (is (= "pending" (:status child)))
+    (is (= [] (:blocked-by child)))
+    (is (= (:id child) (:id (boards/take-task! {:task-id (:id child) :worker-name "w"}))))))
+
+(deftest list-tasks-parent-filter-test
+  (let [repo "/tmp/p-list"
+        board (boards/get-or-create-board! repo)
+        parent (boards/create-task! {:repo-path repo :title "diagnosis"})
+        kid (boards/create-task! {:repo-path repo :title "fix" :parent-id (:id parent)})
+        _other (boards/create-task! {:repo-path repo :title "other"})]
+    (is (= [(:id kid)] (mapv :id (boards/list-tasks (:id board) {:parent-id (:id parent)}))))))
+
+(deftest parent-is-an-allowed-update-and-graph-field-test
+  (is (contains? boards/update-task-allowed-keys :parent-id))
+  (is (contains? boards/dep-graph-fields :parent-id))
+  (is (contains? boards/dep-graph-fields :children)))
