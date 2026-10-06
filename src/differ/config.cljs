@@ -39,6 +39,11 @@
    {:poll-interval-ms 30000
     :poller-grace-ms 300000}
 
+   ;; Kanban boards. A worker's claim on a task lapses once the task has
+   ;; had no activity (anything bumping its updated_at) for this long.
+   :kanban
+   {:claim-lease-hours 4}
+
    ;; Push whitelist - controls which repos/branches can be pushed
    ;; Empty map = all repos/branches allowed
    ;; Example: {"owner/repo" ["feature/*" "fix/*"], "myorg/*" ["*"]}
@@ -271,6 +276,14 @@
 
 (defn github-poller-grace-ms []
   (nested-config-value :github-poller :poller-grace-ms "DIFFER_GITHUB_POLLER_GRACE_MS"))
+
+(defn claim-lease-hours
+  "Hours without task activity after which a kanban claim lapses. Falls back
+   to the default when a config.edn :kanban block omits it (blocks merge
+   shallowly)."
+  []
+  (or (nested-config-value :kanban :claim-lease-hours "DIFFER_CLAIM_LEASE_HOURS")
+      (get-in defaults [:kanban :claim-lease-hours])))
 
 ;; Client-safe config (values that can be exposed to the browser)
 (def client-config-keys

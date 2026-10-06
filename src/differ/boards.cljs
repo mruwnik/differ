@@ -1,6 +1,7 @@
 (ns differ.boards
   "Kanban board, task, and note CRUD operations."
   (:require [clojure.string :as str]
+            [differ.config :as config]
             [differ.db :as db]
             [differ.util :as util]))
 
@@ -88,6 +89,37 @@
   "Queue/listing order: most urgent first, then oldest. rowid breaks
    created_at ties between tasks created in the same millisecond."
   " ORDER BY t.priority DESC, t.created_at ASC, t.rowid ASC")
+
+;; ============================================================================
+;; Claim leases
+;; ============================================================================
+
+;; A claim (worker_name) lapses once its task has had no activity for
+;; config/claim-lease-hours. Every activity path (take-task!, update-task!,
+;; add-note!) already bumps tasks.updated_at, so updated_at doubles as the
+;; lease heartbeat and no separate claimed_at column is needed. Timestamps
+;; are ISO-8601 UTC strings from util/now-iso, so they compare lexically.
+
+(def ^:private ms-per-hour 3600000)
+
+(defn claim-lease-cutoff
+  "ISO timestamp at or before which a claimed task's updated_at means its
+   claim has lapsed, as of now-iso."
+  [now-iso]
+  (.toISOString (js/Date. (- (js/Date.parse now-iso)
+                             (* (config/claim-lease-hours) ms-per-hour)))))
+
+(defn claim-lapsed?
+  "True when a claim on a task last active at updated-at has lapsed as of now-iso."
+  [updated-at now-iso]
+  (not (pos? (compare updated-at (claim-lease-cutoff now-iso)))))
+
+(defn idle-hours
+  "Hours between updated-at and now-iso, rounded to one decimal."
+  [updated-at now-iso]
+  (/ (js/Math.round (/ (- (js/Date.parse now-iso) (js/Date.parse updated-at))
+                       (/ ms-per-hour 10)))
+     10))
 
 ;; ============================================================================
 ;; Task dependency operations
@@ -193,14 +225,17 @@
           ^js stmt (.prepare (db/db) sql)
           rows (.all stmt (to-array ids))
           deps-by-task (group-by (fn [^js r] (.-task_id r)) rows)
-          tags (tags-by-task ids)]
+          tags (tags-by-task ids)
+          now (util/now-iso)]
       (mapv (fn [task]
               (let [unresolved (mapv (fn [^js r] (.-depends_on_task_id r)) (get deps-by-task (:id task) []))
                     effective-status (if (seq unresolved) "blocked" (:status task))]
                 (assoc task
                        :status effective-status
                        :blocked-by unresolved
-                       :tags (get tags (:id task) []))))
+                       :tags (get tags (:id task) [])
+                       :claim-stale (boolean (and (:worker-name task)
+                                                  (claim-lapsed? (:updated-at task) now))))))
             tasks))))
 
 (defn- enrich-task
@@ -295,8 +330,8 @@
     (get-task id)))
 
 (defn- find-next-available-task-row
-  "Find the most urgent (highest priority, then oldest) unclaimed task in the
-   given queue with no unresolved dependencies, that is unassigned or assigned
+  "Find the most urgent (highest priority, then oldest) unclaimed (or
+   lapsed-claim) task in the given queue with no unresolved dependencies, that is unassigned or assigned
    to `worker-name`, optionally restricted to tasks having any of `tags`.
    Returns raw JS row or nil. Must be called inside a transaction."
   [board-id queue-status worker-name tags]
@@ -304,7 +339,7 @@
         sql (str "SELECT t.* FROM tasks t
                   WHERE t.board_id = ?
                   AND t.status = ?
-                  AND t.worker_name IS NULL
+                  AND (t.worker_name IS NULL OR t.updated_at <= ?)
                   AND (t.assignee IS NULL OR t.assignee = ?)
                   AND NOT EXISTS (
                     SELECT 1 FROM task_dependencies td
@@ -315,7 +350,8 @@
                  task-order-sql
                  " LIMIT 1")
         ^js stmt (.prepare (db/db) sql)]
-    (.get stmt (to-array (into [board-id queue-status worker-name] tag-params)))))
+    (.get stmt (to-array (into [board-id queue-status (claim-lease-cutoff (util/now-iso)) worker-name]
+                               tag-params)))))
 
 (defn take-task!
   "Atomically claim a task from a queue.
@@ -329,7 +365,9 @@
    having any of :tags when given (:tags is ignored with :task-id). Tasks
    with an assignee can only be claimed by that worker-name. Claiming sets the worker; a status change
    via update-task! releases it again, so each lifecycle phase is claimed
-   separately. Uses better-sqlite3 transaction for atomicity."
+   separately. A claim whose lease has lapsed (no task activity for
+   config/claim-lease-hours) counts as unclaimed; taking it over from another
+   worker records a note. Uses better-sqlite3 transaction for atomicity."
   [{:keys [task-id repo-path worker-name worker-id note status move-to tags]}]
   (when (str/blank? worker-name)
     (throw (js/Error. "worker-name is required")))
@@ -352,7 +390,8 @@
                                       (when-not (= queue-status (.-status r))
                                         (throw (js/Error. (str "Task is not in queue '" queue-status
                                                                "' (status: " (.-status r) ")"))))
-                                      (when (.-worker_name r)
+                                      (when (and (.-worker_name r)
+                                                 (not (claim-lapsed? (.-updated_at r) (util/now-iso))))
                                         (throw (js/Error. (str "Task is already claimed by " (.-worker_name r)))))
                                       (when (and (.-assignee r) (not= (.-assignee r) worker-name))
                                         (throw (js/Error. (str "Task is assigned to " (.-assignee r)))))
@@ -388,6 +427,16 @@
                     ;; Update board timestamp
                                 (let [^js board-stmt (.prepare (db/db) "UPDATE boards SET updated_at = ? WHERE id = ?")]
                                   (.run board-stmt now (.-board_id row)))
+                    ;; Any remaining previous worker held a lapsed claim; record the takeover
+                                (when-let [old-worker (.-worker_name row)]
+                                  (when (not= old-worker worker-name)
+                                    (let [^js note-stmt (.prepare (db/db)
+                                                                  "INSERT INTO task_notes (id, task_id, author, content, created_at)
+                                                     VALUES (?, ?, ?, ?, ?)")]
+                                      (.run note-stmt (util/gen-uuid) tid worker-name
+                                            (str "Claim taken over from " old-worker
+                                                 " (lease expired, idle " (idle-hours (.-updated_at row) now) "h)")
+                                            now))))
                     ;; Add note if provided
                                 (when note
                                   (let [note-id (util/gen-uuid)
@@ -491,7 +540,7 @@
   "List notes for a task, ordered by created_at ASC."
   [task-id]
   (let [^js stmt (.prepare (db/db)
-                           "SELECT * FROM task_notes WHERE task_id = ? ORDER BY created_at ASC")]
+                           "SELECT * FROM task_notes WHERE task_id = ? ORDER BY created_at ASC, rowid ASC")]
     (mapv row->note (.all stmt task-id))))
 
 ;; ============================================================================
@@ -505,9 +554,10 @@
      :worker-id   - filter by worker
      :assignee    - filter by assigned agent name
      :tags        - only tasks having any of these tags
+     :stale       - if true, only tasks whose claim lease has lapsed
      :show-done   - if false (default), exclude done+rejected
      :include-notes - if true, attach :notes array to each task"
-  [board-id {:keys [status worker-id assignee tags show-done include-notes]}]
+  [board-id {:keys [status worker-id assignee tags stale show-done include-notes]}]
   (let [conditions ["t.board_id = ?"]
         params [board-id]
         ;; Build status filter
@@ -535,6 +585,11 @@
         [conditions params]
         (if-let [[tag-sql tag-params] (tags-in-clause tags)]
           [(conj conditions tag-sql) (into params tag-params)]
+          [conditions params])
+        [conditions params]
+        (if stale
+          [(conj conditions "t.worker_name IS NOT NULL AND t.updated_at <= ?")
+           (conj params (claim-lease-cutoff (util/now-iso)))]
           [conditions params])
         where-clause (str/join " AND " conditions)
         sql (str "SELECT t.* FROM tasks t WHERE " where-clause task-order-sql)

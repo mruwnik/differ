@@ -8,6 +8,7 @@
             [differ.git :as git]
             [differ.backend.protocol :as proto]
             [differ.boards :as boards]
+            [differ.config :as config]
             [differ.sse :as sse]
             [differ.util :as util]
             [differ.oauth :as oauth]
@@ -248,6 +249,8 @@
                                :tags {:type "array"
                                       :items {:type "string"}
                                       :description "Only tasks having ANY of these tags"}
+                               :stale {:type "boolean"
+                                       :description "Only tasks whose claim lease has lapsed (worker set but no activity for the lease period; see take_task)"}
                                :include_notes {:type "boolean"
                                                :description "Include notes on each task"}
                                :show_done {:type "boolean"
@@ -255,7 +258,9 @@
                   :required ["repo_path"]}}
 
    {:name "take_task"
-    :description "Atomically claim a task from a queue. Pulls from the `status` queue (default: pending) and moves the task to `move_to` (default: in_progress), assigning you as worker. If task_id is omitted, auto-assigns the highest-priority (then oldest) unclaimed, unblocked task in the queue that is unassigned or assigned to you, optionally restricted to tasks having any of `tags`. Tasks assigned to another agent cannot be claimed. Changing a task's status via update_task releases the worker, so each lifecycle phase (planning, plan_review checking, implementation, review) is claimed separately. To claim in place (e.g. reviewing a plan without moving it), set move_to to the same status as the queue. Returns full task details."
+    :description (str "Atomically claim a task from a queue. Pulls from the `status` queue (default: pending) and moves the task to `move_to` (default: in_progress), assigning you as worker. If task_id is omitted, auto-assigns the highest-priority (then oldest) unclaimed, unblocked task in the queue that is unassigned or assigned to you, optionally restricted to tasks having any of `tags`. Tasks assigned to another agent cannot be claimed. Changing a task's status via update_task releases the worker, so each lifecycle phase (planning, plan_review checking, implementation, review) is claimed separately. To claim in place (e.g. reviewing a plan without moving it), set move_to to the same status as the queue. "
+                      "Your claim lapses after " (config/claim-lease-hours) " idle hours (no add_note, update_task or take_task on the task); add_note or update_task keep it alive. "
+                      "Lapsed claims count as unclaimed: another worker may take the task over (a takeover note is recorded), and the task reports claim_stale. Returns full task details.")
     :inputSchema {:type "object"
                   :properties {:task_id {:type "string"
                                          :description "Task ID to claim (optional - omit to auto-assign next available task)"}
@@ -853,10 +858,10 @@
     (sse/broadcast-all! :task-created {:task task :repo-path repo-path})
     {:task task}))
 
-(defmethod handle-tool "list_tasks" [_ {:keys [repo-path status worker-id assignee tags include-notes show-done]}]
+(defmethod handle-tool "list_tasks" [_ {:keys [repo-path status worker-id assignee tags stale include-notes show-done]}]
   (if-let [board (boards/get-board-by-repo repo-path)]
     {:tasks (boards/list-tasks (:id board)
-                               {:status status :worker-id worker-id :assignee assignee :tags tags
+                               {:status status :worker-id worker-id :assignee assignee :tags tags :stale stale
                                 :include-notes include-notes :show-done show-done})}
     {:tasks []}))
 
