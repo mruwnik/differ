@@ -6,6 +6,8 @@
             [differ.test-helpers :as helpers]
             [differ.util :as util]
             [differ.api :as api]
+            [differ.boards :as boards]
+            [differ.db :as db]
             [differ.oauth :as oauth]
             [differ.config :as config]
             ["path" :as path]))
@@ -638,3 +640,32 @@
           (is (some? redirected) "should issue a code, not serve a dead login form")
           (is (nil? status))
           (is (str/includes? redirected "code=")))))))
+
+;; ============================================================================
+;; Task ID prefix resolution
+;; ============================================================================
+
+(defn- call-get-task-handler [id]
+  (let [[res get-response] (make-mock-res)]
+    (api/get-task-handler (make-mock-req :params {:id id}) res)
+    (get-response)))
+
+(deftest get-task-handler-accepts-prefix-test
+  (let [task (boards/create-task! {:repo-path "/tmp/api-prefix" :title "t"})
+        _ (boards/add-note! {:task-id (:id task) :author "a" :content "hi"})
+        {:keys [status data]} (call-get-task-handler (subs (:id task) 0 8))]
+    (is (= 200 status))
+    (is (= (:id task) (get-in data [:task :id])))
+    (is (= ["hi"] (mapv :content (get-in data [:task :notes]))))))
+
+(deftest get-task-handler-unknown-id-test
+  (is (= 404 (:status (call-get-task-handler "no-such-task")))))
+
+(deftest get-task-handler-ambiguous-prefix-test
+  (let [board (boards/get-or-create-board! "/tmp/api-ambiguous")
+        ^js stmt (.prepare (db/db) "INSERT INTO tasks (id, board_id, title) VALUES (?, ?, ?)")]
+    (.run stmt "amb-1" (:id board) "x")
+    (.run stmt "amb-2" (:id board) "y")
+    (let [{:keys [status data]} (call-get-task-handler "amb")]
+      (is (= 400 status))
+      (is (re-find #"ambiguous" (:error data))))))

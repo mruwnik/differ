@@ -880,10 +880,14 @@
 (defn get-task-handler
   "GET /api/tasks/:id"
   [^js req res]
-  (let [task-id (.. req -params -id)]
-    (if-let [task (boards/get-task task-id)]
-      (json-response res {:task (assoc task :notes (boards/list-notes task-id))})
-      (error-response res 404 "Task not found"))))
+  (let [task-id (.. req -params -id)
+        ;; get-task accepts unique id prefixes and throws on ambiguous ones
+        [task err] (try [(boards/get-task task-id) nil]
+                        (catch :default e [nil (ex-message e)]))]
+    (cond
+      err (error-response res 400 err)
+      task (json-response res {:task (assoc task :notes (boards/list-notes (:id task)))})
+      :else (error-response res 404 "Task not found"))))
 
 (defn update-task-api-handler
   "PATCH /api/tasks/:id"

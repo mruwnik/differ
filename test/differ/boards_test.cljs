@@ -1004,3 +1004,95 @@
   (let [task (boards/create-task! {:repo-path "/tmp/new-statuses" :title "t"})]
     (is (= "needs_owner" (:status (boards/update-task! (:id task) {:status "needs_owner"}))))
     (is (= "testing" (:status (boards/update-task! (:id task) {:status "testing"}))))))
+
+;; ============================================================================
+;; Task ID prefix resolution
+;; ============================================================================
+
+(defn- insert-task-with-id!
+  "Insert a task with a chosen id (create-task! always generates a UUID)."
+  [repo id title]
+  (let [board (boards/get-or-create-board! repo)]
+    (.run (.prepare (db/db) "INSERT INTO tasks (id, board_id, title) VALUES (?, ?, ?)")
+          id (:id board) title)
+    id))
+
+(deftest resolve-task-id-test
+  (let [repo "/tmp/prefix-resolve"
+        task (boards/create-task! {:repo-path repo :title "t"})
+        id (:id task)]
+    (testing "exact id resolves to itself"
+      (is (= id (boards/resolve-task-id id))))
+    (testing "a unique prefix resolves to the full id"
+      (is (= id (boards/resolve-task-id (subs id 0 8)))))
+    (testing "unknown id throws Task not found"
+      (is (thrown-with-msg? js/Error #"Task not found: zzzz"
+                            (boards/resolve-task-id "zzzz"))))
+    (testing "blank id throws Task not found"
+      (is (thrown-with-msg? js/Error #"Task not found"
+                            (boards/resolve-task-id ""))))
+    (testing "LIKE wildcards are matched literally"
+      (is (thrown-with-msg? js/Error #"Task not found"
+                            (boards/resolve-task-id "%"))))))
+
+(deftest resolve-task-id-exact-match-wins-test
+  (let [repo "/tmp/prefix-exact"
+        short-id (insert-task-with-id! repo "abc" "short")
+        _long-id (insert-task-with-id! repo "abcdef" "long")]
+    (is (= short-id (boards/resolve-task-id "abc")))))
+
+(deftest resolve-task-id-ambiguous-test
+  (let [repo "/tmp/prefix-ambiguous"]
+    (insert-task-with-id! repo "dup-1" "First dup")
+    (insert-task-with-id! repo "dup-2" "Second dup")
+    (is (thrown-with-msg? js/Error #"(?s)ambiguous.*dup-1.*First dup.*dup-2.*Second dup"
+                          (boards/resolve-task-id "dup")))))
+
+(deftest resolve-task-id-ambiguous-caps-candidates-test
+  (let [repo "/tmp/prefix-many"]
+    (doseq [i (range 8)]
+      (insert-task-with-id! repo (str "many-" i) (str "Task " i)))
+    (is (thrown-with-msg? js/Error #"(?s)8 tasks.*many-4.*and 3 more"
+                          (boards/resolve-task-id "many")))
+    (is (not (re-find #"many-5"
+                      (try (boards/resolve-task-id "many")
+                           (catch :default e (ex-message e))))))))
+
+(deftest prefix-ids-accepted-everywhere-test
+  (let [repo "/tmp/prefix-everywhere"
+        dep (boards/create-task! {:repo-path repo :title "dep"})
+        dep-prefix (subs (:id dep) 0 8)
+        task (boards/create-task! {:repo-path repo :title "t" :blocked-by [dep-prefix]})
+        id (:id task)
+        prefix (subs id 0 8)]
+    (testing "create-task! resolves :blocked-by prefixes"
+      (is (= [(:id dep)] (:blocked-by task))))
+    (testing "get-task accepts a prefix and returns the full id"
+      (is (= id (:id (boards/get-task prefix)))))
+    (testing "get-task returns nil for unknown ids"
+      (is (nil? (boards/get-task "no-such-task"))))
+    (testing "get-upstream / get-downstream accept prefixes"
+      (is (= [(:id dep)] (mapv :id (boards/get-upstream prefix {}))))
+      (is (= [id] (mapv :id (boards/get-downstream dep-prefix {})))))
+    (testing "get-upstream still returns [] for unknown ids"
+      (is (= [] (boards/get-upstream "no-such-task" {}))))
+    (testing "add-note! accepts a prefix and stores the full id"
+      (is (= id (:task-id (boards/add-note! {:task-id prefix :author "a" :content "hi"})))))
+    (testing "list-notes accepts a prefix"
+      (is (= ["hi"] (mapv :content (boards/list-notes prefix)))))
+    (testing "update-task! accepts a prefix and resolves :blocked-by prefixes"
+      (let [updated (boards/update-task! prefix {:title "renamed" :blocked-by [dep-prefix]})]
+        (is (= id (:id updated)))
+        (is (= "renamed" (:title updated)))
+        (is (= [(:id dep)] (boards/get-task-dependencies id)))))
+    (testing "update-task! :blocked-by with an unknown id throws Task not found"
+      (is (thrown-with-msg? js/Error #"Task not found: nope"
+                            (boards/update-task! prefix {:blocked-by ["nope"]}))))
+    (testing "take-task! accepts a prefix"
+      (boards/update-task! (:id dep) {:status "done"})
+      (is (= id (:id (boards/take-task! {:task-id prefix :worker-name "w"})))))
+    (testing "update-task! with an ambiguous prefix throws"
+      (insert-task-with-id! repo "amb-1" "x")
+      (insert-task-with-id! repo "amb-2" "y")
+      (is (thrown-with-msg? js/Error #"ambiguous"
+                            (boards/update-task! "amb" {:title "z"}))))))

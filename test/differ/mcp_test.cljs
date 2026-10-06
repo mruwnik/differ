@@ -964,3 +964,30 @@
                   boards/get-board (fn [_] {:id "b" :repo-path "/tmp/r"})]
       (mcp/handle-tool "update_task" {:task-id "t" :priority 2 :tags ["x"]})
       (is (= {:priority 2 :tags ["x"]} @captured)))))
+
+;; ============================================================================
+;; Task ID prefixes (real DB: init-test-db! isolates differ.db per test)
+;; ============================================================================
+
+(deftest task-tools-accept-id-prefixes-test
+  (let [task (boards/create-task! {:repo-path "/tmp/mcp-prefix" :title "t"})
+        prefix (subs (:id task) 0 8)]
+    (testing "add_note resolves a prefix to the full id"
+      (is (= (:id task) (get-in (mcp/handle-tool "add_note" {:task-id prefix :author "a" :content "hi"})
+                                [:note :task-id]))))
+    (testing "update_task resolves a prefix and returns the full id"
+      (is (= (:id task) (get-in (mcp/handle-tool "update_task" {:task-id prefix :title "renamed"})
+                                [:task :id]))))
+    (testing "take_task resolves a prefix"
+      (is (= (:id task) (get-in (mcp/handle-tool "take_task" {:task-id prefix :worker-name "w"})
+                                [:task :id]))))))
+
+(deftest task-id-params-document-prefixes-test
+  (let [desc (fn [tool param]
+               (get-in (mcp/tools-by-name tool) [:inputSchema :properties param :description]))]
+    (is (re-find #"unique prefix" (desc "take_task" :task_id)))
+    (is (re-find #"unique prefix" (desc "update_task" :task_id)))
+    (is (re-find #"unique prefix" (desc "add_note" :task_id)))
+    (is (re-find #"unique prefix" (desc "get_upstream" :task_id)))
+    (is (re-find #"unique prefix" (desc "update_task" :blocked_by)))
+    (is (re-find #"unique prefix" (desc "create_task" :blocked_by)))))

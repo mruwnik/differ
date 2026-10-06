@@ -256,10 +256,49 @@
   (let [^js stmt (.prepare (db/db) "SELECT * FROM tasks WHERE id = ?")]
     (row->task (.get stmt task-id))))
 
-(defn get-task
-  "Get single task by ID. Returns effective status and blocked-by."
+(def ^:private ambiguous-candidate-limit 5)
+
+(defn- ambiguous-prefix-error
+  [prefix ^js rows]
+  (let [total (.-length rows)
+        shown (->> (array-seq rows)
+                   (take ambiguous-candidate-limit)
+                   (map (fn [^js r] (str (.-id r) " (" (.-title r) ")"))))
+        more (- total ambiguous-candidate-limit)]
+    (js/Error. (str "Task id prefix '" prefix "' is ambiguous; it matches " total " tasks: "
+                    (str/join ", " shown)
+                    (when (pos? more) (str ", and " more " more"))))))
+
+(defn- find-task-id
+  "Resolve an exact task id or unique id prefix to the full id. Returns nil
+   when nothing matches; throws when the prefix matches several tasks.
+   Uses substr rather than LIKE so `%`/`_` in the input match literally."
   [task-id]
-  (enrich-task (get-task-raw task-id)))
+  (when-not (str/blank? task-id)
+    (let [^js exact (.get (.prepare (db/db) "SELECT id FROM tasks WHERE id = ?") task-id)]
+      (if exact
+        (.-id exact)
+        (let [^js rows (.all (.prepare (db/db)
+                                       "SELECT id, title FROM tasks WHERE substr(id, 1, ?) = ? ORDER BY id")
+                             (count task-id) task-id)]
+          (case (.-length rows)
+            0 nil
+            1 (.-id (aget rows 0))
+            (throw (ambiguous-prefix-error task-id rows))))))))
+
+(defn resolve-task-id
+  "Resolve an exact task id or unique id prefix to the full id. Exact match
+   wins; throws `Task not found` when nothing matches and an ambiguity error
+   listing candidates when the prefix matches several tasks."
+  [task-id]
+  (or (find-task-id task-id)
+      (throw (js/Error. (str "Task not found: " task-id)))))
+
+(defn get-task
+  "Get single task by ID or unique ID prefix. Returns effective status and
+   blocked-by, or nil when no task matches."
+  [task-id]
+  (some-> (find-task-id task-id) get-task-raw enrich-task))
 
 (defn- validate-board-status
   "Throw unless status is in the board's allowed statuses."
@@ -275,7 +314,8 @@
    (agent name; only that agent may claim the task)."
   [{:keys [repo-path title description blocked-by priority tags assignee]}]
   (validate-priority priority)
-  (let [board (get-or-create-board! repo-path)
+  (let [blocked-by (mapv resolve-task-id blocked-by)
+        board (get-or-create-board! repo-path)
         id (util/gen-uuid)
         now (util/now-iso)
         txn (.transaction (db/db)
@@ -335,7 +375,8 @@
     (throw (js/Error. "worker-name is required")))
   (when (and (nil? task-id) (nil? repo-path))
     (throw (js/Error. "Either task-id or repo-path is required")))
-  (let [queue-status (or status "pending")
+  (let [task-id (when task-id (resolve-task-id task-id))
+        queue-status (or status "pending")
         target-status (or move-to "in_progress")
         txn (.transaction (db/db)
                           (fn []
@@ -411,6 +452,9 @@
   [task-id opts]
   (let [{:keys [status title persist note author priority]} opts
         _ (validate-priority priority)
+        task-id (resolve-task-id task-id)
+        opts (cond-> opts
+               (contains? opts :blocked-by) (update :blocked-by #(mapv resolve-task-id %)))
         txn (.transaction (db/db)
                           (fn []
                             (let [task (get-task-raw task-id)]
@@ -466,7 +510,8 @@
   "Add a note to a task. Updates task and board timestamps.
    Wrapped in a transaction for consistency with take-task! and update-task!."
   [{:keys [task-id author content]}]
-  (let [id (util/gen-uuid)
+  (let [task-id (resolve-task-id task-id)
+        id (util/gen-uuid)
         txn (.transaction (db/db)
                           (fn []
                             (let [task (get-task task-id)]
@@ -488,9 +533,10 @@
       (row->note (.get get-stmt id)))))
 
 (defn list-notes
-  "List notes for a task, ordered by created_at ASC."
+  "List notes for a task (ID or unique ID prefix), ordered by created_at ASC."
   [task-id]
-  (let [^js stmt (.prepare (db/db)
+  (let [task-id (or (find-task-id task-id) task-id)
+        ^js stmt (.prepare (db/db)
                            "SELECT * FROM task_notes WHERE task_id = ? ORDER BY created_at ASC")]
     (mapv row->note (.all stmt task-id))))
 
@@ -671,7 +717,8 @@
 (defn- get-related-tasks
   [start-id next-batch-fn {:keys [depth fields]}]
   (validate-depth depth)
-  (let [fields (if (seq fields)
+  (let [start-id (or (find-task-id start-id) start-id)
+        fields (if (seq fields)
                  (mapv coerce-field fields)
                  default-dep-graph-fields)
         _ (validate-dep-graph-fields fields)

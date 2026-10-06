@@ -30,7 +30,7 @@
 (def ^:private dep-graph-input-schema
   {:type "object"
    :properties {:task_id {:type "string"
-                          :description "Task ID to traverse from"}
+                          :description "Task ID (or unique prefix) to traverse from"}
                 :depth {:type "integer"
                         :description "Max hops to traverse (omit for full transitive closure, 1 for direct only). The boards layer rejects negative values; the MCP schema itself does not enforce a minimum."}
                 :fields {:type "array"
@@ -223,7 +223,7 @@
                                              :description "Task description (optional)"}
                                :blocked_by {:type "array"
                                             :items {:type "string"}
-                                            :description "Array of task IDs this task depends on (optional)"}
+                                            :description "Array of task IDs (or unique prefixes) this task depends on (optional)"}
                                :priority {:type "integer"
                                           :description "Priority: higher = more urgent. Default 0; negative = low. take_task auto-assign picks highest priority first, then oldest."}
                                :tags {:type "array"
@@ -258,7 +258,7 @@
     :description "Atomically claim a task from a queue. Pulls from the `status` queue (default: pending) and moves the task to `move_to` (default: in_progress), assigning you as worker. If task_id is omitted, auto-assigns the highest-priority (then oldest) unclaimed, unblocked task in the queue that is unassigned or assigned to you, optionally restricted to tasks having any of `tags`. Tasks assigned to another agent cannot be claimed. Changing a task's status via update_task releases the worker, so each lifecycle phase (planning, plan_review checking, implementation, review) is claimed separately. To claim in place (e.g. reviewing a plan without moving it), set move_to to the same status as the queue. Returns full task details."
     :inputSchema {:type "object"
                   :properties {:task_id {:type "string"
-                                         :description "Task ID to claim (optional - omit to auto-assign next available task)"}
+                                         :description "Task ID or unique prefix to claim (optional - omit to auto-assign next available task)"}
                                :repo_path {:type "string"
                                            :description "Repo path to find board (required when task_id is omitted)"}
                                :status {:type "string"
@@ -280,7 +280,7 @@
     :description "Update a task's status, title, description, persist flag, priority, tags, assignee, or dependencies. Status is validated against the board's allowed statuses (default lifecycle: pending, needs_owner, planning, plan_review, ready, in_progress, testing, in_review, done, rejected). Changing status releases the task's worker so the next phase can be claimed with take_task; the assignee is kept. 'blocked' is a computed status based on dependencies."
     :inputSchema {:type "object"
                   :properties {:task_id {:type "string"
-                                         :description "Task ID to update"}
+                                         :description "Task ID (or unique prefix) to update"}
                                :status {:type "string"
                                         :description "New status"}
                                :title {:type "string"
@@ -291,7 +291,7 @@
                                          :description "Whether task persists across board resets"}
                                :blocked_by {:type "array"
                                             :items {:type "string"}
-                                            :description "Array of task IDs this task depends on"}
+                                            :description "Array of task IDs (or unique prefixes) this task depends on"}
                                :priority {:type "integer"
                                           :description "Priority: higher = more urgent. Default 0; negative = low. take_task auto-assign picks highest priority first, then oldest."}
                                :tags {:type "array"
@@ -317,7 +317,7 @@
     :description "Add a note to a task without changing its state."
     :inputSchema {:type "object"
                   :properties {:task_id {:type "string"
-                                         :description "Task ID to add note to"}
+                                         :description "Task ID (or unique prefix) to add note to"}
                                :author {:type "string"
                                         :description "Note author"}
                                :content {:type "string"
