@@ -951,6 +951,39 @@
       (mcp/handle-tool "list_tasks" {:repo-path "/tmp/r" :tags ["sec"]})
       (is (= ["sec"] (:tags @captured))))))
 
+(deftest list-tasks-tool-passes-query-options-test
+  (let [captured (atom nil)]
+    (with-redefs [boards/get-board-by-repo (fn [_] {:id "b"})
+                  boards/query-tasks (fn [_ opts] (reset! captured opts) {:tasks [] :total 0})]
+      (mcp/handle-tool "list_tasks" {:repo-path "/tmp/r" :min-priority 2
+                                     :updated-since "2026-01-01" :fields ["title"]
+                                     :limit 5 :search "bug" :include-notes true})
+      (is (= {:min-priority 2 :updated-since "2026-01-01" :fields ["title"]
+              :limit 5 :search "bug" :include-notes true}
+             (select-keys @captured [:min-priority :updated-since :fields
+                                     :limit :search :include-notes]))))))
+
+(deftest list-tasks-tool-returns-total-test
+  (with-redefs [boards/get-board-by-repo (fn [_] {:id "b"})
+                boards/list-tasks (fn [_ _] [{:id "1" :title "a"} {:id "2" :title "b"}])]
+    (is (= {:tasks [{:id "1" :title "a"}] :total 2}
+           (mcp/handle-tool "list_tasks" {:repo-path "/tmp/r" :limit 1 :fields ["title"]})))))
+
+(deftest list-tasks-tool-unknown-board-test
+  (with-redefs [boards/get-board-by-repo (fn [_] nil)]
+    (is (= {:tasks [] :total 0} (mcp/handle-tool "list_tasks" {:repo-path "/tmp/nope"})))))
+
+(deftest list-tasks-tool-schema-test
+  (let [tool (first (filter #(= "list_tasks" (:name %)) mcp/tools))
+        props (get-in tool [:inputSchema :properties])]
+    (is (= "integer" (get-in props [:min_priority :type])))
+    (is (= "string" (get-in props [:updated_since :type])))
+    (is (= "array" (get-in props [:fields :type])))
+    (is (= "integer" (get-in props [:limit :type])))
+    (is (= "string" (get-in props [:search :type])))
+    (is (re-find #"fields" (:description tool)))
+    (is (re-find #"include_notes" (:description tool)))))
+
 (deftest take-task-tool-passes-tags-test
   (let [captured (atom nil)]
     (with-redefs [boards/take-task! (fn [opts] (reset! captured opts) {:id "t" :board-id "b"})

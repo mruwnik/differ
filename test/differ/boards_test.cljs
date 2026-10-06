@@ -1004,3 +1004,118 @@
   (let [task (boards/create-task! {:repo-path "/tmp/new-statuses" :title "t"})]
     (is (= "needs_owner" (:status (boards/update-task! (:id task) {:status "needs_owner"}))))
     (is (= "testing" (:status (boards/update-task! (:id task) {:status "testing"}))))))
+
+;; ============================================================================
+;; list-tasks filters + query-tasks (projection / limit / total)
+;; ============================================================================
+
+(defn- set-updated-at! [task-id ts]
+  (let [^js stmt (.prepare (db/db) "UPDATE tasks SET updated_at = ? WHERE id = ?")]
+    (.run stmt ts task-id)))
+
+(deftest list-tasks-min-priority-filter-test
+  (let [repo "/tmp/lt-minprio"
+        board (boards/get-or-create-board! repo)
+        _lo (boards/create-task! {:repo-path repo :title "lo" :priority -1})
+        mid (boards/create-task! {:repo-path repo :title "mid" :priority 2})
+        hi (boards/create-task! {:repo-path repo :title "hi" :priority 5})]
+    (is (= (mapv :id [hi mid]) (mapv :id (boards/list-tasks (:id board) {:min-priority 2}))))
+    (is (= 3 (count (boards/list-tasks (:id board) {:min-priority -1}))))))
+
+(deftest list-tasks-min-priority-rejects-non-integer-test
+  (is (thrown-with-msg? js/Error #"min_priority must be an integer"
+                        (boards/list-tasks "b" {:min-priority "high"}))))
+
+(deftest list-tasks-search-filter-test
+  (let [repo "/tmp/lt-search"
+        board (boards/get-or-create-board! repo)
+        a (boards/create-task! {:repo-path repo :title "Fix Login bug"})
+        _b (boards/create-task! {:repo-path repo :title "Refactor db"})
+        c (boards/create-task! {:repo-path repo :title "login page styling"})
+        d (boards/create-task! {:repo-path repo :title "100% coverage_push"})]
+    (is (= (mapv :id [a c]) (mapv :id (boards/list-tasks (:id board) {:search "LOGIN"}))))
+    (testing "LIKE wildcards in the search string match literally"
+      (is (= [] (boards/list-tasks (:id board) {:search "1%0"})))
+      (is (= [] (boards/list-tasks (:id board) {:search "%_"})))
+      (is (= [(:id d)] (mapv :id (boards/list-tasks (:id board) {:search "e_p"})))))))
+
+(deftest list-tasks-updated-since-filter-test
+  (let [repo "/tmp/lt-since"
+        board (boards/get-or-create-board! repo)
+        old (boards/create-task! {:repo-path repo :title "old"})
+        edge (boards/create-task! {:repo-path repo :title "edge"})
+        new (boards/create-task! {:repo-path repo :title "new"})]
+    (set-updated-at! (:id old) "2026-01-01T00:00:00.000Z")
+    (set-updated-at! (:id edge) "2026-02-01T12:00:00.000Z")
+    (set-updated-at! (:id new) "2026-03-01T00:00:00.000Z")
+    (testing "inclusive bound, full timestamp"
+      (is (= (mapv :id [edge new])
+             (mapv :id (boards/list-tasks (:id board) {:updated-since "2026-02-01T12:00:00Z"})))))
+    (testing "timezone offsets are normalised to UTC before comparing"
+      (is (= (mapv :id [edge new])
+             (mapv :id (boards/list-tasks (:id board) {:updated-since "2026-02-01T14:00:00+02:00"})))))
+    (testing "date-only is midnight UTC"
+      (is (= [(:id new)]
+             (mapv :id (boards/list-tasks (:id board) {:updated-since "2026-02-02"})))))))
+
+(deftest list-tasks-updated-since-rejects-garbage-test
+  (is (thrown-with-msg? js/Error #"updated_since must be an ISO-8601 timestamp"
+                        (boards/list-tasks "b" {:updated-since "yesterday"})))
+  (is (thrown-with-msg? js/Error #"updated_since must be an ISO-8601 timestamp"
+                        (boards/list-tasks "b" {:updated-since "2026-13-45"})))
+  (testing "a time without a timezone is ambiguous and rejected"
+    (is (thrown-with-msg? js/Error #"updated_since must be an ISO-8601 timestamp"
+                          (boards/list-tasks "b" {:updated-since "2026-02-01T10:00:00"})))))
+
+(deftest query-tasks-limit-and-total-test
+  (let [repo "/tmp/qt-limit"
+        board (boards/get-or-create-board! repo)
+        a (boards/create-task! {:repo-path repo :title "a" :priority 1})
+        b (boards/create-task! {:repo-path repo :title "b" :priority 3})
+        _c (boards/create-task! {:repo-path repo :title "c"})]
+    (testing "limit applies after ordering; total is the pre-limit count"
+      (let [result (boards/query-tasks (:id board) {:limit 2})]
+        (is (= 3 (:total result)))
+        (is (= (mapv :id [b a]) (mapv :id (:tasks result))))))
+    (testing "no limit returns everything"
+      (is (= 3 (count (:tasks (boards/query-tasks (:id board) {}))))))))
+
+(deftest query-tasks-rejects-bad-limit-test
+  (is (thrown-with-msg? js/Error #"limit must be a positive integer"
+                        (boards/query-tasks "b" {:limit 0})))
+  (is (thrown-with-msg? js/Error #"limit must be a positive integer"
+                        (boards/query-tasks "b" {:limit "5"}))))
+
+(deftest query-tasks-fields-projection-test
+  (let [repo "/tmp/qt-fields"
+        board (boards/get-or-create-board! repo)
+        dep (boards/create-task! {:repo-path repo :title "dep" :priority 1})
+        t (boards/create-task! {:repo-path repo :title "t" :tags ["x"] :blocked-by [(:id dep)]})]
+    (testing "projects to requested fields plus id, using enriched values"
+      (is (= [{:id (:id dep) :title "dep" :status "pending" :priority 1}
+              {:id (:id t) :title "t" :status "blocked" :priority 0}]
+             (:tasks (boards/query-tasks (:id board) {:fields ["title" "status" "priority"]})))))
+    (testing "computed blocked_by and tags are selectable, snake_case or keyword"
+      (is (= {:id (:id t) :blocked-by [(:id dep)] :tags ["x"]}
+             (second (:tasks (boards/query-tasks (:id board) {:fields ["blocked_by" :tags]}))))))
+    (testing "unknown fields are rejected with the allowed list"
+      (is (thrown-with-msg? js/Error #"Unknown fields: bogus\. Allowed: .*notes"
+                            (boards/query-tasks (:id board) {:fields ["bogus"]}))))))
+
+(deftest query-tasks-notes-test
+  (let [repo "/tmp/qt-notes"
+        board (boards/get-or-create-board! repo)
+        t (boards/create-task! {:repo-path repo :title "t"})
+        _ (boards/add-note! {:task-id (:id t) :author "me" :content "hello"})]
+    (testing "notes in fields fetches notes"
+      (is (= ["hello"] (mapv :content (-> (boards/query-tasks (:id board) {:fields ["notes"]})
+                                          :tasks first :notes)))))
+    (testing "include_notes keeps notes alongside a projection"
+      (is (= #{:id :title :notes}
+             (set (keys (first (:tasks (boards/query-tasks (:id board) {:fields ["title"] :include-notes true}))))))))
+    (testing "notes are omitted by default"
+      (is (= #{:id :title}
+             (set (keys (first (:tasks (boards/query-tasks (:id board) {:fields ["title"]}))))))))
+    (testing "include_notes without fields returns full tasks with notes"
+      (is (= "hello" (-> (boards/query-tasks (:id board) {:include-notes true})
+                         :tasks first :notes first :content))))))
