@@ -1591,3 +1591,17 @@
   (is (contains? boards/update-task-allowed-keys :parent-id))
   (is (contains? boards/dep-graph-fields :parent-id))
   (is (contains? boards/dep-graph-fields :children)))
+
+(deftest parent-id-accepts-prefixes-test
+  (let [repo "/tmp/parent-prefix"
+        parent (boards/create-task! {:repo-path repo :title "umbrella"})
+        prefix (subs (:id parent) 0 8)
+        child (boards/create-task! {:repo-path repo :title "fix" :parent-id prefix})
+        other (boards/create-task! {:repo-path repo :title "fix 2"})]
+    (testing "create-task! resolves a parent-id prefix to the full id"
+      (is (= (:id parent) (:parent-id child))))
+    (testing "update-task! resolves a parent-id prefix to the full id"
+      (is (= (:id parent) (:parent-id (boards/update-task! (:id other) {:parent-id prefix})))))
+    (testing "list-tasks parent-id filter accepts a prefix"
+      (is (= #{(:id child) (:id other)}
+             (set (map :id (boards/list-tasks (:board-id parent) {:parent-id prefix}))))))))

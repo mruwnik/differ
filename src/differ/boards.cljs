@@ -496,6 +496,14 @@
             1 (.-id (aget rows 0))
             (throw (ambiguous-prefix-error task-id rows))))))))
 
+(defn- resolve-parent-id
+  "Normalized parent-id with a unique prefix expanded to the full id. An
+   unknown id is passed through so validate-parent reports it as a missing
+   parent; an ambiguous prefix throws."
+  [parent-id]
+  (when-let [parent-id (normalize-parent-id parent-id)]
+    (or (find-task-id parent-id) parent-id)))
+
 (defn resolve-task-id
   "Resolve an exact task id or unique id prefix to the full id. Exact match
    wins; throws `Task not found` when nothing matches and an ambiguity error
@@ -531,7 +539,7 @@
         board (get-or-create-board! repo-path)
         id (util/gen-uuid)
         now (util/now-iso)
-        parent-id (normalize-parent-id parent-id)
+        parent-id (resolve-parent-id parent-id)
         txn (.transaction (db/db)
                           (fn []
                             (validate-parent nil (:id board) parent-id)
@@ -720,7 +728,7 @@
                                                    (normalize-assignee (:assignee opts))
                                                    (:assignee task))
                                     new-parent-id (if (contains? opts :parent-id)
-                                                    (normalize-parent-id (:parent-id opts))
+                                                    (resolve-parent-id (:parent-id opts))
                                                     (:parent-id task))
                                     _ (when (contains? opts :parent-id)
                                         (validate-parent task-id (:board-id task) new-parent-id))
@@ -894,7 +902,7 @@
         [conditions params]
         (if parent-id
           [(conj conditions "t.parent_id = ?")
-           (conj params parent-id)]
+           (conj params (or (find-task-id parent-id) parent-id))]
           [conditions params])
         where-clause (str/join " AND " conditions)
         sql (str "SELECT t.* FROM tasks t WHERE " where-clause task-order-sql)
