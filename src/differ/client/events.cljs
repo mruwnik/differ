@@ -4,6 +4,7 @@
             [clojure.string :as str]
             [differ.client.db :as db]
             [differ.client.api :as api]
+            [differ.client.board-dnd :as board-dnd]
             [differ.client.task-filter :as task-filter]))
 
 ;; LocalStorage helpers
@@ -815,6 +816,29 @@
  :deselect-task
  (fn [db _]
    (assoc db :selected-task nil)))
+
+(rf/reg-event-db
+ :board-drag-start
+ (fn [db [_ task]]
+   (assoc db :board-drag task :board-drag-over nil)))
+
+(rf/reg-event-db
+ :board-drag-over
+ (fn [db [_ status]]
+   (assoc db :board-drag-over status)))
+
+(rf/reg-event-db
+ :board-drag-end
+ (fn [db _]
+   (assoc db :board-drag nil :board-drag-over nil)))
+
+(rf/reg-event-fx
+ :board-drop
+ (fn [{:keys [db]} [_ status]]
+   (let [task (:board-drag db)
+         update (board-dnd/drop-update task status)]
+     (cond-> {:db (assoc db :board-drag nil :board-drag-over nil)}
+       update (assoc :dispatch [:update-task-from-ui (:id task) update])))))
 
 (rf/reg-event-fx
  :toggle-board-show-done

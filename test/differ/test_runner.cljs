@@ -39,7 +39,8 @@
             [differ.client.highlight-test]
             [differ.client.events-test]
             [differ.client.task-filter-test]
-            [differ.client.board-stats-test]))
+            [differ.client.board-stats-test]
+            [differ.client.board-dnd-test]))
 
 (defn main []
   ;; Never let app code under test open the real ~/.local/share/differ db,
@@ -82,4 +83,5 @@
    'differ.client.highlight-test
    'differ.client.events-test
    'differ.client.task-filter-test
-   'differ.client.board-stats-test))
+   'differ.client.board-stats-test
+   'differ.client.board-dnd-test))

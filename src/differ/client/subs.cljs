@@ -365,6 +365,8 @@
 (rf/reg-sub :board-tasks (fn [db _] (:board-tasks db)))
 (rf/reg-sub :selected-task (fn [db _] (:selected-task db)))
 (rf/reg-sub :board-show-done (fn [db _] (:board-show-done db)))
+(rf/reg-sub :board-drag (fn [db _] (:board-drag db)))
+(rf/reg-sub :board-drag-over (fn [db _] (:board-drag-over db)))
 (rf/reg-sub :board-filter (fn [db _] (:board-filter db)))
 (rf/reg-sub :board-stats (fn [db _] (:board-stats db)))
 (rf/reg-sub :board-stats-collapsed (fn [db _] (:board-stats-collapsed db)))

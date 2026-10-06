@@ -4,6 +4,7 @@
             [reagent.core :as r]
             [clojure.string :as str]
             [differ.client.task-filter :as task-filter]
+            [differ.client.board-dnd :as board-dnd]
             [differ.client.board-stats :as board-stats]))
 
 (def status-order ["pending" "needs_owner" "planning" "plan_review" "ready" "in_progress" "blocked" "testing" "in_review" "done" "rejected"])
@@ -243,13 +244,23 @@
 (defn task-card [task]
   (let [selected @(rf/subscribe [:selected-task])
         selected-tags (:tags @(rf/subscribe [:board-filter]))
-        is-selected (and selected (= (:id selected) (:id task)))]
+        is-selected (and selected (= (:id selected) (:id task)))
+        dragging? (= (:id task) (:id @(rf/subscribe [:board-drag])))]
     [:div {:style {:padding "8px 12px"
                    :margin-bottom "6px"
                    :background (if is-selected "#ddf4ff" "#fff")
                    :border (str "1px solid " (if is-selected "#0366d6" "#e1e4e8"))
                    :border-radius "4px"
-                   :cursor "pointer"}
+                   :cursor "grab"
+                   :opacity (if dragging? "0.4" "1")}
+           :draggable true
+           :on-drag-start (fn [e]
+                            (let [dt (.-dataTransfer e)]
+                              (set! (.-effectAllowed dt) "move")
+                              ;; Firefox won't start a drag without data
+                              (.setData dt "text/plain" (:id task)))
+                            (rf/dispatch [:board-drag-start task]))
+           :on-drag-end #(rf/dispatch [:board-drag-end])
            :on-click #(rf/dispatch [:select-task task])}
      [:div {:style {:display "flex" :gap "6px" :align-items "flex-start" :margin-bottom "4px"}}
       [priority-badge (:priority task)]
@@ -295,22 +306,38 @@
 ;; ============================================================================
 
 (defn kanban-column [status tasks]
-  [:div {:style {:min-width "200px"
-                 :max-width "280px"
-                 :flex "1 1 200px"}}
-   [:div {:style {:display "flex" :align-items "center" :gap "8px"
-                  :margin-bottom "12px" :padding-bottom "8px"
-                  :border-bottom (str "2px solid " (get status-colors status "#e1e4e8"))}}
-    [:span {:style {:font-size "13px" :font-weight "600" :color "#24292e"}}
-     (get status-labels status status)]
-    [:span {:style {:font-size "12px" :color "#6a737d"
-                    :background "#f1f8ff" :padding "0 6px"
-                    :border-radius "10px" :min-width "18px" :text-align "center"}}
-     (count tasks)]]
-   [:div {:style {:min-height "80px"}}
-    (for [task tasks]
-      ^{:key (:id task)}
-      [task-card task])]])
+  (let [dragged @(rf/subscribe [:board-drag])
+        droppable? (some? (board-dnd/drop-update dragged status))
+        over? (and droppable? (= status @(rf/subscribe [:board-drag-over])))]
+    [:div {:style {:min-width "200px"
+                   :max-width "280px"
+                   :flex "1 1 200px"
+                   :border-radius "6px"
+                   :outline (when over? (str "2px dashed " (get status-colors status "#0366d6")))
+                   :outline-offset "2px"
+                   :background (when over? "#f6f8fa")
+                   :opacity (when (and dragged (not droppable?) (not= status (:status dragged))) "0.5")}
+           :on-drag-over (fn [e]
+                           (when droppable?
+                             (.preventDefault e)
+                             (when-not over?
+                               (rf/dispatch [:board-drag-over status]))))
+           :on-drop (fn [e]
+                      (.preventDefault e)
+                      (rf/dispatch [:board-drop status]))}
+     [:div {:style {:display "flex" :align-items "center" :gap "8px"
+                    :margin-bottom "12px" :padding-bottom "8px"
+                    :border-bottom (str "2px solid " (get status-colors status "#e1e4e8"))}}
+      [:span {:style {:font-size "13px" :font-weight "600" :color "#24292e"}}
+       (get status-labels status status)]
+      [:span {:style {:font-size "12px" :color "#6a737d"
+                      :background "#f1f8ff" :padding "0 6px"
+                      :border-radius "10px" :min-width "18px" :text-align "center"}}
+       (count tasks)]]
+     [:div {:style {:min-height "80px"}}
+      (for [task tasks]
+        ^{:key (:id task)}
+        [task-card task])]]))
 
 ;; ============================================================================
 ;; Task Detail Panel
