@@ -234,7 +234,7 @@
                   :required ["repo_path" "title"]}}
 
    {:name "list_tasks"
-    :description "List tasks on a repo's kanban board. By default hides done/rejected tasks."
+    :description "List tasks on a repo's kanban board, most urgent first. By default hides done/rejected tasks. Returns {tasks, total} where total is the match count before `limit`. Full tasks are large: for a board overview pass `fields` (e.g. [\"title\",\"status\",\"priority\"]) and narrow with status/tags/min_priority/updated_since/search/limit, then get_task for detail. include_notes is expensive (every note of every task) - avoid it on whole-board listings."
     :inputSchema {:type "object"
                   :properties {:repo_path {:type "string"
                                            :description "Absolute path to the repo directory"}
@@ -251,7 +251,22 @@
                                :include_notes {:type "boolean"
                                                :description "Include notes on each task"}
                                :show_done {:type "boolean"
-                                           :description "Include done/rejected tasks"}}
+                                           :description "Include done/rejected tasks"}
+                               :min_priority {:type "integer"
+                                              :description "Only tasks with priority >= this"}
+                               :updated_since {:type "string"
+                                               :description "Only tasks updated at or after this ISO-8601 timestamp (e.g. \"2026-01-31T09:00:00Z\", or a date \"2026-01-31\" = midnight UTC). Times must carry Z or an offset."}
+                               :search {:type "string"
+                                        :description "Case-insensitive substring match on title"}
+                               :fields {:type "array"
+                                        :items {:type "string"}
+                                        :description (str "Project each task to these fields (id always included). Allowed: "
+                                                         (str/join ", " (sort (map #(str/replace (name %) "-" "_")
+                                                                                   boards/list-task-fields)))
+                                                         ". status/blocked_by reflect unresolved deps. \"notes\" fetches notes.")}
+                               :limit {:type "integer"
+                                       :minimum 1
+                                       :description "Return at most this many tasks (after ordering); compare with total to see if truncated"}}
                   :required ["repo_path"]}}
 
    {:name "take_task"
@@ -853,12 +868,15 @@
     (sse/broadcast-all! :task-created {:task task :repo-path repo-path})
     {:task task}))
 
-(defmethod handle-tool "list_tasks" [_ {:keys [repo-path status worker-id assignee tags include-notes show-done]}]
+(defmethod handle-tool "list_tasks" [_ {:keys [repo-path status worker-id assignee tags include-notes show-done
+                                                min-priority updated-since search fields limit]}]
   (if-let [board (boards/get-board-by-repo repo-path)]
-    {:tasks (boards/list-tasks (:id board)
-                               {:status status :worker-id worker-id :assignee assignee :tags tags
-                                :include-notes include-notes :show-done show-done})}
-    {:tasks []}))
+    (boards/query-tasks (:id board)
+                        {:status status :worker-id worker-id :assignee assignee :tags tags
+                         :include-notes include-notes :show-done show-done
+                         :min-priority min-priority :updated-since updated-since
+                         :search search :fields fields :limit limit})
+    {:tasks [] :total 0}))
 
 (defmethod handle-tool "take_task" [_ {:keys [task-id repo-path worker-name worker-id note status move-to tags]}]
   (when (and (nil? task-id) (nil? repo-path))

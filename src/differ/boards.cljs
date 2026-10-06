@@ -544,6 +544,37 @@
 ;; Task listing (after note operations for forward reference)
 ;; ============================================================================
 
+(def ^:private iso-timestamp-re
+  "Date-only (taken as midnight UTC), or date+time with an explicit Z or
+   offset. A bare local time is rejected: JS would read it in the server's
+   timezone, which the caller can't see."
+  #"^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2}))?$")
+
+(defn- normalize-updated-since
+  "Validate an ISO-8601 timestamp and return it in the exact format
+   util/now-iso writes (Date.toISOString: UTC, millis, Z), so a plain
+   string comparison against updated_at is chronological."
+  [ts]
+  (let [ms (when (and (string? ts) (re-matches iso-timestamp-re ts))
+             (js/Date.parse ts))]
+    (when (or (nil? ms) (js/isNaN ms))
+      (throw (ex-info (str "updated_since must be an ISO-8601 timestamp with timezone "
+                           "(e.g. 2026-01-31T09:00:00Z) or a date (2026-01-31), got: "
+                           (pr-str ts))
+                      {:invalid-updated-since ts})))
+    (.toISOString (js/Date. ms))))
+
+(defn- validate-min-priority [p]
+  (when-not (integer? p)
+    (throw (ex-info (str "min_priority must be an integer, got: " (pr-str p))
+                    {:invalid-min-priority p}))))
+
+(defn- title-matches?
+  "Case-insensitive substring match. Done in CLJS rather than SQL LIKE so
+   % and _ in the query are literal and non-ASCII case folding works."
+  [search task]
+  (str/includes? (str/lower-case (or (:title task) "")) (str/lower-case search)))
+
 (defn list-tasks
   "List tasks for a board with optional filters.
    Options:
@@ -552,9 +583,15 @@
      :assignee    - filter by assigned agent name
      :tags        - only tasks having any of these tags
      :show-done   - if false (default), exclude done+rejected
+     :min-priority  - only tasks with priority >= this integer
+     :updated-since - only tasks with updated_at >= this ISO-8601 timestamp
+     :search        - case-insensitive substring match on title
      :include-notes - if true, attach :notes array to each task"
-  [board-id {:keys [status worker-id assignee tags show-done include-notes]}]
-  (let [conditions ["t.board_id = ?"]
+  [board-id {:keys [status worker-id assignee tags show-done include-notes
+                    min-priority updated-since search]}]
+  (when (some? min-priority) (validate-min-priority min-priority))
+  (let [updated-since (some-> updated-since normalize-updated-since)
+        conditions ["t.board_id = ?"]
         params [board-id]
         ;; Build status filter
         [conditions params]
@@ -582,11 +619,21 @@
         (if-let [[tag-sql tag-params] (tags-in-clause tags)]
           [(conj conditions tag-sql) (into params tag-params)]
           [conditions params])
+        [conditions params]
+        (if (some? min-priority)
+          [(conj conditions "t.priority >= ?") (conj params min-priority)]
+          [conditions params])
+        [conditions params]
+        (if updated-since
+          [(conj conditions "t.updated_at >= ?") (conj params updated-since)]
+          [conditions params])
         where-clause (str/join " AND " conditions)
         sql (str "SELECT t.* FROM tasks t WHERE " where-clause task-order-sql)
         ^js stmt (.prepare (db/db) sql)
         rows (.all stmt (to-array params))
-        tasks (enrich-tasks (mapv row->task rows))]
+        tasks (enrich-tasks
+               (cond->> (mapv row->task rows)
+                 (seq search) (filterv (partial title-matches? search))))]
     (if include-notes
       (mapv (fn [task]
               (assoc task :notes (list-notes (:id task))))
@@ -696,14 +743,15 @@
 (defn- validate-dep-graph-fields
   "Reject fields not in `dep-graph-fields`. The ex-info surfaces as an
    MCP tool error (isError: true) rather than a JSON-RPC server error
-   on the tools/call path."
-  [fields]
-  (when-let [invalid (seq (remove dep-graph-fields fields))]
-    (throw (ex-info (str "Unknown fields: " (str/join ", " (map field->snake invalid))
-                         ". Allowed: "
-                         (str/join ", " (sort (map field->snake dep-graph-fields))))
-                    {:invalid-fields (vec invalid)
-                     :allowed (vec (sort (map field->snake dep-graph-fields)))}))))
+   on the tools/call path. The 2-arity checks against a different allowed set."
+  ([fields] (validate-dep-graph-fields fields dep-graph-fields))
+  ([fields allowed]
+   (when-let [invalid (seq (remove allowed fields))]
+     (throw (ex-info (str "Unknown fields: " (str/join ", " (map field->snake invalid))
+                          ". Allowed: "
+                          (str/join ", " (sort (map field->snake allowed))))
+                     {:invalid-fields (vec invalid)
+                      :allowed (vec (sort (map field->snake allowed)))})))))
 
 (defn- validate-depth
   "Reject non-integer or negative depth. The ex-info surfaces as an MCP
@@ -763,6 +811,47 @@
    reflects currently-unresolved deps only, not the raw graph edges."
   [task-id opts]
   (get-related-tasks task-id get-tasks-blocked-by-batch opts))
+
+;; ============================================================================
+;; Task query (list-tasks + projection / limit; after dep-graph field helpers)
+;; ============================================================================
+
+(def list-task-fields
+  "Fields selectable via query-tasks :fields: the dep-graph fields plus
+   :notes (requesting it fetches notes, like :include-notes)."
+  (conj dep-graph-fields :notes))
+
+(defn- validate-limit [limit]
+  (when-not (and (integer? limit) (pos? limit))
+    (throw (ex-info (str "limit must be a positive integer, got: " (pr-str limit))
+                    {:invalid-limit limit}))))
+
+(defn query-tasks
+  "list-tasks with a projection and a cap, for callers (MCP agents) that
+   can't afford the full payload. Returns {:tasks [...] :total N} where
+   :total is the match count before :limit.
+   Extra options on top of list-tasks':
+     :fields - collection of field names (snake_case strings or kebab
+               keywords) from `list-task-fields`; each task is projected
+               to these plus :id. Projection runs after enrichment, so
+               computed status/blocked-by/tags are selectable.
+     :limit  - positive integer, applied after list-tasks' ordering.
+   Notes are attached when :include-notes is set or :notes is in :fields,
+   and only for tasks that survive the limit."
+  [board-id {:keys [fields limit include-notes] :as opts}]
+  (when (some? limit) (validate-limit limit))
+  (let [fields (when (seq fields) (mapv coerce-field fields))
+        _ (some-> fields (validate-dep-graph-fields list-task-fields))
+        with-notes? (or include-notes (some #{:notes} fields))
+        tasks (list-tasks board-id (assoc opts :include-notes false))
+        page (cond->> tasks limit (take limit))]
+    {:total (count tasks)
+     :tasks (mapv (fn [task]
+                    (cond-> task
+                      with-notes? (assoc :notes (list-notes (:id task)))
+                      fields (select-keys (cond-> (conj (set fields) :id)
+                                            with-notes? (conj :notes)))))
+                  page)}))
 
 ;; ============================================================================
 ;; Summary operations
