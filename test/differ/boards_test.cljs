@@ -1804,3 +1804,56 @@
       {:hours 168}                      168
       {:hours 720 :bucket-minutes 1440} 30
       {:hours nil :bucket-minutes nil}  24)))
+
+;; ============================================================================
+;; Releasing in-place claims & note author defaults
+;; ============================================================================
+
+(defn- claimed-in-place! [repo worker]
+  (let [task (boards/create-task! {:repo-path repo :title "t"})]
+    (boards/take-task! {:task-id (:id task) :status "pending" :move-to "pending"
+                        :worker-name worker})))
+
+(deftest release-task-clears-claim-without-status-change-test
+  (let [task (claimed-in-place! "/tmp/release-basic" "tester")
+        released (boards/release-task! (subs (:id task) 0 8) {:worker-name "tester"})]
+    (is (nil? (:worker-name released)))
+    (is (nil? (:worker-id released)))
+    (is (= "pending" (:status released)))
+    (testing "the task is claimable again"
+      (is (= "fixer" (:worker-name (boards/take-task! {:task-id (:id task) :worker-name "fixer"})))))))
+
+(deftest release-task-adds-note-attributed-to-worker-test
+  (let [task (claimed-in-place! "/tmp/release-note" "tester")]
+    (boards/release-task! (:id task) {:note "live run passed"})
+    (is (= [["tester" "live run passed"]]
+           (mapv (juxt :author :content) (boards/list-notes (:id task)))))))
+
+(deftest release-task-refuses-another-workers-claim-test
+  (let [task (claimed-in-place! "/tmp/release-other" "tester")]
+    (is (thrown-with-msg? js/Error #"claimed by tester"
+                          (boards/release-task! (:id task) {:worker-name "someone-else"})))))
+
+(deftest release-task-on-unclaimed-task-is-a-no-op-test
+  (let [task (boards/create-task! {:repo-path "/tmp/release-noop" :title "t"})]
+    (is (nil? (:worker-name (boards/release-task! (:id task) {:worker-name "anyone"}))))))
+
+(deftest update-task-release-flag-test
+  (let [task (claimed-in-place! "/tmp/release-update" "reviewer")
+        updated (boards/update-task! (:id task) {:release true :note "lgtm"})]
+    (is (nil? (:worker-name updated)))
+    (is (= [["reviewer" "lgtm"]]
+           (mapv (juxt :author :content) (boards/list-notes (:id task)))))))
+
+(deftest note-author-defaults-to-claim-worker-test
+  (let [task (claimed-in-place! "/tmp/note-author" "triager")]
+    (testing "add-note! without author uses the current worker"
+      (is (= "triager" (:author (boards/add-note! {:task-id (:id task) :content "hi"})))))
+    (testing "update-task! note without author uses the worker it releases"
+      (boards/update-task! (:id task) {:status "ready" :note "triaged"})
+      (is (= "triager" (:author (last (boards/list-notes (:id task)))))))
+    (testing "an explicit author still wins"
+      (is (= "dan" (:author (boards/add-note! {:task-id (:id task) :author "dan" :content "x"})))))))
+
+(deftest release-is-an-allowed-update-key-test
+  (is (contains? boards/update-task-allowed-keys :release)))

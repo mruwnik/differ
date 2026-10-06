@@ -710,7 +710,10 @@
   "Update task fields. Validates status against board's allowed statuses.
    Changing status releases the task's worker (worker_name/worker_id set to NULL)
    so the next phase can be claimed via take-task!.
-   Optionally adds a note when :note and :author are provided.
+   :release true releases the worker without a status change (for agents
+   that claimed in place, e.g. testers and reviewers).
+   Optionally adds a note when :note is provided; :author defaults to the
+   task's current worker.
    Accepts optional :blocked-by to set task dependencies, :priority (integer),
    :tags (replaces all tags; [] clears them) and :assignee (nil/blank clears;
    unlike the worker, it survives status changes), :add-commits /
@@ -723,7 +726,7 @@
    :description, :assignee and :parent-id use contains? to distinguish 'not provided' from 'set to nil'.
    Wrapped in a transaction to prevent race conditions between concurrent agents."
   [task-id opts]
-  (let [{:keys [status title persist note author priority]} opts
+  (let [{:keys [status title persist note author priority release]} opts
         _ (validate-priority priority)
         task-id (resolve-task-id task-id)
         opts (cond-> opts
@@ -740,8 +743,10 @@
                               (let [now (util/now-iso)
                                     new-status (or status (:status task))
                                     status-changed? (and status (not= status (:status task)))
-                                    new-worker-name (when-not status-changed? (:worker-name task))
-                                    new-worker-id (when-not status-changed? (:worker-id task))
+                                    releasing? (or status-changed? release)
+                                    new-worker-name (when-not releasing? (:worker-name task))
+                                    new-worker-id (when-not releasing? (:worker-id task))
+                                    author (if (str/blank? author) (:worker-name task) author)
                                     new-title (or title (:title task))
                                     new-description (if (contains? opts :description)
                                                       (:description opts)
@@ -786,7 +791,7 @@
                                 (when (seq (:add-commits opts))
                                   (add-task-commits! task-id (:add-commits opts)))
                                 ;; Add note if provided
-                                (when (and note author)
+                                (when note
                                   (let [note-id (util/gen-uuid)
                                         ^js note-stmt (.prepare (db/db)
                                                                 "INSERT INTO task_notes (id, task_id, author, content, created_at)
@@ -796,11 +801,35 @@
     (get-task task-id)))
 
 ;; ============================================================================
+;; Release
+;; ============================================================================
+
+(defn release-task!
+  "Release a task's claim without changing its status, so agents that claim
+   in place (testers, reviewers) don't leave the card locked until the lease
+   lapses. When :worker-name is given it must match the current worker.
+   Releasing an unclaimed task is a no-op (apart from the optional :note,
+   attributed to :author, else :worker-name, else the releasing worker)."
+  [task-id {:keys [worker-name note author]}]
+  (let [task-id (resolve-task-id task-id)
+        txn (.transaction (db/db)
+                          (fn []
+                            (let [task (get-task-raw task-id)
+                                  holder (:worker-name task)]
+                              (when (and worker-name holder (not= worker-name holder))
+                                (throw (js/Error. (str "Task is claimed by " holder ", not " worker-name))))
+                              (update-task! task-id {:release true
+                                                     :note note
+                                                     :author (or author worker-name)}))))]
+    (txn)))
+
+;; ============================================================================
 ;; Note operations
 ;; ============================================================================
 
 (defn add-note!
-  "Add a note to a task. Updates task and board timestamps.
+  "Add a note to a task. Updates task and board timestamps. :author
+   defaults to the task's current worker.
    Wrapped in a transaction for consistency with take-task! and update-task!."
   [{:keys [task-id author content]}]
   (let [task-id (resolve-task-id task-id)
@@ -811,6 +840,7 @@
                               (when-not task
                                 (throw (js/Error. (str "Task not found: " task-id))))
                               (let [now (util/now-iso)
+                                    author (if (str/blank? author) (:worker-name task) author)
                                     ^js stmt (.prepare (db/db)
                                                        "INSERT INTO task_notes (id, task_id, author, content, created_at)
                                                         VALUES (?, ?, ?, ?, ?)")]
@@ -957,7 +987,7 @@
 (def update-task-allowed-keys
   "Keys that callers may pass through to update-task!. Used by both the REST API
    and the MCP handler to whitelist incoming fields."
-  #{:status :title :description :persist :note :author :blocked-by :priority :tags :assignee
+  #{:status :title :description :persist :note :author :blocked-by :priority :tags :assignee :release
     :checklist :remove-checklist-items
     :add-commits :remove-commits :parent-id})
 

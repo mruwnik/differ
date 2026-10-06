@@ -285,7 +285,7 @@
                   :required ["repo_path"]}}
 
    {:name "take_task"
-    :description (str "Atomically claim a task from a queue. Pulls from the `status` queue (default: pending) and moves the task to `move_to` (default: in_progress), assigning you as worker. If task_id is omitted, auto-assigns the highest-priority (then oldest) unclaimed, unblocked task in the queue that is unassigned or assigned to you, optionally restricted to tasks having any of `tags`. Tasks assigned to another agent cannot be claimed. Changing a task's status via update_task releases the worker, so each lifecycle phase (planning, plan_review checking, implementation, review) is claimed separately. To claim in place (e.g. reviewing a plan without moving it), set move_to to the same status as the queue. "
+    :description (str "Atomically claim a task from a queue. Pulls from the `status` queue (default: pending) and moves the task to `move_to` (default: in_progress), assigning you as worker. If task_id is omitted, auto-assigns the highest-priority (then oldest) unclaimed, unblocked task in the queue that is unassigned or assigned to you, optionally restricted to tasks having any of `tags`. Tasks assigned to another agent cannot be claimed. Changing a task's status via update_task releases the worker, so each lifecycle phase (planning, plan_review checking, implementation, review) is claimed separately. To claim in place (e.g. reviewing a plan without moving it), set move_to to the same status as the queue, and call release_task (or update_task with release=true) when finished so the card is not left locked. "
                       "Your claim lapses after " (config/claim-lease-hours) " idle hours (no add_note, update_task or take_task on the task); add_note or update_task keep it alive. "
                       "Lapsed claims count as unclaimed: another worker may take the task over (a takeover note is recorded), and the task reports claim_stale. Returns full task details.")
     :inputSchema {:type "object"
@@ -348,10 +348,12 @@
                                                 :description "Commit hashes to remove (exact match after normalization; applied before add_commits)"}
                                :parent_id {:type "string"
                                            :description "Set the umbrella/parent task (\"\" clears). Must be on the same board and must not create a cycle. Grouping only; never blocks claiming."}
+                               :release {:type "boolean"
+                                         :description "Release your claim without changing status (for in-place claims, e.g. testers/reviewers who must not move the card). Status changes always release."}
                                :note {:type "string"
                                       :description "Optional note to add with the update"}
                                :author {:type "string"
-                                        :description "Author of the note"}}
+                                        :description "Author of the note (default: the task's current worker)"}}
                   :required ["task_id"]}}
 
    {:name "get_upstream"
@@ -368,10 +370,23 @@
                   :properties {:task_id {:type "string"
                                          :description "Task ID (or unique prefix) to add note to"}
                                :author {:type "string"
-                                        :description "Note author"}
+                                        :description "Note author (default: the task's current worker)"}
                                :content {:type "string"
                                          :description "Note content"}}
                   :required ["task_id" "content"]}}
+
+   {:name "release_task"
+    :description "Release your claim on a task without changing its status. Use this when you claimed in place (take_task with move_to equal to status, e.g. live testers and reviewers) and are finished, so the next agent can claim the card instead of waiting for the lease to lapse. Equivalent to update_task with release=true."
+    :inputSchema {:type "object"
+                  :properties {:task_id {:type "string"
+                                         :description "Task ID (or unique prefix) to release"}
+                               :worker_name {:type "string"
+                                             :description "Your worker name; if given, the release fails when someone else holds the claim"}
+                               :note {:type "string"
+                                      :description "Optional note to add (e.g. your results)"}
+                               :author {:type "string"
+                                        :description "Note author (default: worker_name, else the releasing worker)"}}
+                  :required ["task_id"]}}
 
    {:name "board_stats"
     :description "Throughput statistics for a repo's kanban board over a trailing window ending now, from the task status-transition log. Returns per-bucket counts (every bucket present, even with zero activity), window totals, rates per hour, and the median minutes from a task's first in_progress to done for tasks finished in the window. Transition kinds: created, advanced (later in the board's status order), done, reverted (earlier in the order), rejected, reopened (out of done/rejected). History only exists from when status logging was deployed; earlier activity is not counted."
@@ -978,6 +993,12 @@
         board (boards/get-board (:board-id task))]
     (sse/broadcast-all! :task-updated {:task task :repo-path (:repo-path board)})
     {:note note}))
+
+(defmethod handle-tool "release_task" [_ {:keys [task-id worker-name note author]}]
+  (let [task (boards/release-task! task-id {:worker-name worker-name :note note :author author})
+        board (boards/get-board (:board-id task))]
+    (sse/broadcast-all! :task-updated {:task task :repo-path (:repo-path board)})
+    {:task task}))
 
 (defmethod handle-tool "board_stats" [_ {:keys [repo-path hours bucket-minutes]}]
   (let [board (boards/get-board-by-repo repo-path)]

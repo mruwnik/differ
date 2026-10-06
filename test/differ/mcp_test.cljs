@@ -1168,3 +1168,19 @@
   (with-redefs [boards/get-board-by-repo (constantly nil)]
     (is (thrown-with-msg? js/Error #"No board found"
                           (mcp/handle-tool "board_stats" {:repo-path "/tmp/none"})))))
+
+(deftest release-task-tool-test
+  (let [task (boards/create-task! {:repo-path "/tmp/mcp-release" :title "t"})]
+    (mcp/handle-tool "take_task" {:task-id (:id task) :status "pending" :move-to "pending"
+                                  :worker-name "tester"})
+    (is (nil? (get-in (mcp/handle-tool "release_task" {:task-id (subs (:id task) 0 8)
+                                                       :worker-name "tester"
+                                                       :note "done testing"})
+                      [:task :worker-name])))
+    (is (= "pending" (:status (boards/get-task (:id task)))))))
+
+(deftest release-task-is-advertised-test
+  (let [tool (fn [n] (first (filter #(= n (:name %)) mcp/tools)))]
+    (is (some? (tool "release_task")))
+    (is (= "boolean" (get-in (tool "update_task") [:inputSchema :properties :release :type])))
+    (is (re-find #"release_task" (:description (tool "take_task"))))))
