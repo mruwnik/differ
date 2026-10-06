@@ -168,7 +168,15 @@
       PRIMARY KEY (task_id, tag)
     );
 
-    CREATE INDEX IF NOT EXISTS idx_task_tags_tag ON task_tags(tag);"))
+    CREATE INDEX IF NOT EXISTS idx_task_tags_tag ON task_tags(tag);
+
+    CREATE TABLE IF NOT EXISTS task_checklist (
+      task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      item TEXT NOT NULL,
+      done INTEGER NOT NULL DEFAULT 0,
+      position INTEGER NOT NULL,
+      PRIMARY KEY (task_id, item)
+    );"))
 
 (defn- migrate-kanban-tables
   "Add kanban board tables for existing databases."

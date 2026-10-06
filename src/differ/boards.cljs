@@ -122,6 +122,52 @@
      10))
 
 ;; ============================================================================
+;; Checklist helpers (ordered per-task "owed" verification items)
+;; ============================================================================
+
+(defn normalize-checklist-item
+  "Trimmed checklist item name. Throws on non-string or blank names."
+  [item]
+  (when-not (and (string? item) (not (str/blank? item)))
+    (throw (js/Error. (str "checklist item must be a non-blank string, got: " (pr-str item)))))
+  (str/trim item))
+
+(defn- normalize-checklist-entry
+  "Validate a {:item name :done bool} entry. :done may be nil (not provided)."
+  [{:keys [item done]}]
+  (when-not (or (nil? done) (boolean? done))
+    (throw (js/Error. (str "checklist done must be a boolean, got: " (pr-str done)))))
+  {:item (normalize-checklist-item item) :done done})
+
+(defn merge-checklist!
+  "Merge entries ({:item name :done bool?}) into a task's checklist. Existing
+   items get their done flag set when :done is given (otherwise unchanged);
+   new items are appended in order, unticked unless :done is true.
+   All entries are validated before anything is written."
+  [task-id entries]
+  (let [entries (mapv normalize-checklist-entry entries)
+        ^js max-stmt (.prepare (db/db) "SELECT COALESCE(MAX(position), -1) AS pos FROM task_checklist WHERE task_id = ?")
+        ^js ins-stmt (.prepare (db/db) "INSERT OR IGNORE INTO task_checklist (task_id, item, done, position) VALUES (?, ?, ?, ?)")
+        ^js done-stmt (.prepare (db/db) "UPDATE task_checklist SET done = ? WHERE task_id = ? AND item = ?")]
+    (doseq [{:keys [item done]} entries]
+      (.run ins-stmt task-id item (if done 1 0) (inc (.-pos (.get max-stmt task-id))))
+      (when (some? done)
+        (.run done-stmt (if done 1 0) task-id item)))))
+
+(defn remove-checklist-items!
+  "Delete the named items (trimmed) from a task's checklist. Unknown names are ignored."
+  [task-id items]
+  (let [items (mapv normalize-checklist-item items)
+        ^js stmt (.prepare (db/db) "DELETE FROM task_checklist WHERE task_id = ? AND item = ?")]
+    (doseq [item items]
+      (.run stmt task-id item))))
+
+(defn unticked-checklist-items
+  "Names of the enriched task's checklist items that are not yet done, in order."
+  [task]
+  (into [] (comp (remove :done) (map :item)) (:checklist task)))
+
+;; ============================================================================
 ;; Task dependency operations
 ;; ============================================================================
 
@@ -210,9 +256,23 @@
             {}
             (.all stmt (to-array ids)))))
 
+(defn- checklist-by-task
+  "Map of task-id -> [{:item :done}] in position order for the given task IDs
+   (single query). Tasks without a checklist are omitted."
+  [ids]
+  (let [placeholders (str/join "," (repeat (count ids) "?"))
+        ^js stmt (.prepare (db/db)
+                           (str "SELECT task_id, item, done FROM task_checklist WHERE task_id IN ("
+                                placeholders ") ORDER BY position ASC"))]
+    (reduce (fn [m ^js r]
+              (update m (.-task_id r) (fnil conj []) {:item (.-item r) :done (= 1 (.-done r))}))
+            {}
+            (.all stmt (to-array ids)))))
+
 (defn- enrich-tasks
-  "Batch-enrich multiple tasks with effective status, blocked-by and tags.
-   Uses one query per concern instead of N+1."
+  "Batch-enrich multiple tasks with effective status, blocked-by, tags and
+   checklist (:checklist-complete is true when every item is done, vacuously
+   so for an empty checklist). Uses one query per concern instead of N+1."
   [tasks]
   (if (empty? tasks)
     tasks
@@ -226,16 +286,20 @@
           rows (.all stmt (to-array ids))
           deps-by-task (group-by (fn [^js r] (.-task_id r)) rows)
           tags (tags-by-task ids)
-          now (util/now-iso)]
+          now (util/now-iso)
+          checklists (checklist-by-task ids)]
       (mapv (fn [task]
               (let [unresolved (mapv (fn [^js r] (.-depends_on_task_id r)) (get deps-by-task (:id task) []))
-                    effective-status (if (seq unresolved) "blocked" (:status task))]
+                    effective-status (if (seq unresolved) "blocked" (:status task))
+                    checklist (get checklists (:id task) [])]
                 (assoc task
                        :status effective-status
                        :blocked-by unresolved
                        :tags (get tags (:id task) [])
                        :claim-stale (boolean (and (:worker-name task)
-                                                  (claim-lapsed? (:updated-at task) now))))))
+                                                  (claim-lapsed? (:updated-at task) now)))
+                       :checklist checklist
+                       :checklist-complete (every? :done checklist))))
             tasks))))
 
 (defn- enrich-task
@@ -345,9 +409,10 @@
 (defn create-task!
   "Create a task, auto-creating board for repo-path if needed.
    Accepts optional :blocked-by vector of task IDs, :priority (integer,
-   higher = more urgent, default 0), :tags (seq of strings) and :assignee
-   (agent name; only that agent may claim the task)."
-  [{:keys [repo-path title description blocked-by priority tags assignee]}]
+   higher = more urgent, default 0), :tags (seq of strings), :assignee
+   (agent name; only that agent may claim the task) and :checklist (seq of
+   item names, all unticked, in the given order)."
+  [{:keys [repo-path title description blocked-by priority tags assignee checklist]}]
   (validate-priority priority)
   (let [blocked-by (mapv resolve-task-id blocked-by)
         board (get-or-create-board! repo-path)
@@ -365,7 +430,9 @@
                             (when (seq blocked-by)
                               (set-task-dependencies! id blocked-by))
                             (when (seq tags)
-                              (set-task-tags! id tags))))]
+                              (set-task-tags! id tags))
+                            (when (seq checklist)
+                              (merge-checklist! id (map (fn [item] {:item item}) checklist)))))]
     (txn)
     (get-task id)))
 
@@ -496,6 +563,9 @@
    Accepts optional :blocked-by to set task dependencies, :priority (integer),
    :tags (replaces all tags; [] clears them) and :assignee (nil/blank clears;
    unlike the worker, it survives status changes).
+   :remove-checklist-items (item names) is applied first, then :checklist
+   ([{:item :done}], merged — see merge-checklist!). Unticked items never
+   block a status change; callers surface them via :checklist-complete.
    :description and :assignee use contains? to distinguish 'not provided' from 'set to nil'.
    Wrapped in a transaction to prevent race conditions between concurrent agents."
   [task-id opts]
@@ -541,6 +611,10 @@
                                   (set-task-dependencies! task-id (:blocked-by opts)))
                                 (when (contains? opts :tags)
                                   (set-task-tags! task-id (:tags opts)))
+                                (when (contains? opts :remove-checklist-items)
+                                  (remove-checklist-items! task-id (:remove-checklist-items opts)))
+                                (when (contains? opts :checklist)
+                                  (merge-checklist! task-id (:checklist opts)))
                                 ;; Add note if provided
                                 (when (and note author)
                                   (let [note-id (util/gen-uuid)
@@ -702,7 +776,8 @@
 (def update-task-allowed-keys
   "Keys that callers may pass through to update-task!. Used by both the REST API
    and the MCP handler to whitelist incoming fields."
-  #{:status :title :description :persist :note :author :blocked-by :priority :tags :assignee})
+  #{:status :title :description :persist :note :author :blocked-by :priority :tags :assignee
+    :checklist :remove-checklist-items})
 
 ;; ============================================================================
 ;; Dependency graph traversal
@@ -714,7 +789,8 @@
    is synthesized by the traversal (hop count). Listing :depth in :fields
    raises 'Unknown fields: depth' — it's not a column, so just omit it."
   #{:id :board-id :title :description :status :worker-name :worker-id :assignee
-    :persist :priority :tags :blocked-by :created-at :updated-at})
+    :persist :priority :tags :blocked-by :created-at :updated-at
+    :checklist :checklist-complete})
 
 (def default-dep-graph-fields
   "Fields returned on each related task when :fields is not specified."

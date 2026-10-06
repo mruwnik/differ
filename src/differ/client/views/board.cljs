@@ -99,6 +99,73 @@
      "⚠ stale"]))
 
 ;; ============================================================================
+;; Checklist
+;; ============================================================================
+
+(defn checklist-chip
+  "Compact progress chip, e.g. ☑ 2/4; green once every item is ticked."
+  [checklist]
+  (when (seq checklist)
+    (let [done (count (filter :done checklist))
+          complete? (= done (count checklist))]
+      [:span {:title (str/join "\n" (for [{:keys [item done]} checklist]
+                                      (str (if done "☑ " "☐ ") item)))
+              :style {:font-size "10px" :font-weight "600" :padding "0 5px"
+                      :border-radius "8px" :white-space "nowrap"
+                      :background (if complete? "#dafbe1" "#f6f8fa")
+                      :color (if complete? "#1a7f37" "#6a737d")}}
+       (str "☑ " done "/" (count checklist))])))
+
+(defn checklist-editor
+  "Detail-panel checklist: tick/untick, remove, and add items."
+  [task]
+  (let [draft (r/atom "")]
+    (fn [task]
+      (let [checklist (:checklist task)
+            add! (fn []
+                   (when-not (str/blank? @draft)
+                     ;; No :done, so re-adding an existing item keeps its flag
+                     (rf/dispatch [:update-task-from-ui (:id task)
+                                   {:checklist [{:item (str/trim @draft)}]}])
+                     (reset! draft "")))]
+        [:div {:style {:margin-bottom "12px"}}
+         [:div {:style {:display "flex" :gap "6px" :align-items "center" :margin-bottom "4px"}}
+          [:h4 {:style {:margin "0" :font-size "13px" :color "#24292e"}} "Checklist"]
+          [checklist-chip checklist]
+          (when (and (= "done" (:status task)) (not-every? :done checklist))
+            [:span {:style {:font-size "11px" :color "#cf222e"}} "done with unticked items"])]
+         (for [{:keys [item done]} checklist]
+           ^{:key item}
+           [:div {:style {:display "flex" :align-items "center" :gap "6px" :font-size "12px"}}
+            [:label {:style {:flex "1" :display "flex" :align-items "center" :gap "6px"
+                             :cursor "pointer" :color "#24292e"}}
+             [:input {:type "checkbox"
+                      :checked done
+                      :on-change #(rf/dispatch [:update-task-from-ui (:id task)
+                                                {:checklist [{:item item :done (not done)}]}])}]
+             item]
+            [:button {:title "Remove item"
+                      :on-click #(rf/dispatch [:update-task-from-ui (:id task)
+                                               {:remove-checklist-items [item]}])
+                      :style {:background "none" :border "none" :color "#959da5"
+                              :cursor "pointer" :font-size "14px" :line-height "1"}}
+             "×"]])
+         [:div {:style {:display "flex" :gap "6px" :margin-top "4px"}}
+          [:input {:value @draft
+                   :placeholder "Add item (e.g. unit, live)"
+                   :on-change #(reset! draft (.. % -target -value))
+                   :on-key-down #(when (= "Enter" (.-key %)) (add!))
+                   :style {:flex "1" :padding "2px 6px" :font-size "12px"
+                           :border "1px solid #e1e4e8" :border-radius "4px"}}]
+          [:button {:disabled (str/blank? @draft)
+                    :on-click add!
+                    :style {:font-size "12px" :padding "2px 8px" :cursor "pointer"
+                            :opacity (if (str/blank? @draft) "0.5" "1")
+                            :background "#fff" :border "1px solid #e1e4e8"
+                            :border-radius "4px"}}
+           "Add"]]]))))
+
+;; ============================================================================
 ;; Task Card
 ;; ============================================================================
 
@@ -134,7 +201,8 @@
           (str "\u2192 " (:assignee task))])
        (when (seq (:blocked-by task))
          [:span {:style {:font-size "10px" :color "#d73a49" :font-weight "500"}}
-          (str "blocked by " (count (:blocked-by task)))])]
+          (str "blocked by " (count (:blocked-by task)))])
+       [checklist-chip (:checklist task)]]
       [:span {:style {:font-size "11px" :color "#959da5"}}
        (format-age (:created-at task))]]]))
 
@@ -254,6 +322,8 @@
                 ^{:key dep-id}
                 [:div {:style {:font-size "11px" :color "#6a737d" :font-family "monospace"}}
                  dep-id])])
+
+           [checklist-editor task]
 
            ;; Description
            (when (seq (:description task))

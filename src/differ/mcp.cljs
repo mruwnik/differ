@@ -37,7 +37,7 @@
                 :fields {:type "array"
                          :items {:type "string"}
                          :uniqueItems true
-                         :description "Fields to include per task (in addition to id and depth). Default: [\"title\", \"status\", \"blocked_by\"]. Allowed: id, board_id, title, description, status, worker_name, worker_id, assignee, persist, priority, tags, blocked_by, created_at, updated_at."}}
+                         :description "Fields to include per task (in addition to id and depth). Default: [\"title\", \"status\", \"blocked_by\"]. Allowed: id, board_id, title, description, status, worker_name, worker_id, assignee, persist, priority, tags, blocked_by, created_at, updated_at, checklist, checklist_complete."}}
    :required ["task_id"]})
 
 ;; Tool definitions
@@ -231,7 +231,10 @@
                                       :items {:type "string"}
                                       :description "Tags/labels (optional). Normalized: trimmed, lowercased, deduped."}
                                :assignee {:type "string"
-                                          :description "Agent name this task is reserved for (optional). Only a take_task with this worker_name can claim it."}}
+                                          :description "Agent name this task is reserved for (optional). Only a take_task with this worker_name can claim it."}
+                               :checklist {:type "array"
+                                           :items {:type "string"}
+                                           :description "Ordered verification items still owed (optional), all starting unticked. For code tasks use e.g. [\"unit\", \"integration\", \"live\", \"review\"]. Tick items via update_task only with results, not plans."}}
                   :required ["repo_path" "title"]}}
 
    {:name "list_tasks"
@@ -297,7 +300,7 @@
                   :required ["worker_name"]}}
 
    {:name "update_task"
-    :description "Update a task's status, title, description, persist flag, priority, tags, assignee, or dependencies. Status is validated against the board's allowed statuses (default lifecycle: pending, needs_owner, planning, plan_review, ready, in_progress, testing, in_review, done, rejected). Changing status releases the task's worker so the next phase can be claimed with take_task; the assignee is kept. 'blocked' is a computed status based on dependencies."
+    :description "Update a task's status, title, description, persist flag, priority, tags, assignee, or dependencies. Status is validated against the board's allowed statuses (default lifecycle: pending, needs_owner, planning, plan_review, ready, in_progress, testing, in_review, done, rejected). Changing status releases the task's worker so the next phase can be claimed with take_task; the assignee is kept. 'blocked' is a computed status based on dependencies. The returned task carries its `checklist` and `checklist_complete`; moving to done with unticked checklist items is allowed but the response includes a `warning` naming them."
     :inputSchema {:type "object"
                   :properties {:task_id {:type "string"
                                          :description "Task ID (or unique prefix) to update"}
@@ -319,6 +322,15 @@
                                       :description "Replace all tags with these ([] clears them)"}
                                :assignee {:type "string"
                                           :description "Reserve the task for this agent name (\"\" clears). Survives status changes."}
+                               :checklist {:type "array"
+                                           :items {:type "object"
+                                                   :properties {:item {:type "string"}
+                                                                :done {:type "boolean"}}
+                                                   :required ["item"]}
+                                           :description "Merge into the verification checklist: existing items get `done` set (omit `done` to leave it), new items are appended (conventional for code tasks: unit, integration, live, review). Tick an item only with results, not plans — record the evidence in `note`."}
+                               :remove_checklist_items {:type "array"
+                                                        :items {:type "string"}
+                                                        :description "Checklist item names to remove (applied before `checklist`)"}
                                :note {:type "string"
                                       :description "Optional note to add with the update"}
                                :author {:type "string"
@@ -866,10 +878,10 @@
 
 ;; Kanban board tool handlers
 
-(defmethod handle-tool "create_task" [_ {:keys [repo-path title description blocked-by priority tags assignee]}]
+(defmethod handle-tool "create_task" [_ {:keys [repo-path title description blocked-by priority tags assignee checklist]}]
   (let [task (boards/create-task! {:repo-path repo-path :title title :description description
                                    :blocked-by blocked-by :priority priority :tags tags
-                                   :assignee assignee})]
+                                   :assignee assignee :checklist checklist})]
     (sse/broadcast-all! :task-created {:task task :repo-path repo-path})
     {:task task}))
 
@@ -895,9 +907,16 @@
 
 (defmethod handle-tool "update_task" [_ {:keys [task-id] :as params}]
   (let [task (boards/update-task! task-id (select-keys (dissoc params :task-id) boards/update-task-allowed-keys))
-        board (boards/get-board (:board-id task))]
+        board (boards/get-board (:board-id task))
+        unticked (boards/unticked-checklist-items task)]
     (sse/broadcast-all! :task-updated {:task task :repo-path (:repo-path board)})
-    {:task task}))
+    ;; Done-with-unticked-items is allowed (e.g. an item turned out not to
+    ;; apply) but must be loud, so auditors don't mistake plans for results.
+    (cond-> {:task task}
+      (and (= "done" (:status task)) (seq unticked))
+      (assoc :warning (str "Task is done with unticked checklist items: "
+                           (str/join ", " unticked)
+                           ". Tick them with results or remove them if they don't apply.")))))
 
 (defn- ->field-keywords
   "Convert a vector of snake_case field name strings to kebab-case keywords.
