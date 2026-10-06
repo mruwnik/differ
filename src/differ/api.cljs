@@ -881,6 +881,23 @@
                                                      :parent-id parent-id})})
       (json-response res {:tasks []}))))
 
+(defn board-stats-handler
+  "GET /api/boards/:id/stats?hours=24&bucket_minutes=60"
+  [^js req res]
+  (let [repo-path (js/decodeURIComponent (.. req -params -id))
+        ;; Non-numeric values become NaN, which boards/board-stats rejects.
+        query-number (fn [v] (some-> v js/Number))
+        opts {:hours (query-number (.. req -query -hours))
+              :bucket-minutes (query-number (.. req -query -bucket_minutes))}]
+    (if-let [board (boards/get-board-by-repo repo-path)]
+      (let [[stats ^js err] (try
+                              [(boards/board-stats (:id board) opts) nil]
+                              (catch :default e [nil e]))]
+        (if err
+          (error-response res 400 (.-message err))
+          (json-response res {:stats stats})))
+      (error-response res 404 "Board not found"))))
+
 (defn get-task-handler
   "GET /api/tasks/:id"
   [^js req res]
@@ -970,11 +987,12 @@
   (.delete app "/api/comments/:id" delete-comment-handler)
 
   ;; Boards / Kanban
-  ;; ORDERING DEPENDENCY: /api/boards/:id/tasks must be registered before /api/boards/:id
+  ;; ORDERING DEPENDENCY: /api/boards/:id/tasks (and /stats) must be registered before /api/boards/:id
   ;; because Express matches routes in registration order. If the :id route came first,
   ;; requests to /api/boards/:id/tasks would match it with :id = "<repo>/tasks".
   (.get app "/api/boards" list-boards-handler)
   (.get app "/api/boards/:id/tasks" list-board-tasks-handler)
+  (.get app "/api/boards/:id/stats" board-stats-handler)
   (.get app "/api/boards/:id" get-board-handler)
   (.get app "/api/tasks/:id" get-task-handler)
   (.patch app "/api/tasks/:id" update-task-api-handler)

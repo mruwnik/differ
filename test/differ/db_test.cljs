@@ -767,3 +767,25 @@
       (finally
         (.close raw-db)
         (helpers/remove-dir dir)))))
+
+(deftest run-migrations-adds-task-status-events-test
+  (let [dir (helpers/create-temp-dir "differ-status-events-migration-test")
+        raw-db (Database (str dir "/raw.db"))]
+    (try
+      (.exec raw-db "CREATE TABLE boards (id TEXT PRIMARY KEY, repo_path TEXT NOT NULL UNIQUE,
+                       statuses TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+                     CREATE TABLE tasks (id TEXT PRIMARY KEY, board_id TEXT NOT NULL, title TEXT NOT NULL,
+                       description TEXT, status TEXT NOT NULL DEFAULT 'pending', worker_name TEXT,
+                       worker_id TEXT, persist INTEGER NOT NULL DEFAULT 0,
+                       created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+                     INSERT INTO boards VALUES ('b1', '/tmp/r', '[]', 'x', 'x');
+                     INSERT INTO tasks (id, board_id, title, created_at, updated_at)
+                       VALUES ('t1', 'b1', 'old task', 'x', 'x');")
+      (db/run-migrations! raw-db)
+      (.run (.prepare raw-db "INSERT INTO task_status_events (id, task_id, board_id, from_status, to_status, worker_name, created_at)
+                              VALUES ('e1', 't1', 'b1', NULL, 'pending', NULL, 'x')"))
+      (is (= "pending" (.-to_status (.get (.prepare raw-db "SELECT to_status FROM task_status_events WHERE id = 'e1'")))))
+      (is (some? (.get (.prepare raw-db "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_task_status_events_board_time'"))))
+      (finally
+        (.close raw-db)
+        (helpers/remove-dir dir)))))

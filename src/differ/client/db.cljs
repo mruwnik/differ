@@ -37,6 +37,8 @@
    :board-tasks []
    :board-show-done false
    :board-filter task-filter/default-filter
+   :board-stats nil              ;; throughput from /api/boards/:id/stats
+   :board-stats-collapsed false
    :selected-task nil})
 
 ;; Route helpers

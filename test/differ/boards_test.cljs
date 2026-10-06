@@ -1,6 +1,6 @@
 (ns differ.boards-test
   "Tests for kanban board, task, and note CRUD operations."
-  (:require [clojure.test :refer [deftest testing is use-fixtures]]
+  (:require [clojure.test :refer [deftest testing is are use-fixtures]]
             [differ.test-helpers :as helpers]
             [differ.boards :as boards]
             [differ.config :as config]
@@ -1605,3 +1605,202 @@
     (testing "list-tasks parent-id filter accepts a prefix"
       (is (= #{(:id child) (:id other)}
              (set (map :id (boards/list-tasks (:board-id parent) {:parent-id prefix}))))))))
+
+;; ============================================================================
+;; Status transition log & throughput stats
+;; ============================================================================
+
+(def ^:private base-ms (.getTime (js/Date. "2026-01-01T12:00:00.000Z")))
+
+(defn- iso-at
+  "ISO timestamp `mins` minutes after the 12:00 UTC base time (negative = before)."
+  [mins]
+  (.toISOString (js/Date. (+ base-ms (* mins 60000)))))
+
+(defn- at-minute
+  "Run f with util/now-iso pinned to `mins` minutes after the base time."
+  [mins f]
+  (with-redefs [util/now-iso (constantly (iso-at mins))]
+    (f)))
+
+(defn- events-of [task-id]
+  (mapv #(select-keys % [:from-status :to-status :worker-name :created-at])
+        (boards/list-task-status-events task-id)))
+
+(deftest classify-transition-test
+  (are [from to expected]
+       (= expected (boards/classify-transition db/default-board-statuses from to))
+    nil           "pending"     :created
+    nil           "in_progress" :created
+    "pending"     "in_progress" :advanced
+    "pending"     "needs_owner" :advanced
+    "in_progress" "in_review"   :advanced
+    "in_progress" "testing"     :advanced
+    "in_review"   "in_progress" :reverted
+    "testing"     "in_progress" :reverted
+    "testing"     "ready"       :reverted
+    "plan_review" "planning"    :reverted
+    "in_progress" "pending"     :reverted
+    "in_progress" "done"        :done
+    "pending"     "done"        :done
+    "rejected"    "done"        :done
+    "in_review"   "rejected"    :rejected
+    "pending"     "rejected"    :rejected
+    "done"        "rejected"    :rejected
+    "done"        "in_progress" :reopened
+    "done"        "pending"     :reopened
+    "rejected"    "pending"     :reopened
+    "blocked"     "pending"     :moved
+    "pending"     "mystery"     :moved))
+
+(deftest classify-transition-uses-board-order-test
+  (are [statuses from to expected]
+       (= expected (boards/classify-transition statuses from to))
+    ["todo" "doing" "done"]    "doing" "todo"  :reverted
+    ["todo" "doing" "done"]    "todo"  "doing" :advanced
+    ["doing" "todo" "done"]    "doing" "todo"  :advanced
+    ["todo" "doing" "done"]    "done"  "todo"  :reopened
+    ["todo" "doing" "shipped"] "doing" "todo"  :reverted))
+
+(deftest create-task-records-created-event-test
+  (let [task (at-minute 0 #(boards/create-task! {:repo-path "/tmp/ev-create" :title "t"}))]
+    (is (= [{:from-status nil :to-status "pending" :worker-name nil :created-at (iso-at 0)}]
+           (events-of (:id task))))))
+
+(deftest take-task-records-event-only-on-status-change-test
+  (let [repo "/tmp/ev-take"
+        task (at-minute 0 #(boards/create-task! {:repo-path repo :title "t"}))]
+    (at-minute 5 #(boards/take-task! {:repo-path repo :worker-name "alice"}))
+    (at-minute 10 #(boards/update-task! (:id task) {:status "in_review"}))
+    ;; Claiming in place (move_to = queue) is not a transition.
+    (at-minute 15 #(boards/take-task! {:task-id (:id task) :worker-name "rev"
+                                :status "in_review" :move-to "in_review"}))
+    (is (= [{:from-status nil :to-status "pending" :worker-name nil :created-at (iso-at 0)}
+            {:from-status "pending" :to-status "in_progress" :worker-name "alice" :created-at (iso-at 5)}
+            {:from-status "in_progress" :to-status "in_review" :worker-name "alice" :created-at (iso-at 10)}]
+           (events-of (:id task))))))
+
+(deftest update-task-records-event-only-on-status-change-test
+  (let [task (at-minute 0 #(boards/create-task! {:repo-path "/tmp/ev-update" :title "t"}))]
+    (at-minute 1 #(boards/update-task! (:id task) {:title "renamed"}))
+    (at-minute 2 #(boards/update-task! (:id task) {:status "pending"}))
+    (at-minute 3 #(boards/update-task! (:id task) {:status "done" :note "shipped" :author "bob"}))
+    (is (= [{:from-status nil :to-status "pending" :worker-name nil :created-at (iso-at 0)}
+            {:from-status "pending" :to-status "done" :worker-name "bob" :created-at (iso-at 3)}]
+           (events-of (:id task))))))
+
+(deftest update-task-invalid-status-records-no-event-test
+  (let [task (boards/create-task! {:repo-path "/tmp/ev-invalid" :title "t"})]
+    (is (thrown? js/Error (boards/update-task! (:id task) {:status "nope"})))
+    (is (= 1 (count (events-of (:id task)))))))
+
+(deftest status-events-cascade-on-task-delete-test
+  (let [task (boards/create-task! {:repo-path "/tmp/ev-cascade" :title "t"})]
+    (.run (.prepare (db/db) "DELETE FROM tasks WHERE id = ?") (:id task))
+    (is (= [] (events-of (:id task))))))
+
+(defn- run-lifecycle!
+  "Create a task at minute `created`, then apply [[mins status] ...] via update-task!."
+  [repo title created steps]
+  (let [task (at-minute created #(boards/create-task! {:repo-path repo :title title}))]
+    (doseq [[mins status] steps]
+      (at-minute mins #(boards/update-task! (:id task) {:status status})))
+    task))
+
+(deftest board-stats-empty-board-has-zero-buckets-test
+  (let [board (boards/get-or-create-board! "/tmp/stats-empty")
+        stats (at-minute 0 #(boards/board-stats (:id board) {}))]
+    (is (= 24 (:hours stats)))
+    (is (= 60 (:bucket-minutes stats)))
+    (is (= (iso-at (* -24 60)) (:window-start stats)))
+    (is (= (iso-at 0) (:window-end stats)))
+    (is (= (mapv #(iso-at (* 60 (- % 24))) (range 24))
+           (mapv :start (:buckets stats))))
+    (is (= {:start (iso-at -60) :created 0 :advanced 0 :done 0 :reverted 0 :rejected 0 :reopened 0}
+           (last (:buckets stats))))
+    (is (= {:created 0 :advanced 0 :done 0 :reverted 0 :rejected 0 :reopened 0}
+           (:totals stats)))
+    (is (= 0 (get-in stats [:rates-per-hour :done])))
+    (is (nil? (:median-cycle-minutes stats)))
+    (is (= 0 (:cycle-sample-size stats)))))
+
+(deftest board-stats-unknown-board-test
+  (is (nil? (boards/board-stats "no-such-board" {}))))
+
+(deftest board-stats-buckets-and-totals-test
+  (let [repo "/tmp/stats-buckets"
+        ;; Created and finished before the 3h window: invisible.
+        _old (run-lifecycle! repo "old" -400 [[-300 "in_progress"] [-250 "done"]])
+        ;; Created in bucket 0 (-180..-120), started bucket 1, done bucket 2.
+        a (run-lifecycle! repo "a" -170 [[-100 "in_progress"] [-30 "done"]])
+        ;; Reverted twice, then rejected - all in the last bucket.
+        _b (run-lifecycle! repo "b" -50 [[-40 "in_progress"] [-35 "in_review"]
+                                         [-20 "in_progress"] [-10 "ready"] [-5 "rejected"]])
+        ;; Finished before the window, reopened in bucket 1.
+        _c (run-lifecycle! repo "c" -200 [[-190 "done"] [-90 "in_progress"]])
+        ;; Another board's activity never leaks in.
+        _other (run-lifecycle! "/tmp/stats-other" "x" -10 [[-5 "done"]])
+        stats (at-minute 0 #(boards/board-stats (:board-id a) {:hours 3 :bucket-minutes 60}))]
+    (is (= [{:start (iso-at -180) :created 1 :advanced 0 :done 0 :reverted 0 :rejected 0 :reopened 0}
+            {:start (iso-at -120) :created 0 :advanced 1 :done 0 :reverted 0 :rejected 0 :reopened 1}
+            {:start (iso-at -60) :created 1 :advanced 2 :done 1 :reverted 2 :rejected 1 :reopened 0}]
+           (:buckets stats)))
+    (is (= {:created 2 :advanced 3 :done 1 :reverted 2 :rejected 1 :reopened 1}
+           (:totals stats)))
+    (is (= {:created 0.67 :advanced 1 :done 0.33 :reverted 0.67 :rejected 0.33 :reopened 0.33}
+           (:rates-per-hour stats)))))
+
+(deftest board-stats-event-at-window-edges-test
+  (let [repo "/tmp/stats-edges"
+        a (run-lifecycle! repo "start-edge" -60 [])
+        _b (run-lifecycle! repo "end-edge" 0 [])
+        _c (run-lifecycle! repo "just-before" -61 [])
+        stats (at-minute 0 #(boards/board-stats (:board-id a) {:hours 1 :bucket-minutes 30}))]
+    (is (= [1 1] (mapv :created (:buckets stats))))))
+
+(deftest board-stats-median-cycle-time-test
+  (let [repo "/tmp/stats-median"
+        ;; 30 min from FIRST in_progress to done (the bounce back is ignored).
+        a (run-lifecycle! repo "a" -200 [[-100 "in_progress"] [-90 "in_review"]
+                                         [-85 "in_progress"] [-70 "done"]])
+        ;; 10 min.
+        _b (run-lifecycle! repo "b" -50 [[-40 "in_progress"] [-30 "done"]])
+        ;; 130 min: started before the 2h window but finished inside it.
+        _c (run-lifecycle! repo "c" -300 [[-150 "in_progress"] [-20 "done"]])
+        ;; Done without ever being in_progress: excluded from the sample.
+        _d (run-lifecycle! repo "d" -50 [[-45 "done"]])
+        ;; Done before the window: excluded.
+        _e (run-lifecycle! repo "e" -500 [[-400 "in_progress"] [-390 "done"]])
+        stats (at-minute 0 #(boards/board-stats (:board-id a) {:hours 2}))]
+    (is (= 30 (:median-cycle-minutes stats)))
+    (is (= 3 (:cycle-sample-size stats)))))
+
+(deftest board-stats-median-even-sample-test
+  (let [repo "/tmp/stats-median-even"
+        a (run-lifecycle! repo "a" -50 [[-40 "in_progress"] [-30 "done"]])
+        _b (run-lifecycle! repo "b" -50 [[-45 "in_progress"] [-25 "done"]])
+        stats (at-minute 0 #(boards/board-stats (:board-id a) {:hours 1}))]
+    (is (= 15 (:median-cycle-minutes stats)))))
+
+(deftest board-stats-validates-opts-test
+  (let [board (boards/get-or-create-board! "/tmp/stats-validate")]
+    (are [opts] (thrown-with-msg? js/Error #"hours|bucket_minutes"
+                                  (boards/board-stats (:id board) opts))
+      {:hours 0}
+      {:hours -1}
+      {:hours 1.5}
+      {:hours "24"}
+      {:hours 721}
+      {:bucket-minutes 0}
+      {:bucket-minutes 7}
+      {:hours 1 :bucket-minutes 90}
+      {:hours 720 :bucket-minutes 1})))
+
+(deftest board-stats-accepts-valid-opts-test
+  (let [board (boards/get-or-create-board! "/tmp/stats-valid")]
+    (are [opts n] (= n (count (:buckets (boards/board-stats (:id board) opts))))
+      {:hours 1 :bucket-minutes 5}      12
+      {:hours 1 :bucket-minutes 60}     1
+      {:hours 168}                      168
+      {:hours 720 :bucket-minutes 1440} 30
+      {:hours nil :bucket-minutes nil}  24)))

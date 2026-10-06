@@ -219,6 +219,15 @@
      :on-success [:board-tasks-loaded]
      :on-failure [:api-error]}))
 
+(defn fetch-board-stats [repo-path]
+  ;; Same empty-repo-path guard as fetch-board-tasks.
+  (when (seq repo-path)
+    {:method "GET"
+     :url (str "/api/boards/" (js/encodeURIComponent repo-path) "/stats"
+               "?hours=24&bucket_minutes=60")
+     :on-success [:board-stats-loaded repo-path]
+     :on-failure [:api-error]}))
+
 (defn fetch-task [task-id]
   {:method "GET"
    :url (str "/api/tasks/" task-id)

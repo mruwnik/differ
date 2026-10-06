@@ -754,7 +754,9 @@
               (assoc-in [:route :board-repo] repo-path)
               (assoc :selected-task nil)
               (cond-> (not= repo-path (get-in db [:route :board-repo]))
-                (assoc :board-filter task-filter/default-filter)))
+                (assoc :board-filter task-filter/default-filter))
+              (cond-> (not= repo-path (get-in db [:route :board-repo]))
+                (assoc :board-stats nil)))
       ;; nil means connect to the global /events SSE endpoint (no session filter),
       ;; which receives broadcast events like task-created/task-updated.
       :sse-connect nil
@@ -776,12 +778,33 @@
  :load-board-tasks
  (fn [{:keys [db]} [_ repo-path]]
    (when-let [req (api/fetch-board-tasks repo-path :show-done (:board-show-done db))]
-     {:http req})))
+     ;; Stats ride along so every task refresh (SSE, UI edits) updates them.
+     {:http req
+      :dispatch [:load-board-stats repo-path]})))
 
 (rf/reg-event-db
  :board-tasks-loaded
  (fn [db [_ response]]
    (assoc db :board-tasks (:tasks response))))
+
+(rf/reg-event-fx
+ :load-board-stats
+ (fn [_ [_ repo-path]]
+   (when-let [req (api/fetch-board-stats repo-path)]
+     {:http req})))
+
+(rf/reg-event-db
+ :board-stats-loaded
+ (fn [db [_ repo-path response]]
+   ;; Drop late responses for a board we've navigated away from.
+   (if (= repo-path (get-in db [:route :board-repo]))
+     (assoc db :board-stats (:stats response))
+     db)))
+
+(rf/reg-event-db
+ :toggle-board-stats-collapsed
+ (fn [db _]
+   (update db :board-stats-collapsed not)))
 
 (rf/reg-event-db
  :select-task

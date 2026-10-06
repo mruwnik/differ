@@ -1,7 +1,7 @@
 (ns differ.api-test
   "Tests for REST API handlers.
    Tests handler logic, request/response formatting, and security validation."
-  (:require [clojure.test :refer [deftest testing is use-fixtures]]
+  (:require [clojure.test :refer [deftest testing is are use-fixtures]]
             [clojure.string :as str]
             [differ.test-helpers :as helpers]
             [differ.util :as util]
@@ -669,3 +669,54 @@
     (let [{:keys [status data]} (call-get-task-handler "amb")]
       (is (= 400 status))
       (is (re-find #"ambiguous" (:error data))))))
+
+;; ============================================================================
+;; Board stats endpoint
+;; ============================================================================
+
+(deftest board-stats-handler-test
+  (let [captured (atom nil)]
+    (with-redefs [boards/get-board-by-repo (fn [repo] (when (= "/tmp/r" repo) {:id "b"}))
+                  boards/board-stats (fn [board-id opts]
+                                       (reset! captured [board-id opts])
+                                       {:totals {:done 2}})]
+      (let [req (make-mock-req :params {:id (js/encodeURIComponent "/tmp/r")}
+                               :query {:hours "6" :bucket_minutes "30"})
+            [res get-response] (make-mock-res)]
+        (api/board-stats-handler req res)
+        (is (= ["b" {:hours 6 :bucket-minutes 30}] @captured))
+        (is (= {:status 200 :data {:stats {:totals {:done 2}}}}
+               (select-keys (get-response) [:status :data])))))))
+
+(deftest board-stats-handler-defaults-test
+  (let [captured (atom nil)]
+    (with-redefs [boards/get-board-by-repo (constantly {:id "b"})
+                  boards/board-stats (fn [_ opts] (reset! captured opts) {})]
+      (let [[res _] (make-mock-res)]
+        (api/board-stats-handler (make-mock-req :params {:id "r"}) res)
+        (is (= {:hours nil :bucket-minutes nil} @captured))))))
+
+(deftest board-stats-handler-errors-test
+  (with-redefs [boards/get-board-by-repo (fn [repo] (when (= "r" repo) {:id "b"}))]
+    (are [query status] (= status
+                           (let [[res get-response] (make-mock-res)]
+                             (api/board-stats-handler (make-mock-req :params {:id "r"} :query query) res)
+                             (:status (get-response))))
+      {:hours "abc"}           400
+      {:hours "1.5"}           400
+      {:bucket_minutes "0"}    400
+      {:hours "-3"}            400))
+  (with-redefs [boards/get-board-by-repo (constantly nil)]
+    (let [[res get-response] (make-mock-res)]
+      (api/board-stats-handler (make-mock-req :params {:id "missing"}) res)
+      (is (= 404 (:status (get-response)))))))
+
+(deftest board-routes-registered-before-board-id-route-test
+  (let [paths (atom [])
+        record (fn [path & _] (swap! paths conj path))
+        app #js {:get record :post record :patch record :delete record}
+        index-of #(.indexOf @paths %)]
+    (api/setup-routes app)
+    (is (pos? (index-of "/api/boards/:id/stats")))
+    (is (< (index-of "/api/boards/:id/stats") (index-of "/api/boards/:id")))
+    (is (< (index-of "/api/boards/:id/tasks") (index-of "/api/boards/:id")))))

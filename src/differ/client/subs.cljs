@@ -366,6 +366,8 @@
 (rf/reg-sub :selected-task (fn [db _] (:selected-task db)))
 (rf/reg-sub :board-show-done (fn [db _] (:board-show-done db)))
 (rf/reg-sub :board-filter (fn [db _] (:board-filter db)))
+(rf/reg-sub :board-stats (fn [db _] (:board-stats db)))
+(rf/reg-sub :board-stats-collapsed (fn [db _] (:board-stats-collapsed db)))
 
 (rf/reg-sub
  :filtered-board-tasks

@@ -373,6 +373,17 @@
                                          :description "Note content"}}
                   :required ["task_id" "content"]}}
 
+   {:name "board_stats"
+    :description "Throughput statistics for a repo's kanban board over a trailing window ending now, from the task status-transition log. Returns per-bucket counts (every bucket present, even with zero activity), window totals, rates per hour, and the median minutes from a task's first in_progress to done for tasks finished in the window. Transition kinds: created, advanced (later in the board's status order), done, reverted (earlier in the order), rejected, reopened (out of done/rejected). History only exists from when status logging was deployed; earlier activity is not counted."
+    :inputSchema {:type "object"
+                  :properties {:repo_path {:type "string"
+                                           :description "Absolute path to the repo directory"}
+                               :hours {:type "integer"
+                                       :description "Window length in hours, 1-720 (default 24)"}
+                               :bucket_minutes {:type "integer"
+                                                :description "Bucket size in minutes; must divide the window evenly, at most 1440 buckets (default 60)"}}
+                  :required ["repo_path"]}}
+
    {:name "random_name"
     :description "Choose a random name from SF, fantasy, mythology, and D&D pantheons. Returns a name with source and note."
     :inputSchema {:type "object"
@@ -967,6 +978,12 @@
         board (boards/get-board (:board-id task))]
     (sse/broadcast-all! :task-updated {:task task :repo-path (:repo-path board)})
     {:note note}))
+
+(defmethod handle-tool "board_stats" [_ {:keys [repo-path hours bucket-minutes]}]
+  (let [board (boards/get-board-by-repo repo-path)]
+    (when-not board
+      (throw (js/Error. (str "No board found for repo: " repo-path))))
+    (boards/board-stats (:id board) {:hours hours :bucket-minutes bucket-minutes})))
 
 ;; Random name tool handler
 
