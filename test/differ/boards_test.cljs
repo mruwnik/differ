@@ -1008,7 +1008,7 @@
 
 ;; ============================================================================
 ;; Task ID prefix resolution
-;; ==============================================================
+;; ============================================================================
 
 (defn- insert-task-with-id!
   "Insert a task with a chosen id (create-task! always generates a UUID)."
@@ -1097,7 +1097,8 @@
       (insert-task-with-id! repo "amb-2" "y")
       (is (thrown-with-msg? js/Error #"ambiguous"
                             (boards/update-task! "amb" {:title "z"}))))))
-=======
+
+;; ============================================================================
 ;; list-tasks filters + query-tasks (projection / limit / total)
 ;; ============================================================================
 
@@ -1211,7 +1212,8 @@
     (testing "include_notes without fields returns full tasks with notes"
       (is (= "hello" (-> (boards/query-tasks (:id board) {:include-notes true})
                          :tasks first :notes first :content))))))
-=======
+
+;; ============================================================================
 ;; Claim leases (a claim lapses after N hours without task activity)
 ;; ============================================================================
 

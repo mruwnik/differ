@@ -998,7 +998,7 @@
       (mcp/handle-tool "update_task" {:task-id "t" :priority 2 :tags ["x"]})
       (is (= {:priority 2 :tags ["x"]} @captured)))))
 
-;; =====================================================================
+;; ============================================================================
 ;; Task ID prefixes (real DB: init-test-db! isolates differ.db per test)
 ;; ============================================================================
 
@@ -1024,7 +1024,7 @@
     (is (re-find #"unique prefix" (desc "get_upstream" :task_id)))
     (is (re-find #"unique prefix" (desc "update_task" :blocked_by)))
     (is (re-find #"unique prefix" (desc "create_task" :blocked_by)))))
-=======
+
 (deftest list-tasks-tool-passes-stale-test
   (let [captured (atom nil)]
     (with-redefs [boards/get-board-by-repo (fn [_] {:id "b"})
