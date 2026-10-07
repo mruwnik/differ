@@ -911,6 +911,23 @@
       task (json-response res {:task (assoc task :notes (boards/list-notes (:id task)))})
       :else (error-response res 404 "Task not found"))))
 
+(defn create-board-task-handler
+  "POST /api/boards/:id/tasks"
+  [^js req res]
+  (let [repo-path (js/decodeURIComponent (.. req -params -id))
+        {:keys [title description blocked-by priority tags assignee checklist add-commits parent-id]} (get-body req)]
+    (if (str/blank? title)
+      (error-response res 400 "title is required")
+      (try
+        (let [task (boards/create-task! {:repo-path repo-path :title title :description description
+                                         :blocked-by blocked-by :priority priority :tags tags
+                                         :assignee assignee :checklist checklist
+                                         :add-commits add-commits :parent-id parent-id})]
+          (sse/broadcast-all! :task-created {:task task :repo-path repo-path})
+          (json-response res {:task task}))
+        (catch :default e
+          (error-response res 400 (or (ex-message e) (.-message e))))))))
+
 (defn update-task-api-handler
   "PATCH /api/tasks/:id"
   [^js req res]
@@ -993,6 +1010,7 @@
   ;; requests to /api/boards/:id/tasks would match it with :id = "<repo>/tasks".
   (.get app "/api/boards" list-boards-handler)
   (.get app "/api/boards/:id/tasks" list-board-tasks-handler)
+  (.post app "/api/boards/:id/tasks" create-board-task-handler)
   (.get app "/api/boards/:id/stats" board-stats-handler)
   (.get app "/api/boards/:id" get-board-handler)
   (.get app "/api/tasks/:id" get-task-handler)

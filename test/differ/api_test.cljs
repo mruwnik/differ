@@ -10,6 +10,7 @@
             [differ.db :as db]
             [differ.oauth :as oauth]
             [differ.config :as config]
+            [differ.sse :as sse]
             ["path" :as path]))
 
 ;; ============================================================================
@@ -732,3 +733,57 @@
     (api/list-board-tasks-handler
      (make-mock-req :params {:id (js/encodeURIComponent "/tmp/api-board-statuses")}) res)
     (is (= "qa" (last (get-in (get-response) [:data :statuses]))))))
+
+;; ============================================================================
+;; Create board task endpoint
+;; ============================================================================
+
+(defn- call-create-board-task [repo body]
+  (let [[res get-response] (make-mock-res)]
+    (api/create-board-task-handler
+     (make-mock-req :params {:id (js/encodeURIComponent repo)} :body body) res)
+    (get-response)))
+
+(deftest create-board-task-handler-test
+  (let [{:keys [status data]} (call-create-board-task
+                               "/tmp/api-create"
+                               {:title "new task" :description "d" :priority 3
+                                :tags ["a" "b"] :checklist ["one" "two"]
+                                :assignee "wren"})
+        task (:task data)]
+    (is (= 200 status))
+    (is (= "new task" (:title task)))
+    (is (= 3 (:priority task)))
+    (is (= ["a" "b"] (:tags task)))
+    (is (= "wren" (:assignee task)))
+    (is (= (:id task)
+           (:id (boards/get-task (:id task)))))
+    (is (= [(:id task)]
+           (mapv :id (:tasks (boards/query-tasks
+                              (:id (boards/get-board-by-repo "/tmp/api-create"))
+                              {})))))))
+
+(deftest create-board-task-handler-maps-snake-keys-test
+  (let [parent (boards/create-task! {:repo-path "/tmp/api-create-keys" :title "parent"})
+        blocker (boards/create-task! {:repo-path "/tmp/api-create-keys" :title "blocker"})
+        {:keys [status data]} (call-create-board-task
+                               "/tmp/api-create-keys"
+                               {:title "child" :parent_id (:id parent)
+                                :blocked_by [(:id blocker)]})
+        task (:task data)]
+    (is (= 200 status))
+    (is (= (:id parent) (:parent-id task)))
+    (is (= [(:id blocker)] (:blocked-by task)))))
+
+(deftest create-board-task-handler-broadcasts-test
+  (let [events (atom [])]
+    (with-redefs [sse/broadcast-all! (fn [& args] (swap! events conj args))]
+      (let [{:keys [data]} (call-create-board-task "/tmp/api-create-sse" {:title "t"})]
+        (is (= [[:task-created {:task (:task data) :repo-path "/tmp/api-create-sse"}]]
+               (mapv vec @events)))))))
+
+(deftest create-board-task-handler-blank-title-test
+  (are [body] (= 400 (:status (call-create-board-task "/tmp/api-create-bad" body)))
+    {}
+    {:title ""}
+    {:title "   "}))
