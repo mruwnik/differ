@@ -113,5 +113,22 @@
 (defn ^:dev/after-load start-after-reload []
   (start))
 
+;; glibc only reads MALLOC_* at process start, so re-exec once with it set.
+;; Pinning the mmap threshold stops glibc ratcheting it up after big
+;; execSync git outputs, which otherwise fragments the main arena and
+;; holds ~100MB+ of freed memory; the small semi-space stops V8 lazily
+;; growing a heap that's mostly garbage.
+(defn- relaunch-with-memory-tuning! []
+  (when (and (not js/process.env.MALLOC_MMAP_THRESHOLD_)
+             (fn? (.-execve js/process)))
+    (.execve js/process
+             js/process.execPath
+             (clj->js (concat [js/process.execPath "--max-semi-space-size=4"]
+                              js/process.execArgv
+                              (rest js/process.argv)))
+             (js/Object.assign #js {} js/process.env #js {:MALLOC_MMAP_THRESHOLD_ "131072"}))))
+
+(relaunch-with-memory-tuning!)
+
 ;; Auto-start when loaded (works with shadow-cljs watch)
 (start)
