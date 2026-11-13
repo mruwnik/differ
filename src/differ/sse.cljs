@@ -187,7 +187,6 @@
   (.setHeader res "Content-Type" "text/event-stream")
   (.setHeader res "Cache-Control" "no-cache")
   (.setHeader res "Connection" "keep-alive")
-  (.setHeader res "Access-Control-Allow-Origin" "*")
   (.flushHeaders res)
 
   (let [client-id (add-connection! res)

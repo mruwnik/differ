@@ -3,7 +3,9 @@
   (:require [clojure.test :refer [deftest testing is use-fixtures]]
             [clojure.string :as str]
             [differ.git :as git]
-            [differ.test-helpers :as helpers]))
+            [differ.test-helpers :as helpers]
+            ["fs" :as fs]
+            ["path" :as path]))
 
 ;; ============================================================================
 ;; Pure Function Tests - parse-diff-hunks
@@ -173,13 +175,6 @@ diff --git a/file2.txt b/file2.txt
   (testing "detects main as default branch"
     (is (= "main" (git/detect-default-branch *test-repo*)))))
 
-(deftest branch-exists?-test
-  (testing "returns true for existing branch"
-    (is (git/branch-exists? *test-repo* "main")))
-
-  (testing "returns false for non-existent branch"
-    (is (not (git/branch-exists? *test-repo* "nonexistent-branch")))))
-
 (deftest get-file-content-test
   (testing "returns content from working tree"
     (let [content (git/get-file-content *test-repo* nil "README.md")]
@@ -286,3 +281,51 @@ diff --git a/file2.txt b/file2.txt
     (let [project-id (git/get-project-id *test-repo*)]
       (is (string? project-id))
       (is (str/includes? project-id "differ-test-repo")))))
+
+;; ============================================================================
+;; Argument handling - refs and paths reach git as plain arguments
+;; ============================================================================
+
+(deftest shell-metacharacters-not-executed-test
+  (let [dir (helpers/create-temp-dir "differ-marker")
+        marker (path/join dir "marker")]
+    (try
+      (testing "branch names are not run through a shell"
+        (git/get-diff *test-repo* (str "main;touch " marker ";"))
+        (git/get-diff *test-repo* "main" (str "HEAD$(touch " marker ")"))
+        (git/get-changed-files *test-repo* (str "main`touch " marker "`"))
+        (git/get-file-content *test-repo* (str "main;touch " marker ";") "README.md")
+        (is (not (fs/existsSync marker))))
+
+      (testing "file paths are not run through a shell"
+        (git/stage-file! *test-repo* (str "$(touch " marker ")"))
+        (git/get-file-diff *test-repo* "main" (str "x\";touch " marker ";\""))
+        (is (not (fs/existsSync marker))))
+      (finally
+        (helpers/remove-dir dir)))))
+
+(deftest stage-file-special-characters-test
+  (testing "stages a file whose name contains spaces and shell characters"
+    (helpers/add-test-file *test-repo* "odd name $HOME.txt" "content")
+    (git/stage-file! *test-repo* "odd name $HOME.txt")
+    (is (contains? (git/get-staged-files *test-repo*) "odd name $HOME.txt")))
+
+  (testing "stages a file whose name starts with '-'"
+    (helpers/add-test-file *test-repo* "-dash.txt" "content")
+    (git/stage-file! *test-repo* "-dash.txt")
+    (is (contains? (git/get-staged-files *test-repo*) "-dash.txt"))))
+
+(deftest option-like-refs-not-read-as-options-test
+  (let [dir (helpers/create-temp-dir "differ-marker")
+        out (path/join dir "out")]
+    (try
+      (testing "a ref starting with '-' is not read as a git option"
+        (is (nil? (git/get-diff *test-repo* (str "--output=" out))))
+        (is (nil? (git/get-diff *test-repo* (str "--output=" out) "main")))
+        (is (nil? (git/get-diff-stat *test-repo* (str "--output=" out))))
+        (is (empty? (git/get-changed-files *test-repo* (str "--output=" out))))
+        (is (nil? (git/get-file-diff *test-repo* (str "--output=" out) "README.md")))
+        (is (nil? (git/get-file-content *test-repo* (str "--output=" out) "README.md")))
+        (is (empty? (js->clj (fs/readdirSync dir)))))
+      (finally
+        (helpers/remove-dir dir)))))

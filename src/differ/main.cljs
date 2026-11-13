@@ -1,13 +1,10 @@
 (ns differ.main
   "Main entry point for the Differ server."
-  (:require ["express" :as express]
-            ["path" :as path]
+  (:require ["path" :as path]
             ["fs" :as fs]
             [clojure.edn :as edn]
             [differ.db :as db]
-            [differ.api :as api]
-            [differ.mcp :as mcp]
-            [differ.sse :as sse]
+            [differ.app :refer [create-app]]
             [differ.event-stream :as event-stream]
             [differ.github-events :as github-events]))
 
@@ -28,45 +25,6 @@
   (or (some-> js/process.env.PORT js/parseInt)
       (:port (read-config))
       8576))
-
-(defn- static-path []
-  ;; In dev, resources/public. In prod, same relative to server.js
-  (let [dir (path/dirname js/__dirname)]
-    (path/join dir "resources" "public")))
-
-(defn create-app []
-  (let [^js app (express)]
-    ;; Middleware
-    (.use app (.json express))
-    (.use app (.urlencoded express #js {:extended true}))
-
-    ;; CORS for development
-    (.use app (fn [_req ^js res next]
-                (.header res "Access-Control-Allow-Origin" "*")
-                (.header res "Access-Control-Allow-Methods" "GET, POST, PATCH, DELETE, OPTIONS")
-                (.header res "Access-Control-Allow-Headers" "Content-Type, X-Repo-Path")
-                (next)))
-
-    ;; Handle preflight
-    (.options app "*" (fn [_req ^js res] (.sendStatus res 200)))
-
-    ;; API routes
-    (api/setup-routes app)
-
-    ;; MCP routes
-    (mcp/setup-routes app)
-
-    ;; SSE routes
-    (sse/setup-routes app)
-
-    ;; Static files (must be after API routes)
-    (.use app (express/static (static-path)))
-
-    ;; SPA fallback - serve index.html for all non-API routes
-    (.get app "*" (fn [_req ^js res]
-                    (.sendFile res (path/join (static-path) "index.html"))))
-
-    app))
 
 (defn start []
   (when-not @server
@@ -115,7 +73,7 @@
 
 ;; glibc only reads MALLOC_* at process start, so re-exec once with it set.
 ;; Pinning the mmap threshold stops glibc ratcheting it up after big
-;; execSync git outputs, which otherwise fragments the main arena and
+;; git outputs, which otherwise fragments the main arena and
 ;; holds ~100MB+ of freed memory; the small semi-space stops V8 lazily
 ;; growing a heap that's mostly garbage.
 (defn- relaunch-with-memory-tuning! []

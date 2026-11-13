@@ -9,26 +9,10 @@
             [differ.github-oauth :as github-oauth]
             [differ.github-api :as gh-api]
             [differ.config :as config]
+            [differ.git-exec :refer [exec-git]]
             [clojure.string :as str]
             ["child_process" :as cp]
             ["path" :as path]))
-
-;; Git command execution (sync version for local checks)
-
-(defn- exec-sync
-  "Execute command synchronously, return stdout or nil on error."
-  [cmd opts]
-  (try
-    (let [result (cp/execSync cmd (clj->js (merge {:encoding "utf8"} opts)))]
-      (str/trim result))
-    (catch :default _e
-      nil)))
-
-(defn- exec-git
-  "Execute git command in given directory."
-  [repo-path & args]
-  (let [cmd (str "git " (str/join " " args))]
-    (exec-sync cmd {:cwd repo-path})))
 
 (defn normalize-pr-state
   "Normalize PR state to lowercase string, defaulting to 'open'.

@@ -118,3 +118,14 @@
                         (str/replace k "-" "_")
                         k)))
                   data))
+
+;; ============================================================================
+;; Git ref validation
+;; ============================================================================
+
+(defn option-like-ref?
+  "True when ref is a string starting with '-'. git would read such a ref as
+   a command-line option, and git does not allow branch names to start with
+   '-', so callers reject these instead of passing them on."
+  [ref]
+  (and (string? ref) (str/starts-with? ref "-")))
