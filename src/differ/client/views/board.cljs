@@ -21,17 +21,17 @@
    "rejected" "Rejected"})
 
 (def status-colors
-  {"pending" "#6a737d"
-   "needs_owner" "#bf3989"
-   "planning" "#6f42c1"
-   "plan_review" "#b08800"
-   "ready" "#00838f"
-   "in_progress" "#0366d6"
-   "blocked" "#d73a49"
-   "testing" "#1b7c83"
-   "in_review" "#e36209"
-   "done" "#28a745"
-   "rejected" "#959da5"})
+  {"pending" "var(--color-status-pending)"
+   "needs_owner" "var(--color-status-needs-owner)"
+   "planning" "var(--color-status-planning)"
+   "plan_review" "var(--color-status-plan-review)"
+   "ready" "var(--color-status-ready)"
+   "in_progress" "var(--color-status-in-progress)"
+   "blocked" "var(--color-status-blocked)"
+   "testing" "var(--color-status-testing)"
+   "in_review" "var(--color-status-in-review)"
+   "done" "var(--color-status-done)"
+   "rejected" "var(--color-status-rejected)"})
 
 (defn format-age [iso-string]
   (when iso-string
@@ -65,8 +65,8 @@
       [:span {:title (str "Priority " priority)
               :style {:font-size "10px" :font-weight "600" :padding "0 5px"
                       :border-radius "8px" :white-space "nowrap"
-                      :background (if (pos? priority) "#ffebe9" "#f6f8fa")
-                      :color (if (pos? priority) "#cf222e" "#6a737d")}}
+                      :background (if (pos? priority) "var(--color-danger-subtle)" "var(--color-bg-subtle)")
+                      :color (if (pos? priority) "var(--color-danger-fg)" "var(--color-fg-muted)")}}
        (priority-label priority)])))
 
 (defn tag-chip
@@ -75,9 +75,9 @@
   [:span {:title (if selected? "Remove tag filter" "Filter by this tag")
           :style {:font-size "10px" :padding "0 6px" :border-radius "8px"
                   :cursor "pointer" :white-space "nowrap"
-                  :background (if selected? "#0366d6" "#f1f8ff")
-                  :color (if selected? "#fff" "#0366d6")
-                  :border "1px solid #c8e1ff"}
+                  :background (if selected? "var(--color-accent-emphasis)" "var(--color-accent-muted)")
+                  :color (if selected? "var(--color-fg-on-emphasis)" "var(--color-accent-fg)")
+                  :border "1px solid var(--color-accent-border)"}
           :on-click (fn [e]
                       (.stopPropagation e)
                       (rf/dispatch [:toggle-board-tag-filter tag]))}
@@ -94,8 +94,8 @@
     [:span {:title (str "Stale claim: no activity for " (format-age (:updated-at task)))
             :style {:font-size "10px" :font-weight "600" :padding "0 5px"
                     :border-radius "8px" :white-space "nowrap"
-                    :background "#fff8c5" :color "#9a6700"
-                    :border "1px solid #d4a72c"}}
+                    :background "var(--color-attention-subtle)" :color "var(--color-attention-fg)"
+                    :border "1px solid var(--color-attention-border)"}}
      "⚠ stale"]))
 
 ;; ============================================================================
@@ -112,8 +112,8 @@
                                       (str (if done "☑ " "☐ ") item)))
               :style {:font-size "10px" :font-weight "600" :padding "0 5px"
                       :border-radius "8px" :white-space "nowrap"
-                      :background (if complete? "#dafbe1" "#f6f8fa")
-                      :color (if complete? "#1a7f37" "#6a737d")}}
+                      :background (if complete? "var(--color-success-subtle-alt)" "var(--color-bg-subtle)")
+                      :color (if complete? "var(--color-success-fg)" "var(--color-fg-muted)")}}
        (str "☑ " done "/" (count checklist))])))
 
 (defn checklist-editor
@@ -130,15 +130,15 @@
                      (reset! draft "")))]
         [:div {:style {:margin-bottom "12px"}}
          [:div {:style {:display "flex" :gap "6px" :align-items "center" :margin-bottom "4px"}}
-          [:h4 {:style {:margin "0" :font-size "13px" :color "#24292e"}} "Checklist"]
+          [:h4 {:style {:margin "0" :font-size "13px" :color "var(--color-fg)"}} "Checklist"]
           [checklist-chip checklist]
           (when (and (= "done" (:status task)) (not-every? :done checklist))
-            [:span {:style {:font-size "11px" :color "#cf222e"}} "done with unticked items"])]
+            [:span {:style {:font-size "11px" :color "var(--color-danger-fg)"}} "done with unticked items"])]
          (for [{:keys [item done]} checklist]
            ^{:key item}
            [:div {:style {:display "flex" :align-items "center" :gap "6px" :font-size "12px"}}
             [:label {:style {:flex "1" :display "flex" :align-items "center" :gap "6px"
-                             :cursor "pointer" :color "#24292e"}}
+                             :cursor "pointer" :color "var(--color-fg)"}}
              [:input {:type "checkbox"
                       :checked done
                       :on-change #(rf/dispatch [:update-task-from-ui (:id task)
@@ -147,7 +147,7 @@
             [:button {:title "Remove item"
                       :on-click #(rf/dispatch [:update-task-from-ui (:id task)
                                                {:remove-checklist-items [item]}])
-                      :style {:background "none" :border "none" :color "#959da5"
+                      :style {:background "none" :border "none" :color "var(--color-fg-subtle)"
                               :cursor "pointer" :font-size "14px" :line-height "1"}}
              "×"]])
          [:div {:style {:display "flex" :gap "6px" :margin-top "4px"}}
@@ -156,12 +156,12 @@
                    :on-change #(reset! draft (.. % -target -value))
                    :on-key-down #(when (= "Enter" (.-key %)) (add!))
                    :style {:flex "1" :padding "2px 6px" :font-size "12px"
-                           :border "1px solid #e1e4e8" :border-radius "4px"}}]
+                           :border "1px solid var(--color-border)" :border-radius "4px"}}]
           [:button {:disabled (str/blank? @draft)
                     :on-click add!
                     :style {:font-size "12px" :padding "2px 8px" :cursor "pointer"
                             :opacity (if (str/blank? @draft) "0.5" "1")
-                            :background "#fff" :border "1px solid #e1e4e8"
+                            :background "var(--color-bg)" :border "1px solid var(--color-border)"
                             :border-radius "4px"}}
            "Add"]]]))))
 
@@ -185,7 +185,7 @@
   "Clickable task title that selects that task in the detail panel."
   [task]
   [:span {:title "Open task"
-          :style {:color "#0366d6" :cursor "pointer"}
+          :style {:color "var(--color-accent-fg)" :cursor "pointer"}
           :on-click (fn [e]
                       (.stopPropagation e)
                       (rf/dispatch [:select-task task]))}
@@ -194,14 +194,14 @@
 (defn detail-commits [commits]
   (when (seq commits)
     [:div {:style {:margin-bottom "12px"}}
-     [:div {:style {:font-size "12px" :font-weight "600" :color "#24292e" :margin-bottom "4px"}}
+     [:div {:style {:font-size "12px" :font-weight "600" :color "var(--color-fg)" :margin-bottom "4px"}}
       "Commits"]
      [:div {:style {:display "flex" :gap "6px" :flex-wrap "wrap"}}
       (for [sha commits]
         ^{:key sha}
         [:code {:title sha
                 :style {:font-size "11px" :padding "1px 6px" :border-radius "4px"
-                        :background "#f6f8fa" :border "1px solid #e1e4e8" :color "#24292e"}}
+                        :background "var(--color-bg-subtle)" :border "1px solid var(--color-border)" :color "var(--color-fg)"}}
          (short-sha sha)])]]))
 
 (defn detail-family
@@ -213,25 +213,25 @@
         children (filter #(= (:id task) (:parent-id %)) tasks)]
     [:<>
      (when parent-id
-       [:div {:style {:font-size "12px" :color "#6a737d" :margin-bottom "12px"}}
+       [:div {:style {:font-size "12px" :color "var(--color-fg-muted)" :margin-bottom "12px"}}
         "Parent: "
         (if parent
           [task-link parent]
           [:span {:style {:font-family "monospace"}} parent-id])])
      (when (or (seq children) (:children task))
        [:div {:style {:margin-bottom "12px"}}
-        [:div {:style {:font-size "12px" :font-weight "600" :color "#24292e" :margin-bottom "4px"}}
+        [:div {:style {:font-size "12px" :font-weight "600" :color "var(--color-fg)" :margin-bottom "4px"}}
          "Children"
          (when (:children task)
-           [:span {:style {:font-weight "400" :color "#6a737d" :margin-left "6px"}}
+           [:span {:style {:font-weight "400" :color "var(--color-fg-muted)" :margin-left "6px"}}
             (children-label (:children task))])]
         (for [child children]
           ^{:key (:id child)}
           [:div {:style {:display "flex" :gap "6px" :align-items "center"
                          :font-size "12px" :margin-bottom "2px"}}
            [:span {:style {:font-size "10px" :padding "0 6px" :border-radius "8px"
-                           :white-space "nowrap" :color "white"
-                           :background (get status-colors (:status child) "#e1e4e8")}}
+                           :white-space "nowrap" :color "var(--color-fg-on-emphasis)"
+                           :background (get status-colors (:status child) "var(--color-bg-neutral)")}}
             (get status-labels (:status child) (:status child))]
            [task-link child]])])]))
 
@@ -246,8 +246,8 @@
         dragging? (= (:id task) (:id @(rf/subscribe [:board-drag])))]
     [:div {:style {:padding "8px 12px"
                    :margin-bottom "6px"
-                   :background (if is-selected "#ddf4ff" "#fff")
-                   :border (str "1px solid " (if is-selected "#0366d6" "#e1e4e8"))
+                   :background (if is-selected "var(--color-accent-subtle)" "var(--color-bg)")
+                   :border (str "1px solid " (if is-selected "var(--color-accent-emphasis)" "var(--color-border)"))
                    :border-radius "4px"
                    :cursor "grab"
                    :opacity (if dragging? "0.4" "1")}
@@ -262,7 +262,7 @@
            :on-click #(rf/dispatch [:select-task task])}
      [:div {:style {:display "flex" :gap "6px" :align-items "flex-start" :margin-bottom "4px"}}
       [priority-badge (:priority task)]
-      [:div {:style {:font-size "13px" :font-weight "500" :color "#24292e"}}
+      [:div {:style {:font-size "13px" :font-weight "500" :color "var(--color-fg)"}}
        (:title task)]]
      (when (seq (:tags task))
        [:div {:style {:display "flex" :gap "4px" :flex-wrap "wrap" :margin-bottom "4px"}}
@@ -271,32 +271,32 @@
           [tag-chip tag (contains? selected-tags tag)])])
      (when-let [parent (some->> (:parent-id task) (task-by-id @(rf/subscribe [:board-tasks])))]
        [:div {:title (str "Part of: " (:title parent))
-              :style {:font-size "11px" :color "#6a737d" :margin-bottom "4px"
+              :style {:font-size "11px" :color "var(--color-fg-muted)" :margin-bottom "4px"
                       :overflow "hidden" :text-overflow "ellipsis" :white-space "nowrap"}}
         (str "↳ " (:title parent))])
      [:div {:style {:display "flex" :justify-content "space-between" :align-items "center"}}
       [:div {:style {:display "flex" :gap "6px" :align-items "center"}}
        (when (:worker-name task)
-         [:span {:style {:font-size "11px" :color "#6a737d"}}
+         [:span {:style {:font-size "11px" :color "var(--color-fg-muted)"}}
           (:worker-name task)])
        [stale-claim-badge task]
        (when (and (:assignee task) (not= (:assignee task) (:worker-name task)))
          [:span {:title "Assigned to"
-                 :style {:font-size "11px" :color "#8250df"}}
+                 :style {:font-size "11px" :color "var(--color-assignee-fg)"}}
           (str "\u2192 " (:assignee task))])
        (when (seq (:blocked-by task))
-         [:span {:style {:font-size "10px" :color "#d73a49" :font-weight "500"}}
+         [:span {:style {:font-size "10px" :color "var(--color-danger-text)" :font-weight "500"}}
           (str "blocked by " (count (:blocked-by task)))])
        [checklist-chip (:checklist task)]
        (when (:children task)
          [:span {:title "Child tasks done"
-                 :style {:font-size "10px" :color "#6a737d"}}
+                 :style {:font-size "10px" :color "var(--color-fg-muted)"}}
           (children-label (:children task))])
        (when (seq (:commits task))
          [:span {:title (str/join "\n" (:commits task))
-                 :style {:font-size "10px" :color "#6a737d" :font-family "monospace"}}
+                 :style {:font-size "10px" :color "var(--color-fg-muted)" :font-family "monospace"}}
           (str (count (:commits task)) (if (= 1 (count (:commits task))) " commit" " commits"))])]
-      [:span {:style {:font-size "11px" :color "#959da5"}}
+      [:span {:style {:font-size "11px" :color "var(--color-fg-subtle)"}}
        (format-age (:created-at task))]]]))
 
 ;; ============================================================================
@@ -311,9 +311,9 @@
                    :max-width "280px"
                    :flex "1 1 200px"
                    :border-radius "6px"
-                   :outline (when over? (str "2px dashed " (get status-colors status "#0366d6")))
+                   :outline (when over? (str "2px dashed " (get status-colors status "var(--color-accent-emphasis)")))
                    :outline-offset "2px"
-                   :background (when over? "#f6f8fa")
+                   :background (when over? "var(--color-bg-subtle)")
                    :opacity (when (and dragged (not droppable?) (not= status (:status dragged))) "0.5")}
            :on-drag-over (fn [e]
                            (when droppable?
@@ -325,11 +325,11 @@
                       (rf/dispatch [:board-drop status]))}
      [:div {:style {:display "flex" :align-items "center" :gap "8px"
                     :margin-bottom "12px" :padding-bottom "8px"
-                    :border-bottom (str "2px solid " (get status-colors status "#e1e4e8"))}}
-      [:span {:style {:font-size "13px" :font-weight "600" :color "#24292e"}}
+                    :border-bottom (str "2px solid " (get status-colors status "var(--color-border)"))}}
+      [:span {:style {:font-size "13px" :font-weight "600" :color "var(--color-fg)"}}
        (get status-labels status status)]
-      [:span {:style {:font-size "12px" :color "#6a737d"
-                      :background "#f1f8ff" :padding "0 6px"
+      [:span {:style {:font-size "12px" :color "var(--color-fg-muted)"
+                      :background "var(--color-accent-muted)" :padding "0 6px"
                       :border-radius "10px" :min-width "18px" :text-align "center"}}
        (count tasks)]]
      [:div {:style {:min-height "80px"}}
@@ -354,13 +354,13 @@
                        sort)
             changed? (not= (str/trim @draft) (or (:assignee task) ""))]
         [:div {:style {:display "flex" :gap "6px" :align-items "center" :margin-bottom "12px"}}
-         [:label {:style {:font-size "12px" :color "#6a737d"}} "Assignee"]
+         [:label {:style {:font-size "12px" :color "var(--color-fg-muted)"}} "Assignee"]
          [:input {:value @draft
                   :list "board-agent-names"
                   :placeholder "Anyone"
                   :on-change #(reset! draft (.. % -target -value))
                   :style {:flex "1" :padding "2px 6px" :font-size "12px"
-                          :border "1px solid #e1e4e8" :border-radius "4px"}}]
+                          :border "1px solid var(--color-border)" :border-radius "4px"}}]
          [:datalist {:id "board-agent-names"}
           (for [n known] ^{:key n} [:option {:value n}])]
          [:button {:disabled (not changed?)
@@ -368,7 +368,7 @@
                                             {:assignee (str/trim @draft)}])
                    :style {:font-size "12px" :padding "2px 8px" :cursor "pointer"
                            :opacity (if changed? "1" "0.5")
-                           :background "#fff" :border "1px solid #e1e4e8"
+                           :background "var(--color-bg)" :border "1px solid var(--color-border)"
                            :border-radius "4px"}}
           "Save"]]))))
 
@@ -378,19 +378,19 @@
       (let [task @(rf/subscribe [:selected-task])]
         (when task
           [:div {:style {:position "fixed" :right 0 :top 0 :bottom 0
-                         :width "400px" :background "#fff"
-                         :border-left "1px solid #e1e4e8"
+                         :width "400px" :background "var(--color-bg)"
+                         :border-left "1px solid var(--color-border)"
                          :overflow-y "auto" :padding "20px" :z-index 100
-                         :box-shadow "-4px 0 12px rgba(0,0,0,0.1)"}}
+                         :box-shadow "-4px 0 12px var(--color-shadow-soft)"}}
            ;; Close button
            [:button {:style {:position "absolute" :right "12px" :top "12px"
-                             :background "none" :border "none" :color "#6a737d"
+                             :background "none" :border "none" :color "var(--color-fg-muted)"
                              :cursor "pointer" :font-size "18px" :line-height "1"}
                      :on-click #(rf/dispatch [:deselect-task])}
             "\u00d7"]
 
            ;; Title
-           [:h3 {:style {:margin "0 0 12px 0" :padding-right "32px" :color "#24292e"
+           [:h3 {:style {:margin "0 0 12px 0" :padding-right "32px" :color "var(--color-fg)"
                          :font-size "16px"}}
             (:title task)]
 
@@ -398,15 +398,15 @@
            [:div {:style {:display "flex" :align-items "center" :gap "8px"
                           :margin-bottom "12px" :flex-wrap "wrap"}}
             [:span {:style {:font-size "12px" :padding "2px 8px" :border-radius "10px"
-                            :background (get status-colors (:status task) "#e1e4e8")
-                            :color "white" :font-weight "500"}}
+                            :background (get status-colors (:status task) "var(--color-bg-neutral)")
+                            :color "var(--color-fg-on-emphasis)" :font-weight "500"}}
              (get status-labels (:status task) (:status task))]
             (when (:worker-name task)
-              [:span {:style {:font-size "12px" :color "#6a737d"}}
+              [:span {:style {:font-size "12px" :color "var(--color-fg-muted)"}}
                (str "Worker: " (:worker-name task))])
             [stale-claim-badge task]
             (when (:worker-id task)
-              [:span {:style {:font-size "11px" :color "#959da5"}}
+              [:span {:style {:font-size "11px" :color "var(--color-fg-subtle)"}}
                (str "(" (:worker-id task) ")")])
             [priority-badge (:priority task)]]
 
@@ -422,14 +422,14 @@
            ;; Blocked by
            (when (seq (:blocked-by task))
              [:div {:style {:margin-bottom "12px" :padding "8px 12px"
-                            :background "#fffbdd" :border "1px solid #e36209"
+                            :background "var(--color-warning-subtle)" :border "1px solid var(--color-warning-fg)"
                             :border-radius "4px"}}
-              [:div {:style {:font-size "12px" :font-weight "600" :color "#e36209"
+              [:div {:style {:font-size "12px" :font-weight "600" :color "var(--color-warning-fg)"
                              :margin-bottom "4px"}}
                "Blocked by:"]
               (for [dep-id (:blocked-by task)]
                 ^{:key dep-id}
-                [:div {:style {:font-size "11px" :color "#6a737d" :font-family "monospace"}}
+                [:div {:style {:font-size "11px" :color "var(--color-fg-muted)" :font-family "monospace"}}
                  dep-id])])
 
            [checklist-editor task]
@@ -438,15 +438,15 @@
 
            ;; Description
            (when (seq (:description task))
-             [:div {:style {:margin-bottom "16px" :color "#24292e" :font-size "13px"
-                            :padding "12px" :background "#f6f8fa" :border-radius "4px"
-                            :border "1px solid #e1e4e8" :white-space "pre-wrap"}}
+             [:div {:style {:margin-bottom "16px" :color "var(--color-fg)" :font-size "13px"
+                            :padding "12px" :background "var(--color-bg-subtle)" :border-radius "4px"
+                            :border "1px solid var(--color-border)" :white-space "pre-wrap"}}
               (:description task)])
 
            ;; Reject button for pending tasks
            (when (= "pending" (:status task))
              [:button {:style {:margin-bottom "16px" :padding "4px 12px"
-                               :background "#d73a49" :color "white" :border "none"
+                               :background "var(--color-danger-emphasis)" :color "var(--color-fg-on-emphasis)" :border "none"
                                :border-radius "4px" :cursor "pointer" :font-size "12px"}
                        :on-click #(rf/dispatch [:update-task-from-ui (:id task)
                                                 {:status "rejected"}])}
@@ -454,24 +454,24 @@
 
            ;; Notes section
            [:div {:style {:margin-top "8px"}}
-            [:h4 {:style {:margin "0 0 8px 0" :font-size "13px" :color "#24292e"}}
+            [:h4 {:style {:margin "0 0 8px 0" :font-size "13px" :color "var(--color-fg)"}}
              "Notes"]
             (if (seq (:notes task))
               [:div
                (for [note (:notes task)]
                  ^{:key (:id note)}
                  [:div {:style {:padding "8px" :margin-bottom "6px"
-                                :background "#f6f8fa" :border-radius "4px"
-                                :border "1px solid #e1e4e8" :font-size "12px"}}
+                                :background "var(--color-bg-subtle)" :border-radius "4px"
+                                :border "1px solid var(--color-border)" :font-size "12px"}}
                   [:div {:style {:display "flex" :justify-content "space-between"
                                  :margin-bottom "4px"}}
-                   [:span {:style {:color "#0366d6" :font-weight "500"}}
+                   [:span {:style {:color "var(--color-accent-fg)" :font-weight "500"}}
                     (or (:author note) "anonymous")]
-                   [:span {:style {:color "#959da5"}}
+                   [:span {:style {:color "var(--color-fg-subtle)"}}
                     (format-age (:created-at note))]]
-                  [:div {:style {:color "#24292e" :white-space "pre-wrap"}}
+                  [:div {:style {:color "var(--color-fg)" :white-space "pre-wrap"}}
                    (:content note)]])]
-              [:p {:style {:color "#6a737d" :font-size "12px" :margin "0 0 8px 0"}}
+              [:p {:style {:color "var(--color-fg-muted)" :font-size "12px" :margin "0 0 8px 0"}}
                "No notes yet."])
 
             ;; Add note form
@@ -480,12 +480,12 @@
                          :on-change #(reset! note-text (.. % -target -value))
                          :placeholder "Add a note..."
                          :style {:width "100%" :min-height "60px" :resize "vertical"
-                                 :background "#fff" :border "1px solid #e1e4e8"
-                                 :border-radius "4px" :padding "8px" :color "#24292e"
+                                 :background "var(--color-bg)" :border "1px solid var(--color-border)"
+                                 :border-radius "4px" :padding "8px" :color "var(--color-fg)"
                                  :font-size "12px" :box-sizing "border-box"
                                  :font-family "inherit"}}]
              [:button {:style {:margin-top "6px" :padding "4px 12px"
-                               :background "#28a745" :color "white" :border "none"
+                               :background "var(--color-success-emphasis)" :color "var(--color-fg-on-emphasis)" :border "none"
                                :border-radius "4px" :cursor "pointer" :font-size "12px"
                                :opacity (if (str/blank? @note-text) "0.5" "1")}
                        :disabled (str/blank? @note-text)
@@ -501,7 +501,7 @@
 (defn boards-list []
   (let [boards @(rf/subscribe [:boards])]
     [:div
-     [:h2 {:style {:margin-bottom "16px" :color "#24292e"}} "Task Boards"]
+     [:h2 {:style {:margin-bottom "16px" :color "var(--color-fg)"}} "Task Boards"]
      (if (empty? boards)
        [:div.empty-state
         [:h3 "No boards yet"]
@@ -510,14 +510,14 @@
         (for [board boards]
           ^{:key (:id board)}
           [:div {:style {:padding "12px 16px" :margin-bottom "8px"
-                         :background "#f6f8fa" :border "1px solid #e1e4e8"
+                         :background "var(--color-bg-subtle)" :border "1px solid var(--color-border)"
                          :border-radius "6px" :cursor "pointer"}
                  :on-click #(rf/dispatch [:navigate-board (:repo-path board)])}
            [:div {:style {:display "flex" :justify-content "space-between" :align-items "center"}}
             [:div
-             [:span {:style {:font-weight "600" :font-size "14px" :color "#24292e"}}
+             [:span {:style {:font-weight "600" :font-size "14px" :color "var(--color-fg)"}}
               (extract-repo-name (:repo-path board))]
-             [:span {:style {:color "#6a737d" :font-size "12px" :margin-left "8px"}}
+             [:span {:style {:color "var(--color-fg-muted)" :font-size "12px" :margin-left "8px"}}
               (:repo-path board)]]
             [:div {:style {:display "flex" :gap "6px" :flex-wrap "wrap"}}
              (for [[status cnt] (sort-by (fn [[s _]] (.indexOf board-dnd/default-columns s))
@@ -526,8 +526,8 @@
                ^{:key status}
                [:span {:style {:font-size "11px" :padding "1px 6px"
                                :border-radius "10px"
-                               :background (get status-colors status "#e1e4e8")
-                               :color "white"}}
+                               :background (get status-colors status "var(--color-bg-neutral)")
+                               :color "var(--color-fg-on-emphasis)"}}
                 (str cnt " " (get status-labels status status))])]]])])]))
 
 ;; ============================================================================
@@ -548,14 +548,14 @@
               :placeholder "Search titles (fuzzy)\u2026"
               :on-change #(rf/dispatch [:set-board-search (.. % -target -value)])
               :style {:flex "0 1 260px" :padding "4px 8px" :font-size "12px"
-                      :border "1px solid #e1e4e8" :border-radius "4px"}}]
+                      :border "1px solid var(--color-border)" :border-radius "4px"}}]
      [:select {:value (if (some? min-priority) (str min-priority) "")
                :on-change (fn [e]
                             (let [v (.. e -target -value)]
                               (rf/dispatch [:set-board-min-priority
                                             (when-not (str/blank? v) (js/parseInt v 10))])))
                :style {:padding "4px" :font-size "12px"
-                       :border "1px solid #e1e4e8" :border-radius "4px"}}
+                       :border "1px solid var(--color-border)" :border-radius "4px"}}
       [:option {:value ""} "Any priority"]
       (for [p priorities]
         ^{:key p}
@@ -565,12 +565,12 @@
        [tag-chip tag (contains? tags tag)])
      (when (task-filter/active? filter-state)
        [:<>
-        [:span {:style {:font-size "12px" :color "#6a737d"}}
+        [:span {:style {:font-size "12px" :color "var(--color-fg-muted)"}}
          (str shown-count " of " (count all-tasks) " tasks")]
         [:button {:on-click #(rf/dispatch [:clear-board-filters])
                   :style {:font-size "12px" :padding "2px 8px" :cursor "pointer"
-                          :background "none" :border "1px solid #e1e4e8"
-                          :border-radius "4px" :color "#6a737d"}}
+                          :background "none" :border "1px solid var(--color-border)"
+                          :border-radius "4px" :color "var(--color-fg-muted)"}}
          "Clear filters"]])]))
 
 ;; ============================================================================
@@ -594,11 +594,11 @@
        (:done bucket 0) " done, " (:reverted bucket 0) " reverted"))
 
 (defn stat-tile [label value hint]
-  [:div {:style {:min-width "92px" :padding "6px 10px" :background "#fff"
-                 :border "1px solid #e1e4e8" :border-radius "6px"}}
-   [:div {:style {:font-size "11px" :color "#6a737d"}} label]
-   [:div {:style {:font-size "18px" :font-weight "600" :color "#24292e"}} value]
-   [:div {:style {:font-size "10px" :color "#959da5"}} hint]])
+  [:div {:style {:min-width "92px" :padding "6px 10px" :background "var(--color-bg)"
+                 :border "1px solid var(--color-border)" :border-radius "6px"}}
+   [:div {:style {:font-size "11px" :color "var(--color-fg-muted)"}} label]
+   [:div {:style {:font-size "18px" :font-weight "600" :color "var(--color-fg)"}} value]
+   [:div {:style {:font-size "10px" :color "var(--color-fg-subtle)"}} hint]])
 
 (defn throughput-chart
   "Grouped columns of done vs reverted per bucket. Hovering or focusing a
@@ -614,9 +614,9 @@
             width (+ axis-w (* slot-width n))
             y0 (+ top plot-height)
             slot-x (fn [i] (+ axis-w (* i slot-width)))
-            axis-text {:font-size 10 :fill "#6a737d"}]
+            axis-text {:font-size 10 :style {:fill "var(--color-fg-muted)"}}]
         [:div
-         [:div {:style {:display "flex" :gap "12px" :font-size "11px" :color "#24292e"
+         [:div {:style {:display "flex" :gap "12px" :font-size "11px" :color "var(--color-fg)"
                         :margin-bottom "4px"}}
           (for [{:keys [key label color]} board-stats/series]
             ^{:key key}
@@ -627,12 +627,12 @@
                 :aria-label (str "Done and reverted transitions per " bucket-minutes
                                  " minutes over the last " n " buckets")
                 :style {:display "block"}}
-          [:line {:x1 axis-w :x2 width :y1 top :y2 top :stroke "#eaecef" :stroke-width 1}]
-          [:line {:x1 axis-w :x2 width :y1 y0 :y2 y0 :stroke "#d1d5da" :stroke-width 1}]
+          [:line {:x1 axis-w :x2 width :y1 top :y2 top :style {:stroke "var(--color-chart-grid)"} :stroke-width 1}]
+          [:line {:x1 axis-w :x2 width :y1 y0 :y2 y0 :style {:stroke "var(--color-border-control)"} :stroke-width 1}]
           [:text (merge axis-text {:x (- axis-w 4) :y (+ top 4) :text-anchor "end"}) y-max]
           [:text (merge axis-text {:x (- axis-w 4) :y y0 :text-anchor "end"}) 0]
           (when-let [i @hovered]
-            [:rect {:x (slot-x i) :y top :width slot-width :height plot-height :fill "#f1f8ff"}])
+            [:rect {:x (slot-x i) :y top :width slot-width :height plot-height :style {:fill "var(--color-accent-muted)"}}])
           (for [{:keys [bucket key x w h color]} bars]
             ^{:key (str bucket "-" (name key))}
             [:path {:d (board-stats/bar-path (+ axis-w x) y0 w h) :fill color}])
@@ -650,16 +650,16 @@
                     :on-focus #(reset! hovered i)
                     :on-blur #(reset! hovered nil)}
              [:title (bucket-summary bucket bucket-minutes)]])]
-         [:div {:style {:font-size "11px" :color "#6a737d" :min-height "15px"}}
+         [:div {:style {:font-size "11px" :color "var(--color-fg-muted)" :min-height "15px"}}
           (when-let [bucket (some->> @hovered (get buckets))]
             (bucket-summary bucket bucket-minutes))]]))))
 
 (defn stats-table [buckets bucket-minutes]
   (let [cell {:padding "1px 8px" :text-align "right"
               :font-variant-numeric "tabular-nums"}]
-    [:details {:style {:font-size "11px" :color "#6a737d"}}
+    [:details {:style {:font-size "11px" :color "var(--color-fg-muted)"}}
      [:summary {:style {:cursor "pointer"}} "Table view"]
-     [:table {:style {:border-collapse "collapse" :color "#24292e" :margin-top "4px"}}
+     [:table {:style {:border-collapse "collapse" :color "var(--color-fg)" :margin-top "4px"}}
       [:thead
        [:tr
         [:th {:style (assoc cell :text-align "left")} "Time"]
@@ -681,20 +681,20 @@
         {:keys [hours bucket-minutes buckets rates-per-hour]} stats
         window (str "last " hours "h")]
     (when stats
-      [:div {:style {:margin-bottom "16px" :padding "8px 12px" :background "#f6f8fa"
-                     :border "1px solid #e1e4e8" :border-radius "6px"}}
+      [:div {:style {:margin-bottom "16px" :padding "8px 12px" :background "var(--color-bg-subtle)"
+                     :border "1px solid var(--color-border)" :border-radius "6px"}}
        [:button {:aria-expanded (not collapsed?)
                  :on-click #(rf/dispatch [:toggle-board-stats-collapsed])
                  :style {:background "none" :border "none" :padding "0" :cursor "pointer"
-                         :font-size "12px" :font-weight "600" :color "#24292e"}}
+                         :font-size "12px" :font-weight "600" :color "var(--color-fg)"}}
         (str (if collapsed? "▸" "▾") " Throughput · " window)
         (when collapsed?
-          [:span {:style {:font-weight "400" :color "#6a737d" :margin-left "8px"}}
+          [:span {:style {:font-weight "400" :color "var(--color-fg-muted)" :margin-left "8px"}}
            (str (board-stats/format-rate (:done rates-per-hour)) " done/h · "
                 (board-stats/format-rate (:reverted rates-per-hour)) " reverted/h")])]
        (when-not collapsed?
          (if-not (board-stats/active? stats)
-           [:p {:style {:margin "8px 0 0" :font-size "12px" :color "#6a737d"}}
+           [:p {:style {:margin "8px 0 0" :font-size "12px" :color "var(--color-fg-muted)"}}
             "No activity recorded yet. Status changes are logged from this version onward; earlier history isn't counted."]
            [:div {:style {:display "flex" :gap "16px" :flex-wrap "wrap" :align-items "flex-start"
                           :margin-top "8px"}}
@@ -729,14 +729,14 @@
      [:div {:style {:display "flex" :justify-content "space-between"
                     :align-items "center" :margin-bottom "16px"}}
       [:div
-       [:h2 {:style {:margin "0" :color "#24292e"}}
+       [:h2 {:style {:margin "0" :color "var(--color-fg)"}}
         (extract-repo-name repo-path)]
-       [:span {:style {:color "#6a737d" :font-size "12px"}} repo-path]
+       [:span {:style {:color "var(--color-fg-muted)" :font-size "12px"}} repo-path]
        (when (pos? stale-count)
          [:span {:title "Claimed tasks whose worker has gone quiet past the claim lease"
-                 :style {:margin-left "8px" :font-size "12px" :color "#9a6700"}}
+                 :style {:margin-left "8px" :font-size "12px" :color "var(--color-attention-fg)"}}
           (str "⚠ " stale-count " stale")])]
-      [:label {:style {:font-size "12px" :color "#6a737d" :cursor "pointer"
+      [:label {:style {:font-size "12px" :color "var(--color-fg-muted)" :cursor "pointer"
                        :display "flex" :align-items "center" :gap "4px"}}
        [:input {:type "checkbox"
                 :checked (boolean show-done)

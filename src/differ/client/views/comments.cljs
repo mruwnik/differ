@@ -24,7 +24,7 @@
   (let [form @(rf/subscribe [:comment-form])
         text (:text form)]
     [:div.comment-form
-     [:div {:style {:margin-bottom "8px" :font-size "13px" :color "#6a737d"}}
+     [:div {:style {:margin-bottom "8px" :font-size "13px" :color "var(--color-fg-muted)"}}
       (if parent-id
         "Reply to comment"
         (str "Comment on line " line))]

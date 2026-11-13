@@ -125,7 +125,7 @@
   [:div.tree-file.untracked
    {:on-click #(rf/dispatch [:add-manual-file (:path node)])
     :title (str "Add " (:path node) " to review")
-    :style {:color "#6a737d"}}
+    :style {:color "var(--color-fg-muted)"}}
    [:span.tree-indent {:style {:width (str (* depth 12) "px")}}]
    [:span.tree-file-icon "📄"]
    [:span.tree-file-name {:style {:font-style "italic"}} (:name node)]])
@@ -140,7 +140,7 @@
     [:div.tree-folder
      [:div.tree-folder-header
       {:on-click #(rf/dispatch [:toggle-folder-expanded (str "untracked-" (:name node))])
-       :style {:color "#6a737d"}}
+       :style {:color "var(--color-fg-muted)"}}
       [:span.tree-indent {:style {:width (str (* depth 12) "px")}}]
       [:span.tree-chevron (if expanded? "▼" "▶")]
       [:span.tree-folder-icon "📁"]
@@ -174,7 +174,7 @@
   [:div.tree-file.excluded
    {:on-click #(rf/dispatch [:restore-file file-path])
     :title (str "Restore " file-path " to review")
-    :style {:color "#cf222e" :text-decoration "line-through" :opacity 0.7}}
+    :style {:color "var(--color-danger-fg)" :text-decoration "line-through" :opacity 0.7}}
    [:span.tree-file-icon "📄"]
    [:span.tree-file-name (last (str/split file-path #"/"))]])
 
@@ -187,23 +187,23 @@
       (let [replies (or (:replies cmt) [])]
         [:div.resolved-comment-item
          {:style {:padding "8px 12px"
-                  :border-bottom "1px solid #e1e4e8"
+                  :border-bottom "1px solid var(--color-border)"
                   :font-size "12px"}}
          ;; Comment header and text
-         [:div {:style {:color "#6a737d" :font-size "11px" :margin-bottom "4px"}}
+         [:div {:style {:color "var(--color-fg-muted)" :font-size "11px" :margin-bottom "4px"}}
           (-> (:file cmt) (str/split #"/") last)
           (when (:line cmt) (str ":" (:line cmt)))]
          [:div {:style {:margin-bottom "4px"}} (:text cmt)]
-         [:div {:style {:color "#6a737d" :font-size "11px"}}
+         [:div {:style {:color "var(--color-fg-muted)" :font-size "11px"}}
           "— " (:author cmt)]
          ;; Show replies if any
          (when (seq replies)
-           [:div {:style {:margin-top "8px" :padding-left "12px" :border-left "2px solid #e1e4e8"}}
+           [:div {:style {:margin-top "8px" :padding-left "12px" :border-left "2px solid var(--color-border)"}}
             (for [reply replies]
               ^{:key (:id reply)}
               [:div {:style {:margin-bottom "6px"}}
                [:div {:style {:font-size "12px"}} (:text reply)]
-               [:div {:style {:color "#6a737d" :font-size "11px"}}
+               [:div {:style {:color "var(--color-fg-muted)" :font-size "11px"}}
                 "— " (:author reply)]])])
          ;; Inline reply form
          [:div {:style {:margin-top "8px" :display "flex" :gap "6px"}}
@@ -219,7 +219,7 @@
                    :style {:flex 1
                            :padding "4px 8px"
                            :font-size "11px"
-                           :border "1px solid #d0d7de"
+                           :border "1px solid var(--color-border-strong)"
                            :border-radius "4px"}}]
           [:button {:on-click (fn []
                                 (when (seq @reply-text)
@@ -229,9 +229,9 @@
                     :disabled (empty? @reply-text)
                     :style {:padding "4px 8px"
                             :font-size "11px"
-                            :background (if (empty? @reply-text) "#f6f8fa" "#2ea44f")
-                            :color (if (empty? @reply-text) "#6a737d" "white")
-                            :border "1px solid #d0d7de"
+                            :background (if (empty? @reply-text) "var(--color-bg-subtle)" "var(--color-success-emphasis-alt)")
+                            :color (if (empty? @reply-text) "var(--color-fg-muted)" "var(--color-fg-on-emphasis)")
+                            :border "1px solid var(--color-border-strong)"
                             :border-radius "4px"
                             :cursor (if (empty? @reply-text) "default" "pointer")}}
            "Reply"]]]))))
@@ -249,10 +249,10 @@
             "Resolved"
             [:span {:style {:font-weight "normal"
                             :font-size "12px"
-                            :color "#6a737d"}}
+                            :color "var(--color-fg-muted)"}}
              (str "(" (count resolved) ")")]]
            (when @expanded?
-             [:div {:style {:background "#f6f8fa"
+             [:div {:style {:background "var(--color-bg-subtle)"
                             :border-radius "6px"
                             :max-height "400px"
                             :overflow-y "auto"}}
@@ -295,16 +295,16 @@
       [:div.review-summary-item
        {:style {:padding "12px"
                 :margin "2px 2px 8px 2px"
-                :background "white"
+                :background "var(--color-bg)"
                 :border-radius "6px"
-                :border "1px solid #d0d7de"}}
+                :border "1px solid var(--color-border-strong)"}}
        [:div {:style {:display "flex"
                       :justify-content "space-between"
                       :align-items "center"
                       :margin-bottom "8px"}}
         [:span {:style {:font-weight "600" :font-size "13px"}} author]
         [:div {:style {:display "flex" :align-items "center" :gap "8px"}}
-         [:span {:style {:color "#6a737d" :font-size "11px"}}
+         [:span {:style {:color "var(--color-fg-muted)" :font-size "11px"}}
           (format-summary-time created-at)]
          (if @confirming?
            [:div {:style {:display "flex" :gap "4px"}}
@@ -321,7 +321,7 @@
             {:style {:background "none"
                      :border "none"
                      :cursor "pointer"
-                     :color "#6a737d"
+                     :color "var(--color-fg-muted)"
                      :font-size "12px"
                      :padding "2px 4px"}
              :title "Delete review summary"
@@ -329,7 +329,7 @@
             "×"])]]
        [:div.markdown-content
         {:style {:font-size "13px"
-                 :color "#24292e"
+                 :color "var(--color-fg)"
                  :overflow-x "auto"}
          :dangerouslySetInnerHTML {:__html (safe-render-markdown text)}}]])))
 
@@ -346,7 +346,7 @@
             "Review Summary"
             [:span {:style {:font-weight "normal"
                             :font-size "12px"
-                            :color "#6a737d"}}
+                            :color "var(--color-fg-muted)"}}
              (str "(" (count summaries) ")")]]
            (when @expanded?
              [:div {:style {:width "100%"}}
@@ -373,13 +373,13 @@
     [:div.file-list
      [:h3 "Files in Review"]
      (if (empty? relevant-files)
-       [:p {:style {:color "#6a737d" :font-size "13px"}}
+       [:p {:style {:color "var(--color-fg-muted)" :font-size "13px"}}
         "No files in review"]
        [file-tree relevant-files selected changed-files expanded-folders])
      (when (seq relevant-excluded)
        [:<>
         [:h3 {:style {:margin-top "16px"}} "Excluded"]
-        [:p {:style {:color "#6a737d" :font-size "11px" :margin "0 0 8px 0"}}
+        [:p {:style {:color "var(--color-fg-muted)" :font-size "11px" :margin "0 0 8px 0"}}
          "Click to restore"]
         [:div.file-tree
          (for [file (sort relevant-excluded)]
@@ -388,7 +388,7 @@
      (when (seq available-untracked)
        [:<>
         [:h3 {:style {:margin-top "16px"}} "Untracked Files"]
-        [:p {:style {:color "#6a737d" :font-size "11px" :margin "0 0 8px 0"}}
+        [:p {:style {:color "var(--color-fg-muted)" :font-size "11px" :margin "0 0 8px 0"}}
          "Click to add to review"]
         [untracked-file-tree available-untracked expanded-folders]])
      ;; Review summaries section (shown first, above resolved)
@@ -642,7 +642,7 @@
              :title "Expand upward"}
             [:span.diff-expand-icon "↑"]
             [:span.diff-expand-text " Expand up"]]
-           [:span {:style {:color "#6a737d"}} (str lines-hidden " hidden")]
+           [:span {:style {:color "var(--color-fg-muted)"}} (str lines-hidden " hidden")]
            [:button.diff-expand-btn
             {:on-click #(rf/dispatch [:expand-context {:file file
                                                        :from from-line
@@ -796,7 +796,7 @@
        (if collapsed? "▶" "▼")]
       [:span.diff-file-path file-path]
       (when (pos? file-size)
-        [:span.diff-file-size {:style {:margin-left "8px" :color "#6a737d" :font-weight "normal"}}
+        [:span.diff-file-size {:style {:margin-left "8px" :color "var(--color-fg-muted)" :font-weight "normal"}}
          (format-file-size file-size)])
       [:button.btn-stage
        {:on-click (fn [e]
@@ -808,8 +808,8 @@
         :style {:margin-left "auto"
                 :padding "2px 8px"
                 :font-size "11px"
-                :background (if is-fully-staged "#e1e4e8" "#2ea44f")
-                :color (if is-fully-staged "#6a737d" "white")
+                :background (if is-fully-staged "var(--color-bg-neutral)" "var(--color-success-emphasis-alt)")
+                :color (if is-fully-staged "var(--color-fg-muted)" "var(--color-fg-on-emphasis)")
                 :border "none"
                 :border-radius "4px"
                 :cursor (if is-fully-staged "default" "pointer")
@@ -821,14 +821,14 @@
           ;; File is loading
           is-loading
           [:div.diff-loading-file
-           {:style {:padding "24px" :text-align "center" :color "#6a737d"}}
+           {:style {:padding "24px" :text-align "center" :color "var(--color-fg-muted)"}}
            "Loading file content..."]
 
           ;; Large file that hasn't been loaded yet and has no diff
           (and is-large-file (not file-diff) (not is-loaded))
           [:div.diff-large-file
            {:style {:padding "24px" :text-align "center"}}
-           [:p {:style {:color "#6a737d" :margin-bottom "12px"}}
+           [:p {:style {:color "var(--color-fg-muted)" :margin-bottom "12px"}}
             (str "Large file (" (format-file-size file-size) ")")]
            [:button.btn.btn-secondary
             {:on-click #(rf/dispatch [:load-file-content file-path])}
@@ -837,7 +837,7 @@
           ;; File has many lines and needs explicit expansion
           (and show-content file-diff (seq hunks) needs-expansion)
           [:div.diff-expand-content
-           {:style {:padding "12px 16px" :background "#f6f8fa" :border-top "1px solid #e1e4e8"}}
+           {:style {:padding "12px 16px" :background "var(--color-bg-subtle)" :border-top "1px solid var(--color-border)"}}
            [:button.btn.btn-secondary
             {:on-click #(rf/dispatch [:expand-file-content file-path])
              :style {:width "100%"}}
@@ -940,13 +940,13 @@
         (when visible?
           [:div {:style {:position "fixed"
                          :top 0 :left 0 :right 0 :bottom 0
-                         :background "rgba(0,0,0,0.5)"
+                         :background "var(--color-backdrop)"
                          :display "flex"
                          :align-items "center"
                          :justify-content "center"
                          :z-index 1000}
                  :on-click #(rf/dispatch [:hide-session-settings])}
-           [:div {:style {:background "white"
+           [:div {:style {:background "var(--color-bg-overlay)"
                           :border-radius "8px"
                           :padding "24px"
                           :min-width "400px"
@@ -963,7 +963,7 @@
                       :placeholder "e.g., my-project"
                       :style {:width "100%"
                               :padding "8px 12px"
-                              :border "1px solid #d0d7de"
+                              :border "1px solid var(--color-border-strong)"
                               :border-radius "6px"
                               :font-size "14px"}}]]
             ;; Repo path
@@ -976,10 +976,10 @@
                       :placeholder "e.g., /path/to/repo"
                       :style {:width "100%"
                               :padding "8px 12px"
-                              :border "1px solid #d0d7de"
+                              :border "1px solid var(--color-border-strong)"
                               :border-radius "6px"
                               :font-size "14px"}}]
-             [:p {:style {:margin "4px 0 0 0" :font-size "12px" :color "#6a737d"}}
+             [:p {:style {:margin "4px 0 0 0" :font-size "12px" :color "var(--color-fg-muted)"}}
               "Absolute path to the project directory"]]
             ;; Source branch with autocomplete
             [:div {:style {:margin-bottom "16px" :position "relative"}}
@@ -995,7 +995,7 @@
                       :placeholder "Leave empty to use working tree"
                       :style {:width "100%"
                               :padding "8px 12px"
-                              :border "1px solid #d0d7de"
+                              :border "1px solid var(--color-border-strong)"
                               :border-radius "6px"
                               :font-size "14px"}}]
              ;; Branch suggestions dropdown
@@ -1006,10 +1006,10 @@
                               :right 0
                               :max-height "200px"
                               :overflow-y "auto"
-                              :background "white"
-                              :border "1px solid #d0d7de"
+                              :background "var(--color-bg-overlay)"
+                              :border "1px solid var(--color-border-strong)"
                               :border-radius "6px"
-                              :box-shadow "0 4px 12px rgba(0,0,0,0.15)"
+                              :box-shadow "0 4px 12px var(--color-shadow)"
                               :z-index 10
                               :margin-top "4px"}}
                 (for [b filtered-source-branches]
@@ -1022,11 +1022,11 @@
                          :style {:padding "8px 12px"
                                  :cursor "pointer"
                                  :font-size "14px"
-                                 :border-bottom "1px solid #f0f0f0"}
-                         :on-mouse-over #(set! (.. % -target -style -background) "#f6f8fa")
-                         :on-mouse-out #(set! (.. % -target -style -background) "white")}
+                                 :border-bottom "1px solid var(--color-border-muted)"}
+                         :on-mouse-over #(set! (.. % -target -style -background) "var(--color-menu-hover)")
+                         :on-mouse-out #(set! (.. % -target -style -background) "var(--color-bg-overlay)")}
                    b])])
-             [:p {:style {:margin "4px 0 0 0" :font-size "12px" :color "#6a737d"}}
+             [:p {:style {:margin "4px 0 0 0" :font-size "12px" :color "var(--color-fg-muted)"}}
               "The branch containing changes to review (empty = working tree)"]]
             ;; Target branch with autocomplete
             [:div {:style {:margin-bottom "16px" :position "relative"}}
@@ -1042,7 +1042,7 @@
                       :placeholder "e.g., main, master, develop"
                       :style {:width "100%"
                               :padding "8px 12px"
-                              :border "1px solid #d0d7de"
+                              :border "1px solid var(--color-border-strong)"
                               :border-radius "6px"
                               :font-size "14px"}}]
              ;; Branch suggestions dropdown
@@ -1053,10 +1053,10 @@
                               :right 0
                               :max-height "200px"
                               :overflow-y "auto"
-                              :background "white"
-                              :border "1px solid #d0d7de"
+                              :background "var(--color-bg-overlay)"
+                              :border "1px solid var(--color-border-strong)"
                               :border-radius "6px"
-                              :box-shadow "0 4px 12px rgba(0,0,0,0.15)"
+                              :box-shadow "0 4px 12px var(--color-shadow)"
                               :z-index 10
                               :margin-top "4px"}}
                 (for [b filtered-target-branches]
@@ -1069,11 +1069,11 @@
                          :style {:padding "8px 12px"
                                  :cursor "pointer"
                                  :font-size "14px"
-                                 :border-bottom "1px solid #f0f0f0"}
-                         :on-mouse-over #(set! (.. % -target -style -background) "#f6f8fa")
-                         :on-mouse-out #(set! (.. % -target -style -background) "white")}
+                                 :border-bottom "1px solid var(--color-border-muted)"}
+                         :on-mouse-over #(set! (.. % -target -style -background) "var(--color-menu-hover)")
+                         :on-mouse-out #(set! (.. % -target -style -background) "var(--color-bg-overlay)")}
                    b])])
-             [:p {:style {:margin "4px 0 0 0" :font-size "12px" :color "#6a737d"}}
+             [:p {:style {:margin "4px 0 0 0" :font-size "12px" :color "var(--color-fg-muted)"}}
               "The branch to compare against"]]
             [:div {:style {:display "flex" :gap "8px" :justify-content "flex-end"}}
              [:button.btn.btn-secondary
@@ -1209,20 +1209,20 @@
                       :top "100%"
                       :right 0
                       :margin-top "8px"
-                      :background "white"
-                      :border "1px solid #e1e4e8"
+                      :background "var(--color-bg-overlay)"
+                      :border "1px solid var(--color-border)"
                       :border-radius "6px"
-                      :box-shadow "0 8px 24px rgba(149,157,165,0.2)"
+                      :box-shadow "0 8px 24px var(--color-shadow-menu)"
                       :min-width "300px"
                       :max-width "400px"
                       :max-height "400px"
                       :overflow-y "auto"
                       :z-index 1000}}
              [:div {:style {:padding "8px 12px"
-                            :border-bottom "1px solid #e1e4e8"
+                            :border-bottom "1px solid var(--color-border)"
                             :font-weight "600"
                             :font-size "12px"
-                            :color "#6a737d"
+                            :color "var(--color-fg-muted)"
                             :display "flex"
                             :justify-content "space-between"
                             :align-items "center"}}
@@ -1230,8 +1230,8 @@
               (when (> count 1)
                 [:button {:style {:font-size "11px"
                                   :padding "2px 8px"
-                                  :background "#f6f8fa"
-                                  :border "1px solid #e1e4e8"
+                                  :background "var(--color-bg-subtle)"
+                                  :border "1px solid var(--color-border)"
                                   :border-radius "4px"
                                   :cursor "pointer"}
                           :on-click (fn [e]
@@ -1243,7 +1243,7 @@
                ^{:key (:id cmt)}
                [:div.unresolved-item
                 {:style {:padding "8px 12px"
-                         :border-bottom "1px solid #f0f0f0"
+                         :border-bottom "1px solid var(--color-border-muted)"
                          :display "flex"
                          :gap "8px"
                          :align-items "flex-start"}}
@@ -1252,7 +1252,7 @@
                                    (.stopPropagation e)
                                    (reset! show? false)
                                    (scroll-to-comment! cmt))}
-                 [:div {:style {:font-size "11px" :color "#6a737d" :margin-bottom "4px"}}
+                 [:div {:style {:font-size "11px" :color "var(--color-fg-muted)" :margin-bottom "4px"}}
                   (-> (:file cmt)
                       (str/split #"/")
                       last)
@@ -1260,12 +1260,12 @@
                     (str ":" (:line cmt)))]
                  [:div {:style {:font-size "13px"}}
                   (truncate (:text cmt) 80)]
-                 [:div {:style {:font-size "11px" :color "#6a737d" :margin-top "2px"}}
+                 [:div {:style {:font-size "11px" :color "var(--color-fg-muted)" :margin-top "2px"}}
                   (:author cmt)]]
                 [:button {:style {:font-size "11px"
                                   :padding "4px 8px"
-                                  :background "#28a745"
-                                  :color "white"
+                                  :background "var(--color-success-emphasis)"
+                                  :color "var(--color-fg-on-emphasis)"
                                   :border "none"
                                   :border-radius "4px"
                                   :cursor "pointer"
@@ -1282,7 +1282,7 @@
     (when session
       [:div {:style {:margin-bottom "16px"
                      :padding "12px 16px"
-                     :background "#f6f8fa"
+                     :background "var(--color-bg-subtle)"
                      :border-radius "6px"
                      :display "flex"
                      :justify-content "space-between"
@@ -1290,19 +1290,19 @@
        [:div {:style {:display "flex" :align-items "center" :gap "8px"}}
         [:div
          [:strong (:project session)]
-         [:span {:style {:margin "0 8px" :color "#6a737d"}} "/"]
+         [:span {:style {:margin "0 8px" :color "var(--color-fg-muted)"}} "/"]
          (if (str/blank? (:branch session))
-           [:em {:style {:color "#6a737d"}} "working tree"]
+           [:em {:style {:color "var(--color-fg-muted)"}} "working tree"]
            [:span (:branch session)])
-         [:span {:style {:margin "0 8px" :color "#6a737d"}} "→"]
-         [:span {:style {:color "#6a737d"}} (:target-branch session)]]
+         [:span {:style {:margin "0 8px" :color "var(--color-fg-muted)"}} "→"]
+         [:span {:style {:color "var(--color-fg-muted)"}} (:target-branch session)]]
         [:button {:on-click #(rf/dispatch [:show-session-settings])
                   :title "Session settings"
                   :style {:background "none"
                           :border "none"
                           :cursor "pointer"
                           :padding "4px"
-                          :color "#6a737d"
+                          :color "var(--color-fg-muted)"
                           :font-size "14px"}}
          "⚙️"]]
        [:div {:style {:display "flex" :gap "8px" :align-items "center"}}
