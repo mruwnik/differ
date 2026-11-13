@@ -923,9 +923,13 @@
       :else (error-response res 404 "Task not found"))))
 
 (defn create-board-task-handler
-  "POST /api/boards/:id/tasks"
+  "POST /api/boards/:id/tasks. :id is the URL-encoded repo path, or the id of
+   an existing board."
   [^js req res]
-  (let [repo-path (js/decodeURIComponent (.. req -params -id))
+  (let [key (js/decodeURIComponent (.. req -params -id))
+        repo-path (or (when-not (boards/get-board-by-repo key)
+                        (:repo-path (boards/get-board key)))
+                      key)
         {:keys [title description blocked-by priority tags assignee checklist add-commits parent-id]} (get-body req)]
     (if (str/blank? title)
       (error-response res 400 "title is required")
@@ -937,7 +941,8 @@
           (sse/broadcast-all! :task-created {:task task :repo-path repo-path})
           (json-response res {:task task}))
         (catch :default e
-          (error-response res 400 (or (ex-message e) (.-message e))))))))
+          (error-response res (if (:not-found (ex-data e)) 404 400)
+                          (or (ex-message e) (.-message e))))))))
 
 (defn update-task-api-handler
   "PATCH /api/tasks/:id"
