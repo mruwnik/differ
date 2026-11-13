@@ -32,7 +32,7 @@
 
 (defn- theme-toggle []
   (let [current @(rf/subscribe [:theme])]
-    [:div.diff-view-toggle.theme-toggle {:role "group" :aria-label "Color theme"}
+    [:div.diff-view-toggle {:role "group" :aria-label "Color theme"}
      (for [[value label] theme/choices]
        ^{:key value}
        [:button.btn-toggle
