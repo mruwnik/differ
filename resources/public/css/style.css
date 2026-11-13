@@ -1,5 +1,8 @@
-/* Theme colors */
+/* Theme colors. Dark values apply when the root element has
+   data-theme="dark". */
 :root {
+  color-scheme: light;
+
   /* Text */
   --color-fg: #24292e;
   --color-fg-muted: #6a737d;
@@ -101,10 +104,111 @@
   --color-status-rejected: #959da5;
 }
 
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --color-fg: #e6edf3;
+  --color-fg-muted: #8d96a0;
+  --color-fg-secondary: #8d96a0;
+  --color-fg-subtle: #848d97;
+  --color-fg-on-emphasis: #fff;
+  --color-fg-on-attention: #0d1117;
+  --color-line-num: #9198a1;
+  --color-hunk-fg: #9198a1;
+
+  --color-bg: #0d1117;
+  --color-bg-subtle: #161b22;
+  --color-bg-muted: #161b22;
+  --color-bg-hover: #21262d;
+  --color-bg-neutral: #30363d;
+  --color-bg-overlay: #161b22;
+  --color-menu-hover: #21262d;
+  --color-backdrop: rgba(1, 4, 9, 0.7);
+  --color-shadow: rgba(1, 4, 9, 0.8);
+  --color-shadow-soft: rgba(1, 4, 9, 0.6);
+  --color-shadow-menu: rgba(1, 4, 9, 0.8);
+
+  --color-border: #30363d;
+  --color-border-strong: #3d444d;
+  --color-border-control: #3d444d;
+  --color-border-muted: #21262d;
+  --color-chart-grid: #21262d;
+
+  --color-btn-bg: #21262d;
+  --color-btn-hover-bg: #30363d;
+
+  --color-accent-fg: #58a6ff;
+  --color-accent-fg-alt: #58a6ff;
+  --color-accent-emphasis: #1f6feb;
+  --color-accent-emphasis-alt: #1f6feb;
+  --color-accent-emphasis-hover: #388bfd;
+  --color-accent-subtle: #162945;
+  --color-accent-muted: #111d2e;
+  --color-accent-border: #1e4273;
+  --color-focus-ring: rgba(56, 139, 253, 0.4);
+
+  --color-success-fg: #3fb950;
+  --color-success-fg-alt: #3fb950;
+  --color-success-text: #3fb950;
+  --color-success-emphasis: #238636;
+  --color-success-emphasis-alt: #238636;
+  --color-success-emphasis-hover: #2ea043;
+  --color-success-subtle: #12261e;
+  --color-success-subtle-alt: #12261e;
+  --color-success-badge-bg: #12261e;
+
+  --color-danger-fg: #f85149;
+  --color-danger-fg-alt: #f85149;
+  --color-danger-text: #f85149;
+  --color-danger-emphasis: #da3633;
+  --color-danger-emphasis-hover: #b62324;
+  --color-danger-subtle: #25171c;
+  --color-danger-subtle-alt: #25171c;
+  --color-danger-border: #da3633;
+
+  --color-attention-fg: #d29922;
+  --color-attention-fg-alt: #d29922;
+  --color-attention-emphasis: #d29922;
+  --color-attention-subtle: #272215;
+  --color-attention-strong: #3b2e10;
+  --color-attention-border: #9e6a03;
+  --color-attention-badge-bg: #272215;
+  --color-attention-badge-fg: #d29922;
+  --color-warning-fg: #f0883e;
+  --color-warning-subtle: #2c1f1a;
+  --color-assignee-fg: #a371f7;
+
+  --color-diff-add-bg: #12261e;
+  --color-diff-add-num-bg: #173322;
+  --color-diff-add-border: #1f4a2c;
+  --color-diff-del-bg: #25171c;
+  --color-diff-del-num-bg: #3c1e21;
+  --color-diff-del-border: #5a2428;
+
+  --color-status-pending: #656d76;
+  --color-status-needs-owner: #ae3077;
+  --color-status-planning: #8250df;
+  --color-status-plan-review: #9e6a03;
+  --color-status-ready: #0f7680;
+  --color-status-in-progress: #1f6feb;
+  --color-status-blocked: #da3633;
+  --color-status-testing: #1b7c83;
+  --color-status-in-review: #bd561d;
+  --color-status-done: #238636;
+  --color-status-rejected: #6e7681;
+}
 
 /* Base styles */
 * {
   box-sizing: border-box;
+}
+
+/* Light mode keeps the native form control colors */
+:root[data-theme="dark"] input,
+:root[data-theme="dark"] select,
+:root[data-theme="dark"] textarea {
+  background-color: var(--color-bg);
+  color: var(--color-fg);
 }
 
 body {
@@ -988,6 +1092,94 @@ a:hover {
 .diff-line-content.deletion .hljs-string,
 .diff-line-content.deletion .hljs-number {
   color: #6a1b1b;
+}
+
+/* Dark syntax colors (highlight.js "GitHub Dark"; section lightened for
+   contrast). These outrank the light rules above and the CDN stylesheet. */
+:root[data-theme="dark"] .hljs-doctag,
+:root[data-theme="dark"] .hljs-keyword,
+:root[data-theme="dark"] .hljs-meta .hljs-keyword,
+:root[data-theme="dark"] .hljs-template-tag,
+:root[data-theme="dark"] .hljs-template-variable,
+:root[data-theme="dark"] .hljs-type,
+:root[data-theme="dark"] .hljs-variable.language_ {
+  color: #ff7b72;
+}
+
+:root[data-theme="dark"] .hljs-title,
+:root[data-theme="dark"] .hljs-title.class_,
+:root[data-theme="dark"] .hljs-title.class_.inherited__,
+:root[data-theme="dark"] .hljs-title.function_ {
+  color: #d2a8ff;
+}
+
+:root[data-theme="dark"] .hljs-attr,
+:root[data-theme="dark"] .hljs-attribute,
+:root[data-theme="dark"] .hljs-literal,
+:root[data-theme="dark"] .hljs-meta,
+:root[data-theme="dark"] .hljs-number,
+:root[data-theme="dark"] .hljs-operator,
+:root[data-theme="dark"] .hljs-variable,
+:root[data-theme="dark"] .hljs-selector-attr,
+:root[data-theme="dark"] .hljs-selector-class,
+:root[data-theme="dark"] .hljs-selector-id {
+  color: #79c0ff;
+}
+
+:root[data-theme="dark"] .hljs-regexp,
+:root[data-theme="dark"] .hljs-string,
+:root[data-theme="dark"] .hljs-meta .hljs-string {
+  color: #a5d6ff;
+}
+
+:root[data-theme="dark"] .hljs-built_in,
+:root[data-theme="dark"] .hljs-symbol {
+  color: #ffa657;
+}
+
+:root[data-theme="dark"] .hljs-comment,
+:root[data-theme="dark"] .hljs-code,
+:root[data-theme="dark"] .hljs-formula {
+  color: #8b949e;
+}
+
+:root[data-theme="dark"] .hljs-name,
+:root[data-theme="dark"] .hljs-quote,
+:root[data-theme="dark"] .hljs-selector-tag,
+:root[data-theme="dark"] .hljs-selector-pseudo {
+  color: #7ee787;
+}
+
+:root[data-theme="dark"] .hljs-subst,
+:root[data-theme="dark"] .hljs-emphasis,
+:root[data-theme="dark"] .hljs-strong {
+  color: #e6edf3;
+}
+
+:root[data-theme="dark"] .hljs-section {
+  color: #4493f8;
+}
+
+:root[data-theme="dark"] .hljs-bullet {
+  color: #f2cc60;
+}
+
+:root[data-theme="dark"] .hljs-link {
+  color: #a5d6ff;
+}
+
+:root[data-theme="dark"] .hljs-addition {
+  color: #aff5b4;
+  background: #033a16;
+}
+
+:root[data-theme="dark"] .hljs-deletion {
+  color: #ffdcd7;
+  background: #67060c;
+}
+
+:root[data-theme="dark"] .hljs-formula {
+  background: transparent;
 }
 
 /* GitHub settings */
