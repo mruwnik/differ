@@ -92,6 +92,15 @@
   [project branch]
   (str "local:" (util/session-id project branch)))
 
+(defn- session-key-branch
+  "Branch part of a local session key. Every detached checkout reports
+   \"HEAD\", so those are keyed by their path; ':' cannot occur in a branch
+   name, so this never matches a real branch."
+  [branch repo-path]
+  (if (= branch "HEAD")
+    (str "HEAD:" repo-path)
+    branch))
+
 ;; ============================================================================
 ;; Backend Factory
 ;; ============================================================================
@@ -247,7 +256,7 @@
              project (or project (git/get-project-id resolved-path))
              branch (or branch (git/get-current-branch resolved-path))
              target-branch (or target-branch (git/detect-default-branch resolved-path))
-             session-id (local-session-id project branch)]
+             session-id (local-session-id project (session-key-branch branch resolved-path))]
          (if-let [existing (db/get-session session-id)]
            {:session existing :is-new false}
            {:session (db/create-session!

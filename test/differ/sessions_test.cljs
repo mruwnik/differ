@@ -8,6 +8,7 @@
             [differ.github-oauth :as github-oauth]
             [differ.db]
             [differ.github-api :as gh-api]
+            ["child_process" :as cp]
             ["path" :as path]))
 
 ;; ============================================================================
@@ -463,5 +464,50 @@
                           (done)))
                  (.catch (fn [e]
                            (restore)
+                           (is false (str "unexpected error: " (.-message e)))
+                           (done))))))))
+
+;; ============================================================================
+;; get-or-create-session: detached HEAD
+;; ============================================================================
+
+(defn- git! [dir & args]
+  (cp/execFileSync "git" (clj->js args) #js {:cwd dir :stdio "pipe"}))
+
+(deftest detached-head-checkouts-get-separate-sessions-test
+  (testing "two detached worktrees of one repo do not share a session"
+    (async done
+           (let [repo (test-repo)
+                 wt-dir (helpers/create-temp-dir "differ-test-wt")
+                 wt1 (path/join wt-dir "one")
+                 wt2 (path/join wt-dir "two")
+                 cleanup #(helpers/remove-dir wt-dir)
+                 project "https://example.com/acme/widgets.git"
+                 main-id (sessions/local-session-id project "main")]
+             ;; Same origin URL, so both worktrees resolve to the same project.
+             (git! repo "remote" "add" "origin" project)
+             (git! repo "worktree" "add" "--detach" wt1)
+             (git! repo "worktree" "add" "--detach" wt2)
+             (-> (sessions/get-or-create-session {:repo-path wt1})
+                 (.then (fn [r1]
+                          (-> (sessions/get-or-create-session {:repo-path wt2})
+                              (.then (fn [r2] [r1 r2])))))
+                 (.then (fn [[r1 r2]]
+                          (let [s1 (:session r1) s2 (:session r2)]
+                            (is (= "HEAD" (:branch s1) (:branch s2)))
+                            (is (true? (:is-new r2)))
+                            (is (not= (:id s1) (:id s2)))
+                            (is (= wt2 (:repo-path s2))))
+                          (sessions/get-or-create-session {:repo-path wt1})))
+                 (.then (fn [again]
+                          (is (false? (:is-new again)) "same checkout rejoins its session")
+                          (sessions/get-or-create-session {:repo-path repo})))
+                 (.then (fn [named]
+                          (is (= main-id (:id (:session named)))
+                              "branch sessions keep their id")
+                          (cleanup)
+                          (done)))
+                 (.catch (fn [e]
+                           (cleanup)
                            (is false (str "unexpected error: " (.-message e)))
                            (done))))))))
