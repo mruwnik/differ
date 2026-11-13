@@ -15,7 +15,7 @@
   "Add a new comment or reply.
    If file/line are nil, creates a session-level comment.
    For replies, file/line/side are inherited from parent if not provided.
-   If replying to a resolved comment, automatically unresolves it.
+   A reply reopens its thread if the thread was resolved.
    Returns the created comment."
   [{:keys [session-id parent-id file line side line-content context-before context-after text author repo-path]}]
   (let [;; For replies, inherit file/line/side from parent
@@ -32,9 +32,9 @@
         ;; Only compute line hash if we have file and line
         line-hash (when (and file line repo-path)
                     (compute-line-hash repo-path file line))]
-    ;; If replying to a resolved comment, unresolve it
-    (when (and parent (:resolved parent))
-      (db/unresolve-comment! parent-id))
+    ;; A reply reopens its thread (the root, not only the direct parent)
+    (when parent
+      (db/reopen-thread! parent-id))
     (db/create-comment!
      {:session-id session-id
       :parent-id parent-id

@@ -684,6 +684,16 @@
   [comment-id]
   (update-comment! comment-id {:resolved false}))
 
+(defn reopen-thread!
+  "Unresolve comment-id and every resolved comment above it, up to the
+   thread root. Called when a reply is added, so the thread counts again."
+  [comment-id]
+  (loop [id comment-id]
+    (when-let [c (when id (get-comment id))]
+      (when (:resolved c)
+        (unresolve-comment! id))
+      (recur (:parent-id c)))))
+
 (defn delete-comment!
   "Delete a comment and all its replies.
    Replies are automatically deleted via ON DELETE CASCADE on parent_id foreign key
