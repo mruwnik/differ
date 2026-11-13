@@ -146,11 +146,16 @@
 (defn create-session-handler
   "POST /api/sessions"
   [^js req res]
-  (let [body (get-body req)
-        result (sessions/get-or-create-session body)]
-    (if-let [error (:error result)]
-      (error-response res 400 error)
-      (json-response res result))))
+  (let [body (get-body req)]
+    ;; get-or-create-session returns a Promise for local and GitHub sessions
+    ;; and a plain map for some errors; resolve both before responding.
+    (-> (js/Promise.resolve (sessions/get-or-create-session body))
+        (.then (fn [result]
+                 (if-let [error (:error result)]
+                   (error-response res 400 error)
+                   (json-response res result))))
+        (.catch (fn [err]
+                  (error-response res 500 (or (.-message err) (str err))))))))
 
 (defn delete-session-handler
   "DELETE /api/sessions/:id"
