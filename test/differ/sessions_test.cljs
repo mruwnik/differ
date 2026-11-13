@@ -538,3 +538,34 @@
                            (cleanup)
                            (is false (str "unexpected error: " (.-message e)))
                            (done))))))))
+
+(deftest detached-head-session-survives-head-moves-test
+  (testing "a commit or a checkout of another sha keeps the detached session"
+    (async done
+           (let [repo (test-repo)
+                 wt-dir (helpers/create-temp-dir "differ-test-wt")
+                 wt (path/join wt-dir "one")
+                 cleanup #(helpers/remove-dir wt-dir)
+                 rejoin #(sessions/get-or-create-session {:repo-path wt})]
+             (git! repo "worktree" "add" "--detach" wt)
+             (-> (rejoin)
+                 (.then (fn [first-r]
+                          (git! wt "commit" "--allow-empty" "-q" "-m" "move HEAD")
+                          (-> (rejoin)
+                              (.then (fn [after-commit]
+                                       (git! wt "checkout" "-q" "--detach" "HEAD~1")
+                                       (-> (rejoin)
+                                           (.then (fn [after-checkout]
+                                                    [first-r after-commit after-checkout]))))))))
+                 (.then (fn [[first-r after-commit after-checkout]]
+                          (let [id (:id (:session first-r))]
+                            (is (false? (:is-new after-commit)))
+                            (is (= id (:id (:session after-commit))))
+                            (is (false? (:is-new after-checkout)))
+                            (is (= id (:id (:session after-checkout)))))
+                          (cleanup)
+                          (done)))
+                 (.catch (fn [e]
+                           (cleanup)
+                           (is false (str "unexpected error: " (.-message e)))
+                           (done))))))))
