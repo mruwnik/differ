@@ -11,6 +11,7 @@
             [differ.config :as config]
             [differ.sse :as sse]
             [differ.util :as util]
+            [differ.schema :as schema]
             [differ.oauth :as oauth]
             [differ.event-stream :as event-stream]
             [differ.github-events :as github-events]
@@ -855,7 +856,7 @@
                               :repo-path (:repo-path session)
                               :files (mapv :path files)
                               :comments comments
-                              :unresolved-count (count (remove :resolved comments))}
+                              :unresolved-count (schema/count-unresolved-threads comments)}
                        ;; Include state/title for GitHub sessions
                        (:state ctx) (assoc :state (:state ctx))
                        (:title ctx) (assoc :title (:title ctx))))))))))

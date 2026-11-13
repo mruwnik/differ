@@ -11,6 +11,7 @@
             [differ.boards :as boards]
             [differ.sse :as sse]
             [differ.util :as util]
+            [differ.schema :as schema]
             [differ.config :as config]
             [differ.backend.protocol :as proto]
             ["path" :as path]))
@@ -117,7 +118,7 @@
                 :files (mapv :path files)
                 :excluded-files (:manual-removals session)
                 :comments comments
-                :unresolved-count (count (remove :resolved comments))}))))
+                :unresolved-count (schema/count-unresolved-threads comments)}))))
 
 (defn list-sessions-handler
   "GET /api/sessions"
