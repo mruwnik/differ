@@ -227,16 +227,16 @@
   [{:keys [client-id redirect-uri scopes state code-challenge]}]
   (let [user (db/get-or-create-user! "local@localhost" "Local User")
         gen-state (or state (util/gen-token "state_"))
-        _ (db/create-oauth-state!
-           {:state gen-state
-            :client-id client-id
-            :redirect-uri redirect-uri
-            :redirect-uri-provided-explicitly (boolean redirect-uri)
-            :code-challenge code-challenge
-            :scopes scopes
-            :expires-at (util/expires-at auth-code-lifetime)})
+        oauth-state (db/create-oauth-state!
+                     {:state gen-state
+                      :client-id client-id
+                      :redirect-uri redirect-uri
+                      :redirect-uri-provided-explicitly (boolean redirect-uri)
+                      :code-challenge code-challenge
+                      :scopes scopes
+                      :expires-at (util/expires-at auth-code-lifetime)})
         code (util/gen-token "code_")
-        _ (db/update-oauth-state! gen-state {:code code :user-id (:id user)})
+        _ (db/update-oauth-state! (:id oauth-state) {:code code :user-id (:id user)})
         separator (if (str/includes? redirect-uri "?") "&" "?")]
     {:redirect-url (str redirect-uri separator
                         "code=" code
