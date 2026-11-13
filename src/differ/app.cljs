@@ -15,18 +15,12 @@
 (defn create-app []
   (let [^js app (express)]
     ;; Middleware
+    ;; No CORS headers: the web UI is served from this origin (and the dev
+    ;; server proxies to it), so other origins get no access to the API.
     (.use app (.json express))
-    (.use app (.urlencoded express #js {:extended true}))
-
-    ;; CORS for development
-    (.use app (fn [_req ^js res next]
-                (.header res "Access-Control-Allow-Origin" "*")
-                (.header res "Access-Control-Allow-Methods" "GET, POST, PATCH, DELETE, OPTIONS")
-                (.header res "Access-Control-Allow-Headers" "Content-Type, X-Repo-Path")
-                (next)))
-
-    ;; Handle preflight
-    (.options app "*" (fn [_req ^js res] (.sendStatus res 200)))
+    ;; Form-encoded bodies only where OAuth needs them (login form, token
+    ;; and revoke requests). Everywhere else only JSON bodies are parsed.
+    (.use app "/oauth" (.urlencoded express #js {:extended true}))
 
     ;; API routes
     (api/setup-routes app)
