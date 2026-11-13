@@ -22,7 +22,7 @@ Differ provides a GitHub PR-like review UX, but local and integrated with AI age
 5. Agent addresses feedback, replies to comments, marks them resolved
 6. Repeat until you're satisfied, then push
 
-Sessions are tied to a (project, branch) pair. Multiple agents on the same project+branch share a session, so comments are visible to all participants.
+Sessions are tied to a (project, branch) pair. Multiple agents on the same project+branch share a session, so comments are visible to all participants. A checkout with a detached HEAD has no branch, so it gets its own session, keyed by its path.
 
 ## Features
 
