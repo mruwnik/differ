@@ -257,6 +257,24 @@
                                    :state state})]
       (is (str/includes? (:redirect-url result) (str "state=" state))))))
 
+(deftest authorize-repeated-state-test
+  (testing "a repeated authorize request with the same state replaces the pending one"
+    (oauth/register-client {:client-id "test-client"
+                            :redirect-uris ["http://localhost:3000/callback"]})
+    (let [state (str "repeat-" (random-uuid))
+          params {:client-id "test-client"
+                  :redirect-uri "http://localhost:3000/callback"
+                  :scopes ["read"]
+                  :state state}
+          code-of #(second (re-find #"code=([^&]+)" (:redirect-url %)))
+          first-code (code-of (oauth/authorize params))
+          second-result (oauth/authorize params)
+          second-code (code-of second-result)]
+      (is (some? (:redirect-url second-result)))
+      (is (not= first-code second-code))
+      (is (nil? (db/get-oauth-state-by-code first-code)))
+      (is (= state (:state (db/get-oauth-state-by-code second-code)))))))
+
 (deftest authorize-handles-redirect-with-query-test
   (testing "appends to existing query string in redirect URI"
     (oauth/register-client {:client-id "test-client"

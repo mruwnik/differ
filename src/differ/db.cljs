@@ -789,15 +789,29 @@
   (let [^js stmt (.prepare (db) "SELECT * FROM oauth_state WHERE code = ?")]
     (row->oauth-state (.get stmt code))))
 
-(defn create-oauth-state! [{:keys [state client-id redirect-uri redirect-uri-provided-explicitly
-                                   code-challenge scopes expires-at]}]
+(defn create-oauth-state!
+  "Persist a pending authorization request. A client may send the same `state`
+   again (a reloaded or retried authorize URL): the new request then replaces
+   the pending one and invalidates any code issued for it."
+  [{:keys [state client-id redirect-uri redirect-uri-provided-explicitly
+           code-challenge scopes expires-at]}]
   (let [id (util/gen-uuid)
         now (util/now-iso)
         ^js stmt (.prepare (db)
                            "INSERT INTO oauth_state
                             (id, state, client_id, redirect_uri, redirect_uri_provided_explicitly,
                              code_challenge, scopes, expires_at, created_at)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")]
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            ON CONFLICT(state) DO UPDATE SET
+                              client_id = excluded.client_id,
+                              redirect_uri = excluded.redirect_uri,
+                              redirect_uri_provided_explicitly = excluded.redirect_uri_provided_explicitly,
+                              code_challenge = excluded.code_challenge,
+                              scopes = excluded.scopes,
+                              expires_at = excluded.expires_at,
+                              code = NULL,
+                              user_id = NULL,
+                              stale = 0")]
     (.run stmt id state client-id redirect-uri
           (if redirect-uri-provided-explicitly 1 0)
           code-challenge
