@@ -18,9 +18,12 @@
     ;; No CORS headers: the web UI is served from this origin (and the dev
     ;; server proxies to it), so other origins get no access to the API.
     (.use app (.json express))
-    ;; Form-encoded bodies only where OAuth needs them (login form, token
-    ;; and revoke requests). Everywhere else only JSON bodies are parsed.
-    (.use app "/oauth" (.urlencoded express #js {:extended true}))
+    ;; Form-encoded bodies only where OAuth needs them: the login form
+    ;; (POST /oauth/authorize), token and revoke. Everywhere else, including
+    ;; /oauth/register, only JSON bodies are parsed. Flat keys are enough.
+    (let [form (.urlencoded express #js {:extended false})]
+      (doseq [route ["/oauth/authorize" "/oauth/token" "/oauth/revoke"]]
+        (.use app route form)))
 
     ;; API routes
     (api/setup-routes app)

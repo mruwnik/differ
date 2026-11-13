@@ -118,7 +118,7 @@
 ;; ============================================================================
 
 (deftest form-encoded-bodies-test
-  (testing "API routes ignore form-encoded bodies; OAuth routes still parse them"
+  (testing "API routes and /oauth/register ignore form-encoded bodies; token still parses them"
     (async done
            (run-with-server
             done
@@ -136,7 +136,11 @@
                     (.then (fn [{:keys [status body]}]
                              (is (= 400 status))
                              (is (= "Unsupported grant_type: client_credentials"
-                                    (:error body))))))))))))
+                                    (:error body)))
+                             ;; Registration is JSON-only (RFC 7591).
+                             (post-form "/oauth/register" {:client_name "form-client"})))
+                    (.then (fn [{:keys [body]}]
+                             (is (not= "form-client" (:client_name body))))))))))))
 
 ;; ============================================================================
 ;; Request parameters that reach git
