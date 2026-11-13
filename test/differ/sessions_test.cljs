@@ -5,6 +5,7 @@
             [differ.test-helpers :as helpers]
             [differ.util :as util]
             [differ.sessions :as sessions]
+            [differ.comments :as comments]
             [differ.github-oauth :as github-oauth]
             [differ.db]
             [differ.github-api :as gh-api]
@@ -465,3 +466,37 @@
                            (restore)
                            (is false (str "unexpected error: " (.-message e)))
                            (done))))))))
+
+;; ============================================================================
+;; unresolved-count
+;; ============================================================================
+
+(deftest unresolved-count-counts-open-threads-not-replies-test
+  (let [repo (test-repo)
+        sid "local:unresolved-count"
+        _ (differ.db/create-session! {:id sid :session-type "local" :project "p"
+                                      :branch "main" :target-branch "main"
+                                      :repo-path repo})
+        add! (fn [parent-id]
+               (:id (comments/add-comment! {:session-id sid :parent-id parent-id
+                                            :file "README.md" :line 1
+                                            :text "t" :author "a"})))
+        resolved-root (add! nil)
+        _ (add! resolved-root)
+        _ (add! resolved-root)
+        open-root (add! nil)
+        _ (add! open-root)
+        count-now (fn []
+                    [(:unresolved-count (first (sessions/list-sessions)))
+                     (:unresolved-count (sessions/get-session sid))
+                     (:unresolved-count (sessions/get-review-state sid repo))])]
+    (comments/resolve-comment! resolved-root "a")
+    (testing "replies are not counted; a resolved thread's replies are not counted"
+      (is (= [1 1 1] (count-now))))
+    (testing "a reply to a resolved thread reopens it and counts it once"
+      (add! resolved-root)
+      (is (= [2 2 2] (count-now))))
+    (testing "resolving every thread brings the count to zero"
+      (comments/resolve-comment! resolved-root "a")
+      (comments/resolve-comment! open-root "a")
+      (is (= [0 0 0] (count-now))))))

@@ -578,8 +578,8 @@
        :files files
        :excluded-files (:manual-removals session)
        :comments comments
-       ;; Count all unresolved including replies - consistent with GitHub sessions
-       :unresolved-count (count (remove :resolved comments))})))
+       ;; Unresolved threads, as for GitHub sessions; replies are not counted
+       :unresolved-count (count (remove #(or (:resolved %) (:parent-id %)) comments))})))
 
 (defn archive-session!
   "Archive/delete a session and all its data."

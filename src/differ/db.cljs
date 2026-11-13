@@ -634,12 +634,13 @@
      (mapv row->comment rows))))
 
 (defn count-unresolved-comments
-  "Count all unresolved comments for a session (including replies).
-   This provides consistent semantics across local and GitHub sessions."
+  "Count unresolved threads (top-level comments) for a session.
+   Replies are not counted, which matches GitHub sessions, where a thread
+   is resolved as a whole."
   [session-id]
   (let [^js stmt (.prepare (db)
                            "SELECT COUNT(*) as count FROM comments
-                            WHERE session_id = ? AND resolved = 0")]
+                            WHERE session_id = ? AND resolved = 0 AND parent_id IS NULL")]
     (.-count (.get stmt session-id))))
 
 (defn create-comment!
