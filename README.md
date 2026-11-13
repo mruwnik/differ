@@ -30,6 +30,8 @@ Sessions are tied to a (project, branch) pair. Multiple agents on the same proje
 - **MCP integration** - AI agents can register files, read comments, and respond
 - **Real-time updates** - SSE-based live sync between UI and agents
 - **Session management** - Track multiple review sessions across projects
+- **GitHub PRs** - Review GitHub pull requests, push branches and open PRs via `request_review`
+- **Kanban board** - Per-repo task board for coordinating several agents
 
 ## Quick Start
 
@@ -295,6 +297,38 @@ Events are kept in an in-memory ring buffer per scope and are lost on differ res
 
 Choose the scope that matches your latency and coverage requirements; DO NOT subscribe to both expecting deduplication — you will see the same underlying change twice, on two different scopes, with possibly different ordering.
 
+## Kanban Board
+
+Each repo (keyed by its absolute path) can have a task board for coordinating several agents. It is created on first use by `create_task` or `add_board_column` and shown in the web UI under **Boards** (`/boards`), where cards can be dragged between columns.
+
+- Default columns: `pending`, `needs_owner`, `planning`, `plan_review`, `ready`, `in_progress`, `testing`, `in_review`, `done`, `rejected`; `blocked` is computed from `blocked_by` dependencies.
+- Agents claim work with `take_task`; changing a task's status releases the claim, so each phase is claimed separately. A claim lapses after `:claim-lease-hours` (default 4) without activity on the task.
+- Tasks carry priority, tags, an assignee, a verification checklist, related commits, a parent task and notes.
+
+## Google Docs
+
+The `gdocs_*` tools read and write existing Google Docs as markdown using a Google Cloud service account. Put the service-account key at `resources/gcp-creds.json` (see `resources/gcp-creds.json.example`) or point `GDOCS_CREDS` at it, and share each document with the service account's e-mail address. The service account cannot create documents or tabs.
+
+## REST API
+
+The web UI uses a JSON API under `/api` that scripts can call as well (no authentication, see [Security notes](#security-notes)). Commonly useful:
+
+| Endpoint | Purpose |
+|----------|---------|
+| `GET /api/sessions` | List sessions (`?project=` to filter) |
+| `GET /api/sessions/:id` | Session details |
+| `GET /api/sessions/:id/pending` | Unresolved comments (`?since=`) |
+| `GET`, `POST /api/sessions/:id/comments` | List or add comments |
+| `GET /api/boards` | List boards |
+| `GET`, `POST /api/boards/:id/tasks` | List or create tasks (`:id` is the URL-encoded repo path) |
+| `GET /api/boards/:id/stats` | Board throughput statistics |
+| `GET`, `PATCH /api/tasks/:id` | Get or update a task |
+| `POST /api/tasks/:id/notes` | Add a note to a task |
+| `GET`, `POST /api/github/tokens` | List or add GitHub personal access tokens |
+| `GET /events` | Server-sent events stream used by the UI |
+
+The full list is in `src/differ/api.cljs`.
+
 ## Slash Commands
 
 Differ includes Claude Code slash commands for reviewing and fixing code:
@@ -312,7 +346,7 @@ To use these commands in any project, copy them to your global commands director
 cp .claude/commands/*.md ~/.claude/commands/
 ```
 
-Then `/review` and `/fix-review` will work in any repo where the differ MCP server is configured.
+Then `/review` and `/fix-review` will work in any repo where the differ MCP server is configured under the name `differ`.
 
 ## Review stop hook
 
@@ -327,7 +361,7 @@ To use it, add the following to the `"hooks"` section of the appropriate `settin
         "hooks": [
           {
             "type": "command",
-            "command": "python3 shared/hooks/pr_review_loop.py",
+            "command": "python3 /path/to/differ/.claude/hooks/pr_review_loop.py",
             "timeout": 43200
           }
         ]
@@ -339,8 +373,10 @@ This will not run if the folder in which Claude Code is running is not a git rep
 the `PR_REVIEW_LOOP_DISABLED` env variable is set to `1`, `true` or `yes`.
 By default, once all changes have been pushed etc., the script will wait up to 12h polling
 for unresolved comments on the PR, after which it will just let the agent continue. The hook
-definition has a timeout (default is 30s) after which it will just continue. So the lower of
-these two values limits how long the agent will wait for feedback.
+definition has a `timeout` in seconds (43200 = 12h above; without it Claude Code's default
+hook timeout applies) after which it will just continue. So the lower of these two values
+limits how long the agent will wait for feedback. The script talks to differ's REST API at
+`DIFFER_URL` (default `http://localhost:8576`).
 
 If the PR is closed, and there are no local changes, the hook will ask the Claude session to
 commit sepukku for doing such a good job.
@@ -351,6 +387,7 @@ Edit `resources/config.edn` to customize settings:
 
 ```edn
 {:port 8576
+ :base-url "http://localhost:8576"  ;; Used in links returned by MCP tools
 
  ;; File display thresholds (client)
  :large-file-threshold 50000      ;; Characters - files larger require explicit load
@@ -359,6 +396,14 @@ Edit `resources/config.edn` to customize settings:
 
  ;; Watcher settings (server)
  :watcher-debounce-ms 300         ;; Debounce file change events
+
+ ;; wait_for_event (see above)
+ :event-stream {:buffer-size 10000}
+ :github-poller {:poll-interval-ms 30000
+                 :poller-grace-ms 300000}
+
+ ;; Kanban: hours without activity after which a task claim lapses
+ :kanban {:claim-lease-hours 4}
 
  ;; Push whitelist - controls which repos/branches can be pushed via request_review
  ;; Empty map = all repos/branches allowed
@@ -380,14 +425,38 @@ The pushes `request_review` makes when it creates a new PR can be restricted via
 - **Branch patterns**: Can use wildcards like `"feature/*"` to match branches
 - `"*"` matches anything
 
-The whitelist can also be set via the `PUSH_WHITELIST` environment variable as JSON:
+The whitelist can also be set via the `PUSH_WHITELIST` environment variable (or `.env`) as JSON:
 
 ```bash
 export PUSH_WHITELIST='{"owner/repo": ["main", "develop"]}'
 ```
 
-Environment variables:
+Its entries are merged over those in `config.edn` (an entry for the same repo key replaces it). An unset or empty `PUSH_WHITELIST`, `{}`, or invalid JSON (logged as a warning) leaves the `config.edn` whitelist unchanged, so with the shipped config all repos and branches are allowed.
 
-- `PORT` - Server port (default 8576)
-- `DIFFER_URL` - Base URL for OAuth callbacks (e.g., `http://localhost:8576`)
-- `DIFFER_AUTH_USERNAME` / `DIFFER_AUTH_PASSWORD` - Optional. When both are set, require this username/password on the OAuth login page before issuing an MCP token. When unset, all authorization requests are auto-approved. Gates the MCP OAuth flow only — the web UI and `/api/*` remain unauthenticated (see MCP Integration).
+### GitHub access
+
+GitHub PR sessions and `request_review` need a GitHub token. Either create a GitHub OAuth App with the callback URL `http://localhost:8576/oauth/github/callback` (the port is `:port` from `config.edn`) and set `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` (see `.env.example`), then sign in from the web UI; or add a personal access token in the web UI or with `scripts/setup.sh --github-pat <token>`.
+
+### Environment variables
+
+| Variable | Purpose |
+|----------|---------|
+| `PORT` | Port the server listens on (default: `:port` from `config.edn`, 8576) |
+| `DIFFER_URL` | Base URL advertised in the MCP OAuth metadata (default `http://localhost:<:port>`); also the URL the review stop hook calls |
+| `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` | GitHub OAuth App credentials |
+| `DIFFER_AUTH_USERNAME` / `DIFFER_AUTH_PASSWORD` | Optional. When both are set, require this username/password on the OAuth login page before issuing an MCP token. When unset, all authorization requests are auto-approved. Gates the MCP OAuth flow only — the web UI and `/api/*` remain unauthenticated (see MCP Integration). |
+| `PUSH_WHITELIST` | Push whitelist as JSON (see above) |
+| `DIFFER_EVENT_BUFFER_SIZE`, `DIFFER_GITHUB_POLL_INTERVAL_MS`, `DIFFER_GITHUB_POLLER_GRACE_MS` | Override the `wait_for_event` settings |
+| `DIFFER_CLAIM_LEASE_HOURS` | Override `:claim-lease-hours` |
+| `GDOCS_CREDS` | Path to the Google service-account key (default `resources/gcp-creds.json`) |
+| `XDG_DATA_HOME` | Data directory base; the SQLite database is `$XDG_DATA_HOME/differ/review.db` (default `~/.local/share/differ/review.db`) |
+
+`GITHUB_*`, `DIFFER_AUTH_*` and `PUSH_WHITELIST` may also be set in a `.env` file in the project root, which takes precedence over the environment; the other variables are read from the environment only.
+
+## Security notes
+
+- The server listens on all network interfaces (no host is configured), not only on localhost.
+- The web UI, the REST API under `/api` and the `/events` stream have no login. The optional `DIFFER_AUTH_*` login protects only the issuing of MCP tokens.
+- The server reads files of the repositories it reviews, runs `git` in them and can push branches with the stored GitHub tokens.
+
+Run it on a trusted machine and network, block the port from other hosts with a firewall if the machine is shared or reachable from untrusted networks, and use an SSH tunnel (`ssh -L 8576:localhost:8576 host`) for remote access rather than exposing the port.
