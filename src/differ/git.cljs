@@ -99,11 +99,6 @@
   [repo-path file-path]
   (exec-git repo-path "add" "--" file-path))
 
-(defn branch-exists?
-  "Check if a branch exists."
-  [repo-path branch]
-  (some? (exec-git repo-path "rev-parse" "--verify" "--end-of-options" branch)))
-
 (defn get-merge-base
   "Get the merge base between source and target branch.
    If source-branch is nil, uses HEAD (working tree)."

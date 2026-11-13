@@ -175,13 +175,6 @@ diff --git a/file2.txt b/file2.txt
   (testing "detects main as default branch"
     (is (= "main" (git/detect-default-branch *test-repo*)))))
 
-(deftest branch-exists?-test
-  (testing "returns true for existing branch"
-    (is (git/branch-exists? *test-repo* "main")))
-
-  (testing "returns false for non-existent branch"
-    (is (not (git/branch-exists? *test-repo* "nonexistent-branch")))))
-
 (deftest get-file-content-test
   (testing "returns content from working tree"
     (let [content (git/get-file-content *test-repo* nil "README.md")]
