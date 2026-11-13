@@ -1053,7 +1053,7 @@
     {:task task}))
 
 (defmethod handle-tool "add_board_column" [_ {:keys [repo-path status after]}]
-  (let [board (boards/add-board-status! (:id (boards/get-or-create-board! repo-path)) status {:after after})]
+  (let [board (boards/add-board-status! (:id (boards/ensure-board! repo-path)) status {:after after})]
     (sse/broadcast-all! :board-updated {:repo-path repo-path})
     board))
 

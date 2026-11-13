@@ -481,9 +481,10 @@
     (.run stmt id repo-path (db/statuses-json db/default-board-statuses) now now)
     (get-board-by-repo repo-path)))
 
-(defn- board-for-new-task!
+(defn ensure-board!
   "Board for repo-path, created if needed. Only an absolute path creates a
-   board, so an unknown key (such as a board id) is an error."
+   board, so an unknown key (such as a board id) is an error. Callers that
+   may create a board should use this rather than get-or-create-board!."
   [repo-path]
   (or (get-board-by-repo repo-path)
       (when (and (string? repo-path) (path/isAbsolute repo-path))
@@ -671,7 +672,7 @@
   [{:keys [repo-path title description blocked-by priority tags assignee checklist add-commits parent-id]}]
   (validate-priority priority)
   (let [blocked-by (mapv resolve-task-id blocked-by)
-        board (board-for-new-task! repo-path)
+        board (ensure-board! repo-path)
         id (util/gen-uuid)
         now (util/now-iso)
         parent-id (resolve-parent-id parent-id)
