@@ -3,7 +3,7 @@
    This module exists for backward compatibility.
    New code should use differ.backend.local or the ReviewBackend protocol."
   (:require [differ.backend.local :as local]
-            ["child_process" :as cp]
+            [differ.git-exec :as git-exec]
             ["path" :as path]
             ["fs" :as fs]
             [clojure.string :as str]))
@@ -73,29 +73,12 @@
        file-sections))))
 
 ;; These functions need repo-path + target-branch, so they call git directly
-;; using the local backend's internal functions
+;; through differ.git-exec, like the local backend does
 
-(defn- exec-git
-  "Execute git command in given directory, return trimmed stdout or nil on
-   error. Uses spawnSync with an args array (no shell), so branch names and
-   paths are never interpreted by a shell. Refs that come from callers go
-   after --end-of-options so git cannot read them as options."
-  [repo-path & args]
-  (try
-    (let [result (cp/spawnSync "git" (clj->js (vec args))
-                               #js {:cwd repo-path
-                                    :encoding "utf8"
-                                    :maxBuffer (* 50 1024 1024)})]  ; 50MB buffer
-      (if (zero? (.-status result))
-        (str/trim (.-stdout result))
-        (do
-          (js/console.warn "[git] Command failed:" (pr-str args)
-                           (or (some-> (.-error result) .-message)
-                               (str/trim (or (.-stderr result) ""))))
-          nil)))
-    (catch :default e
-      (js/console.warn "[git] Command failed:" (pr-str args) (.-message e))
-      nil)))
+(def ^:private exec-git
+  "git-exec/exec-git-logged: trimmed stdout or nil, and failed commands are
+   logged. Callers must put caller-supplied refs after --end-of-options."
+  git-exec/exec-git-logged)
 
 (defn get-staged-files
   "Get list of files that are staged for commit."

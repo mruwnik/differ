@@ -6,28 +6,12 @@
             [differ.schema :as schema]
             [differ.util :as util]
             [differ.pull-request :as pr]
-            ["child_process" :as cp]
+            [differ.git-exec :as git-exec :refer [exec-git]]
             ["path" :as path]
             ["fs" :as fs]
             [clojure.string :as str]))
 
-;; Git command execution
-
-(defn- exec-git
-  "Execute git command in given directory.
-   Uses spawnSync with args array to avoid command injection. Refs that come
-   from callers go after --end-of-options so git cannot read them as options."
-  [repo-path & args]
-  (try
-    (let [result (cp/spawnSync "git" (clj->js (vec args))
-                               #js {:cwd repo-path
-                                    :encoding "utf8"
-                                    :maxBuffer (* 50 1024 1024)})]  ; 50MB buffer
-      (when (zero? (.-status result))
-        (str/trim (.-stdout result))))
-    (catch :default e
-      (js/console.warn "[local] Git command failed:" (pr-str args) (.-message e))
-      nil)))
+;; Git command execution lives in differ.git-exec (exec-git, run-git).
 
 ;; Git helpers
 
@@ -82,16 +66,7 @@
    blank lines and boundary whitespace must survive so line offsets line up for
    staleness matching."
   [repo-path ref file-path]
-  (try
-    (let [result (cp/spawnSync "git" #js ["show" "--end-of-options" (str ref ":" file-path)]
-                               #js {:cwd repo-path
-                                    :encoding "utf8"
-                                    :maxBuffer (* 50 1024 1024)})]
-      (when (zero? (.-status result))
-        (.-stdout result)))
-    (catch :default e
-      (js/console.warn "[local] Git command failed:" (pr-str ["show" "--end-of-options" (str ref ":" file-path)]) (.-message e))
-      nil)))
+  (git-exec/run-git repo-path ["show" "--end-of-options" (str ref ":" file-path)]))
 
 (defn- read-file-lines
   "Read file-path's lines at `source` (a git ref), or from repo-path's working
