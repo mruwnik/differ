@@ -2,6 +2,7 @@
   "Tests for database operations.
    Uses a separate test database to avoid affecting production data."
   (:require ["better-sqlite3" :as Database]
+            ["fs" :as fs]
             ["os" :as os]
             ["path" :as path]
             [clojure.string :as str]
@@ -810,6 +811,43 @@
       (is (nil? (.-claimer_active_at (.get (.prepare raw-db "SELECT claimer_active_at FROM tasks WHERE id = 't2'")))))
       (.run (.prepare raw-db "INSERT INTO task_claim_events (id, task_id, worker_name, event, created_at)
                               VALUES ('c1', 't1', 'alice', 'claimed', 'x')"))
+      (finally
+        (.close raw-db)
+        (helpers/remove-dir dir)))))
+
+(deftest run-migrations-rekeys-detached-sessions-test
+  (let [dir (helpers/create-temp-dir "differ-detached-migration-test")
+        checkout (str dir "/wt")
+        raw-db (Database (str dir "/raw.db"))
+        old-id (fn [project] (str "local:" (util/session-id project "HEAD")))
+        new-id (fn [project path]
+                 (str "local:" (util/session-id project
+                                                (util/detached-key-branch (fs/realpathSync path)))))
+        insert-session! (fn [id project]
+                          (.run (.prepare raw-db "INSERT INTO sessions (id, session_type, project, branch,
+                                                    target_branch, repo_path, created_at, updated_at)
+                                                  VALUES (?, 'local', ?, 'HEAD', 'main', ?, 'x', 'x')")
+                                id project checkout))
+        session-of (fn [comment-id]
+                     (.-session_id (.get (.prepare raw-db "SELECT session_id FROM comments WHERE id = ?")
+                                         comment-id)))]
+    (try
+      (fs/mkdirSync checkout)
+      (.pragma raw-db "foreign_keys = ON")
+      (db/run-migrations! raw-db)
+      ;; p: old shared id, gets re-keyed. q: old id, but the new id already exists.
+      (insert-session! (old-id "p") "p")
+      (insert-session! (old-id "q") "q")
+      (insert-session! (new-id "q" checkout) "q")
+      (.exec raw-db (str "INSERT INTO comments (id, session_id, text, author, created_at, updated_at)
+                          VALUES ('c1', '" (old-id "p") "', 't', 'a', 'x', 'x'),
+                                 ('c2', '" (old-id "q") "', 't', 'a', 'x', 'x')"))
+      (db/run-migrations! raw-db)
+      (db/run-migrations! raw-db)
+      (let [ids (set (map #(.-id %) (.all (.prepare raw-db "SELECT id FROM sessions"))))]
+        (is (= #{(new-id "p" checkout) (old-id "q") (new-id "q" checkout)} ids))
+        (is (= (new-id "p" checkout) (session-of "c1")) "comments follow the session")
+        (is (= (old-id "q") (session-of "c2")) "a row whose new id is taken is left alone"))
       (finally
         (.close raw-db)
         (helpers/remove-dir dir)))))

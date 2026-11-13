@@ -45,6 +45,13 @@
   [project branch]
   (sha256-hex (str project "|" branch)))
 
+(defn detached-key-branch
+  "Branch part of the session key for a detached-HEAD checkout at the
+   (canonical) repo-path. ':' cannot occur in a branch name, so this never
+   matches a real branch."
+  [repo-path]
+  (str "HEAD:" repo-path))
+
 (defn kebab->snake
   "Convert kebab-case keyword to snake_case string."
   [k]

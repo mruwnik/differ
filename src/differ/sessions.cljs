@@ -94,13 +94,13 @@
 
 (defn- session-key-branch
   "Branch part of a local session key. Every detached checkout reports
-   \"HEAD\", so those are keyed by their path; ':' cannot occur in a branch
-   name, so this never matches a real branch. The path is canonical
+   \"HEAD\", so those are keyed by their path (util/detached-key-branch).
+   The path is canonical
    (symlinks followed), so one checkout reached by two paths keeps one
    session; moving or renaming the checkout starts a new session."
   [branch repo-path]
   (if (= branch "HEAD")
-    (str "HEAD:" (fs/realpathSync repo-path))
+    (util/detached-key-branch (fs/realpathSync repo-path))
     branch))
 
 ;; ============================================================================
