@@ -66,8 +66,10 @@
     (.use app (.json express))
     ;; Form-encoded bodies only where OAuth needs them: the login form
     ;; (POST /oauth/authorize), token and revoke. Everywhere else, including
-    ;; /oauth/register, only JSON bodies are parsed. Flat keys are enough.
-    (let [form (.urlencoded express #js {:extended false})]
+    ;; /oauth/register, only JSON bodies are parsed. Keep :extended true:
+    ;; the querystring parser makes null-prototype objects, which get-body's
+    ;; js->clj does not convert.
+    (let [form (.urlencoded express #js {:extended true})]
       (doseq [route ["/oauth/authorize" "/oauth/token" "/oauth/revoke"]]
         (.use app route form)))
 
