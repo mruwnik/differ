@@ -109,13 +109,14 @@
                                (.run move-session new-id old-id)
                                (.run move-comments new-id old-id)))]
     (doseq [^js row rows
-            :let [old-id (.-id row)
-                  repo-path (.-repo_path row)
+            :let [old-id (.-id row)]
+            ;; rows already on a per-path id are skipped before any realpath call
+            :when (= old-id (str "local:" (util/session-id (.-project row) "HEAD")))
+            :let [repo-path (.-repo_path row)
                   real-path (try (fs/realpathSync repo-path) (catch :default _ repo-path))
                   new-id (str "local:" (util/session-id (.-project row)
                                                         (util/detached-key-branch real-path)))]
-            :when (and (= old-id (str "local:" (util/session-id (.-project row) "HEAD")))
-                       (nil? (.get taken new-id)))]
+            :when (nil? (.get taken new-id))]
       (rekey! new-id old-id))))
 
 (def default-board-statuses
