@@ -15,7 +15,8 @@
 
 (defn- exec-git
   "Execute git command in given directory.
-   Uses spawnSync with args array to avoid command injection."
+   Uses spawnSync with args array to avoid command injection. Refs that come
+   from callers go after --end-of-options so git cannot read them as options."
   [repo-path & args]
   (try
     (let [result (cp/spawnSync "git" (clj->js (vec args))
@@ -82,14 +83,14 @@
    staleness matching."
   [repo-path ref file-path]
   (try
-    (let [result (cp/spawnSync "git" #js ["show" (str ref ":" file-path)]
+    (let [result (cp/spawnSync "git" #js ["show" "--end-of-options" (str ref ":" file-path)]
                                #js {:cwd repo-path
                                     :encoding "utf8"
                                     :maxBuffer (* 50 1024 1024)})]
       (when (zero? (.-status result))
         (.-stdout result)))
     (catch :default e
-      (js/console.warn "[local] Git command failed:" (pr-str ["show" (str ref ":" file-path)]) (.-message e))
+      (js/console.warn "[local] Git command failed:" (pr-str ["show" "--end-of-options" (str ref ":" file-path)]) (.-message e))
       nil)))
 
 (defn- read-file-lines
@@ -212,7 +213,7 @@
   (let [source (source-branch-arg repo-path branch)]
     (case ref
       "base" (or (when source
-                   (let [mb (exec-git repo-path "merge-base" target-branch source)]
+                   (let [mb (exec-git repo-path "merge-base" "--end-of-options" target-branch source)]
                      (when-not (str/blank? mb) mb)))
                  target-branch)
       "head" source
@@ -249,8 +250,8 @@
     (js/Promise.resolve
      (let [source (source-branch-arg repo-path branch)
            diff (if source
-                  (exec-git repo-path "diff" (str target-branch "..." source))
-                  (exec-git repo-path "diff" target-branch))]
+                  (exec-git repo-path "diff" "--end-of-options" (str target-branch "..." source))
+                  (exec-git repo-path "diff" "--end-of-options" target-branch))]
        (if opts
          (proto/extract-lines diff opts)
          diff))))
@@ -262,8 +263,8 @@
     (js/Promise.resolve
      (let [source (source-branch-arg repo-path branch)
            diff (if source
-                  (exec-git repo-path "diff" (str target-branch "..." source) "--" file-path)
-                  (exec-git repo-path "diff" target-branch "--" file-path))]
+                  (exec-git repo-path "diff" "--end-of-options" (str target-branch "..." source) "--" file-path)
+                  (exec-git repo-path "diff" "--end-of-options" target-branch "--" file-path))]
        (if opts
          (proto/extract-lines diff opts)
          diff))))
@@ -272,8 +273,8 @@
     (js/Promise.resolve
      (if-let [output (let [source (source-branch-arg repo-path branch)]
                        (if source
-                         (exec-git repo-path "diff" "--name-status" (str target-branch "..." source))
-                         (exec-git repo-path "diff" "--name-status" target-branch)))]
+                         (exec-git repo-path "diff" "--name-status" "--end-of-options" (str target-branch "..." source))
+                         (exec-git repo-path "diff" "--name-status" "--end-of-options" target-branch)))]
        (->> (str/split-lines output)
             (filter seq)
             (map (fn [line]
@@ -295,7 +296,7 @@
     (js/Promise.resolve
      (let [effective-ref (resolve-effective-ref repo-path target-branch branch ref)
            content (if effective-ref
-                     (exec-git repo-path "show" (str effective-ref ":" file-path))
+                     (exec-git repo-path "show" "--end-of-options" (str effective-ref ":" file-path))
                      (let [full-path (path/join repo-path file-path)]
                        (try
                          (fs/readFileSync full-path "utf8")
@@ -312,8 +313,8 @@
          ;; git rejects an empty-string pathspec ("empty string is not a valid
          ;; pathspec"), which would otherwise return nil (empty listing).
          (if-let [output (if (str/blank? dir-path)
-                           (exec-git repo-path "ls-tree" effective-ref)
-                           (exec-git repo-path "ls-tree" effective-ref dir-path))]
+                           (exec-git repo-path "ls-tree" "--end-of-options" effective-ref)
+                           (exec-git repo-path "ls-tree" "--end-of-options" effective-ref dir-path))]
            (->> (str/split-lines output)
                 (filter seq)
                 (map (fn [line]
@@ -343,7 +344,7 @@
     (js/Promise.resolve
      (let [effective-ref (resolve-effective-ref repo-path target-branch branch ref)]
        (if effective-ref
-         (some? (exec-git repo-path "cat-file" "-e" (str effective-ref ":" file-path)))
+         (some? (exec-git repo-path "cat-file" "-e" "--end-of-options" (str effective-ref ":" file-path)))
          (try
            (fs/statSync (path/join repo-path file-path))
            true

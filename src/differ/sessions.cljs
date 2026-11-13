@@ -241,8 +241,14 @@
   [{:keys [repo-path project branch target-branch]}]
   (js/Promise.resolve
    (let [validation (validate-repo-path repo-path)]
-     (if-not (:valid validation)
+     (cond
+       (not (:valid validation))
        {:error (:error validation)}
+
+       (some util/option-like-ref? [branch target-branch])
+       {:error "Invalid branch name: must not start with '-'"}
+
+       :else
        (let [resolved-path (:path validation)
              project (or project (git/get-project-id resolved-path))
              branch (or branch (git/get-current-branch resolved-path))

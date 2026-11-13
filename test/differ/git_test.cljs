@@ -321,3 +321,18 @@ diff --git a/file2.txt b/file2.txt
     (helpers/add-test-file *test-repo* "-dash.txt" "content")
     (git/stage-file! *test-repo* "-dash.txt")
     (is (contains? (git/get-staged-files *test-repo*) "-dash.txt"))))
+
+(deftest option-like-refs-not-read-as-options-test
+  (let [dir (helpers/create-temp-dir "differ-marker")
+        out (path/join dir "out")]
+    (try
+      (testing "a ref starting with '-' is not read as a git option"
+        (is (nil? (git/get-diff *test-repo* (str "--output=" out))))
+        (is (nil? (git/get-diff *test-repo* (str "--output=" out) "main")))
+        (is (nil? (git/get-diff-stat *test-repo* (str "--output=" out))))
+        (is (empty? (git/get-changed-files *test-repo* (str "--output=" out))))
+        (is (nil? (git/get-file-diff *test-repo* (str "--output=" out) "README.md")))
+        (is (nil? (git/get-file-content *test-repo* (str "--output=" out) "README.md")))
+        (is (empty? (js->clj (fs/readdirSync dir)))))
+      (finally
+        (helpers/remove-dir dir)))))

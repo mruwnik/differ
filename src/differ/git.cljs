@@ -78,7 +78,8 @@
 (defn- exec-git
   "Execute git command in given directory, return trimmed stdout or nil on
    error. Uses spawnSync with an args array (no shell), so branch names and
-   paths are never interpreted by a shell."
+   paths are never interpreted by a shell. Refs that come from callers go
+   after --end-of-options so git cannot read them as options."
   [repo-path & args]
   (try
     (let [result (cp/spawnSync "git" (clj->js (vec args))
@@ -118,13 +119,13 @@
 (defn branch-exists?
   "Check if a branch exists."
   [repo-path branch]
-  (some? (exec-git repo-path "rev-parse" "--verify" branch)))
+  (some? (exec-git repo-path "rev-parse" "--verify" "--end-of-options" branch)))
 
 (defn get-merge-base
   "Get the merge base between source and target branch.
    If source-branch is nil, uses HEAD (working tree)."
   [repo-path target-branch & [source-branch]]
-  (exec-git repo-path "merge-base" target-branch (or source-branch "HEAD")))
+  (exec-git repo-path "merge-base" "--end-of-options" target-branch (or source-branch "HEAD")))
 
 (defn get-diff
   "Get unified diff between target branch and source branch.
@@ -133,8 +134,8 @@
    introduced on source-branch since it diverged from target-branch."
   [repo-path target-branch & [source-branch]]
   (if source-branch
-    (exec-git repo-path "diff" (str target-branch "..." source-branch))
-    (exec-git repo-path "diff" target-branch)))
+    (exec-git repo-path "diff" "--end-of-options" (str target-branch "..." source-branch))
+    (exec-git repo-path "diff" "--end-of-options" target-branch)))
 
 (defn get-diff-stat
   "Get diff statistics (files changed, insertions, deletions).
@@ -142,8 +143,8 @@
    Uses three-dot diff for branch comparison."
   [repo-path target-branch & [source-branch]]
   (if source-branch
-    (exec-git repo-path "diff" "--stat" (str target-branch "..." source-branch))
-    (exec-git repo-path "diff" "--stat" target-branch)))
+    (exec-git repo-path "diff" "--stat" "--end-of-options" (str target-branch "..." source-branch))
+    (exec-git repo-path "diff" "--stat" "--end-of-options" target-branch)))
 
 (defn get-changed-files
   "Get list of files that changed relative to target branch.
@@ -151,8 +152,8 @@
    Uses three-dot diff for branch comparison."
   [repo-path target-branch & [source-branch]]
   (let [output (if source-branch
-                 (exec-git repo-path "diff" "--name-status" (str target-branch "..." source-branch))
-                 (exec-git repo-path "diff" "--name-status" target-branch))]
+                 (exec-git repo-path "diff" "--name-status" "--end-of-options" (str target-branch "..." source-branch))
+                 (exec-git repo-path "diff" "--name-status" "--end-of-options" target-branch))]
     (if output
       (->> (str/split-lines output)
            (filter seq)
@@ -174,14 +175,14 @@
    Uses three-dot diff for branch comparison."
   [repo-path target-branch file-path & [source-branch]]
   (if source-branch
-    (exec-git repo-path "diff" (str target-branch "..." source-branch) "--" file-path)
-    (exec-git repo-path "diff" target-branch "--" file-path)))
+    (exec-git repo-path "diff" "--end-of-options" (str target-branch "..." source-branch) "--" file-path)
+    (exec-git repo-path "diff" "--end-of-options" target-branch "--" file-path)))
 
 (defn get-file-content
   "Get file content at a specific ref (or working tree if ref is nil)."
   [repo-path ref file-path]
   (if ref
-    (exec-git repo-path "show" (str ref ":" file-path))
+    (exec-git repo-path "show" "--end-of-options" (str ref ":" file-path))
     (let [full-path (path/join repo-path file-path)]
       (try
         (fs/readFileSync full-path "utf8")

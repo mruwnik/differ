@@ -169,9 +169,14 @@
   [^js req res]
   (let [session-id (.. req -params -id)
         body (get-body req)]
-    (if-let [session (db/update-session! session-id body)]
-      (json-response res {:session session})
-      (error-response res 404 "Session not found"))))
+    (cond
+      (some util/option-like-ref? [(:branch body) (:target-branch body)])
+      (error-response res 400 "Invalid branch name: must not start with '-'")
+
+      :else
+      (if-let [session (db/update-session! session-id body)]
+        (json-response res {:session session})
+        (error-response res 404 "Session not found")))))
 
 ;; Diff endpoints
 
