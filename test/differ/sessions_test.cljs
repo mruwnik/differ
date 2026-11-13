@@ -9,6 +9,7 @@
             [differ.db]
             [differ.github-api :as gh-api]
             ["child_process" :as cp]
+            ["fs" :as fs]
             ["path" :as path]))
 
 ;; ============================================================================
@@ -505,6 +506,32 @@
                  (.then (fn [named]
                           (is (= main-id (:id (:session named)))
                               "branch sessions keep their id")
+                          (cleanup)
+                          (done)))
+                 (.catch (fn [e]
+                           (cleanup)
+                           (is false (str "unexpected error: " (.-message e)))
+                           (done))))))))
+
+(deftest detached-head-session-key-follows-symlinks-test
+  (testing "one detached checkout reached through a symlink keeps one session"
+    (async done
+           (let [repo (test-repo)
+                 wt-dir (helpers/create-temp-dir "differ-test-wt")
+                 wt (path/join wt-dir "one")
+                 link (path/join wt-dir "link")
+                 cleanup #(helpers/remove-dir wt-dir)]
+             ;; With an origin URL the project id does not depend on the path
+             (git! repo "remote" "add" "origin" "https://example.com/acme/widgets.git")
+             (git! repo "worktree" "add" "--detach" wt)
+             (fs/symlinkSync wt link)
+             (-> (sessions/get-or-create-session {:repo-path wt})
+                 (.then (fn [r1]
+                          (-> (sessions/get-or-create-session {:repo-path link})
+                              (.then (fn [r2] [r1 r2])))))
+                 (.then (fn [[r1 r2]]
+                          (is (false? (:is-new r2)))
+                          (is (= (:id (:session r1)) (:id (:session r2))))
                           (cleanup)
                           (done)))
                  (.catch (fn [e]
