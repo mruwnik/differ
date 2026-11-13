@@ -787,3 +787,20 @@
     {}
     {:title ""}
     {:title "   "}))
+
+(deftest create-board-task-handler-unknown-board-test
+  (let [board (boards/get-or-create-board! "/tmp/api-create-known")
+        {:keys [status data]} (call-create-board-task "not-a-board" {:title "t"})]
+    (is (= 404 status))
+    (is (re-find #"No board found for repo" (str (:error data))))
+    (is (= [(:id board)] (mapv :id (boards/list-boards))))))
+
+(deftest create-board-task-handler-board-id-test
+  (let [board (boards/get-or-create-board! "/tmp/api-create-by-id")
+        events (atom [])]
+    (with-redefs [sse/broadcast-all! (fn [& args] (swap! events conj args))]
+      (let [{:keys [status data]} (call-create-board-task (:id board) {:title "t"})]
+        (is (= 200 status))
+        (is (= (:id board) (:board-id (:task data))))
+        (is (= "/tmp/api-create-by-id" (:repo-path (second (first @events)))))))
+    (is (= [(:id board)] (mapv :id (boards/list-boards))))))

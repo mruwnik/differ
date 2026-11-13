@@ -11,6 +11,7 @@
             [differ.boards :as boards]
             [differ.sse :as sse]
             [differ.util :as util]
+            [differ.schema :as schema]
             [differ.config :as config]
             [differ.backend.protocol :as proto]
             ["path" :as path]))
@@ -117,7 +118,7 @@
                 :files (mapv :path files)
                 :excluded-files (:manual-removals session)
                 :comments comments
-                :unresolved-count (count (remove :resolved comments))}))))
+                :unresolved-count (schema/count-unresolved-threads comments)}))))
 
 (defn list-sessions-handler
   "GET /api/sessions"
@@ -146,11 +147,16 @@
 (defn create-session-handler
   "POST /api/sessions"
   [^js req res]
-  (let [body (get-body req)
-        result (sessions/get-or-create-session body)]
-    (if-let [error (:error result)]
-      (error-response res 400 error)
-      (json-response res result))))
+  (let [body (get-body req)]
+    ;; get-or-create-session returns a Promise for local and GitHub sessions
+    ;; and a plain map for some errors; resolve both before responding.
+    (-> (js/Promise.resolve (sessions/get-or-create-session body))
+        (.then (fn [result]
+                 (if-let [error (:error result)]
+                   (error-response res 400 error)
+                   (json-response res result))))
+        (.catch (fn [err]
+                  (error-response res 500 (or (.-message err) (str err))))))))
 
 (defn delete-session-handler
   "DELETE /api/sessions/:id"
@@ -164,9 +170,14 @@
   [^js req res]
   (let [session-id (.. req -params -id)
         body (get-body req)]
-    (if-let [session (db/update-session! session-id body)]
-      (json-response res {:session session})
-      (error-response res 404 "Session not found"))))
+    (cond
+      (some util/option-like-ref? [(:branch body) (:target-branch body)])
+      (error-response res 400 "Invalid branch name: must not start with '-'")
+
+      :else
+      (if-let [session (db/update-session! session-id body)]
+        (json-response res {:session session})
+        (error-response res 404 "Session not found")))))
 
 ;; Diff endpoints
 
@@ -912,9 +923,13 @@
       :else (error-response res 404 "Task not found"))))
 
 (defn create-board-task-handler
-  "POST /api/boards/:id/tasks"
+  "POST /api/boards/:id/tasks. :id is the URL-encoded repo path, or the id of
+   an existing board."
   [^js req res]
-  (let [repo-path (js/decodeURIComponent (.. req -params -id))
+  (let [key (js/decodeURIComponent (.. req -params -id))
+        repo-path (or (when-not (boards/get-board-by-repo key)
+                        (:repo-path (boards/get-board key)))
+                      key)
         {:keys [title description blocked-by priority tags assignee checklist add-commits parent-id]} (get-body req)]
     (if (str/blank? title)
       (error-response res 400 "title is required")
@@ -926,7 +941,8 @@
           (sse/broadcast-all! :task-created {:task task :repo-path repo-path})
           (json-response res {:task task}))
         (catch :default e
-          (error-response res 400 (or (ex-message e) (.-message e))))))))
+          (error-response res (if (:not-found (ex-data e)) 404 400)
+                          (or (ex-message e) (.-message e))))))))
 
 (defn update-task-api-handler
   "PATCH /api/tasks/:id"

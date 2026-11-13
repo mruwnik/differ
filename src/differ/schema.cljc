@@ -42,6 +42,13 @@
   [comment]
   (nil? (:parent-id comment)))
 
+(defn count-unresolved-threads
+  "Number of unresolved threads in comments, which may be a flat list or
+   threads with nested :replies. Only thread roots count; replies are skipped.
+   Same rule as differ.db/count-unresolved-comments."
+  [comments]
+  (count (remove #(or (:resolved %) (:parent-id %)) comments)))
+
 (defn session-level-comment?
   "Returns true if comment is a session-level comment (no file/line)."
   [comment]

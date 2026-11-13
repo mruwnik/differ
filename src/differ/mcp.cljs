@@ -11,6 +11,7 @@
             [differ.config :as config]
             [differ.sse :as sse]
             [differ.util :as util]
+            [differ.schema :as schema]
             [differ.oauth :as oauth]
             [differ.event-stream :as event-stream]
             [differ.github-events :as github-events]
@@ -214,7 +215,7 @@
                   :required ["session_id"]}}
 
    {:name "create_task"
-    :description "Create a task on a repo's kanban board. Auto-creates the board if needed."
+    :description "Create a task on a repo's kanban board. Auto-creates the board if needed, but only for an absolute repo path."
     :inputSchema {:type "object"
                   :properties {:repo_path {:type "string"
                                            :description "Absolute path to the repo directory"}
@@ -389,7 +390,7 @@
                   :required ["task_id"]}}
 
    {:name "add_board_column"
-    :description "Add a status column to a repo's kanban board (creating the board if needed). Statuses are lowercase snake_case ids, e.g. 'qa'; 'blocked' is reserved (computed from dependencies). Column order matters: board_stats classifies moves as advanced/reverted by it. Returns the board with its updated `statuses`."
+    :description "Add a status column to a repo's kanban board (creating the board if needed, but only for an absolute repo path). Statuses are lowercase snake_case ids, e.g. 'qa'; 'blocked' is reserved (computed from dependencies). Column order matters: board_stats classifies moves as advanced/reverted by it. Returns the board with its updated `statuses`."
     :inputSchema {:type "object"
                   :properties {:repo_path {:type "string"
                                            :description "Absolute path to the repo directory"}
@@ -855,7 +856,7 @@
                               :repo-path (:repo-path session)
                               :files (mapv :path files)
                               :comments comments
-                              :unresolved-count (count (remove :resolved comments))}
+                              :unresolved-count (schema/count-unresolved-threads comments)}
                        ;; Include state/title for GitHub sessions
                        (:state ctx) (assoc :state (:state ctx))
                        (:title ctx) (assoc :title (:title ctx))))))))))
@@ -1053,7 +1054,7 @@
     {:task task}))
 
 (defmethod handle-tool "add_board_column" [_ {:keys [repo-path status after]}]
-  (let [board (boards/add-board-status! (:id (boards/get-or-create-board! repo-path)) status {:after after})]
+  (let [board (boards/add-board-status! (:id (boards/ensure-board! repo-path)) status {:after after})]
     (sse/broadcast-all! :board-updated {:repo-path repo-path})
     board))
 

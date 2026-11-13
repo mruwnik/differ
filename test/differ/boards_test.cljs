@@ -874,6 +874,19 @@
     (testing "get-task returns the same tags"
       (is (= ["bug" "security"] (:tags (boards/get-task (:id task))))))))
 
+(deftest create-task-unknown-board-test
+  (testing "a key that is not an absolute path does not create a board"
+    (let [board (boards/get-or-create-board! "/tmp/known-board")]
+      (doseq [bad [(:id board) "relative/repo" ""]]
+        (is (thrown-with-msg? js/Error #"No board found for repo"
+                              (boards/create-task! {:repo-path bad :title "t"}))))
+      (is (= [(:id board)] (mapv :id (boards/list-boards))))))
+
+  (testing "an existing board is used whatever its key"
+    (let [board (boards/get-or-create-board! "legacy-key")
+          task (boards/create-task! {:repo-path "legacy-key" :title "t"})]
+      (is (= (:id board) (:board-id task))))))
+
 (deftest create-task-rejects-non-integer-priority-test
   (doseq [bad ["high" 1.5 true]]
     (is (thrown-with-msg? js/Error #"priority must be an integer"

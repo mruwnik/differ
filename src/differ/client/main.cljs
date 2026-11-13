@@ -9,6 +9,7 @@
             [differ.client.subs]
             [differ.client.api]
             [differ.client.sse]
+            [differ.client.theme :as theme]
             [differ.client.views.core :as views]))
 
 (defonce root (atom nil))
@@ -53,6 +54,8 @@
 
 (defn init []
   (rf/dispatch-sync [:initialize])
+  (theme/watch-system! #(rf/dispatch [:system-theme-changed %]))
+  (theme/watch-storage! #(rf/dispatch [:theme-stored-elsewhere %]))
   (setup-popstate-handler)
   ;; Navigate based on current URL
   (let [{:keys [page session-id board-repo]} (parse-route)]

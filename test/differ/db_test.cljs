@@ -155,15 +155,6 @@
   (let [^js stmt (.prepare *test-db* "SELECT * FROM users WHERE email = ?")]
     (row->user (.get stmt email))))
 
-(defn count-unresolved-comments
-  "Count all unresolved comments for a session (including replies).
-   This provides consistent semantics across local and GitHub sessions."
-  [session-id]
-  (let [^js stmt (.prepare *test-db*
-                           "SELECT COUNT(*) as count FROM comments
-                            WHERE session_id = ? AND resolved = 0")]
-    (.-count (.get stmt session-id))))
-
 ;; ============================================================================
 ;; Isolation Tests
 ;; ============================================================================
@@ -443,26 +434,27 @@
 
 (deftest count-unresolved-comments-test
   (testing "counts all unresolved comments"
-    (create-session! {:id "count-session" :project "p" :branch "b" :target-branch "main" :repo-path "/tmp"})
-    (is (= 0 (count-unresolved-comments "count-session")))
-    (create-comment! {:session-id "count-session" :file "a.cljs" :line 1 :line-content-hash "h" :text "comment 1" :author "a"})
-    (is (= 1 (count-unresolved-comments "count-session")))
-    (create-comment! {:session-id "count-session" :file "b.cljs" :line 2 :line-content-hash "h" :text "comment 2" :author "a"})
-    (is (= 2 (count-unresolved-comments "count-session"))))
+    (db/create-session! {:id "count-session" :project "p" :branch "b" :target-branch "main" :repo-path "/tmp"})
+    (is (= 0 (db/count-unresolved-comments "count-session")))
+    (db/create-comment! {:session-id "count-session" :file "a.cljs" :line 1 :text "comment 1" :author "a"})
+    (is (= 1 (db/count-unresolved-comments "count-session")))
+    (db/create-comment! {:session-id "count-session" :file "b.cljs" :line 2 :text "comment 2" :author "a"})
+    (is (= 2 (db/count-unresolved-comments "count-session"))))
 
   (testing "excludes resolved comments"
-    (create-session! {:id "resolved-test" :project "p" :branch "b" :target-branch "main" :repo-path "/tmp"})
-    (let [c1 (create-comment! {:session-id "resolved-test" :file "a.cljs" :line 1 :line-content-hash "h" :text "t" :author "a"})
-          _ (create-comment! {:session-id "resolved-test" :file "a.cljs" :line 2 :line-content-hash "h" :text "t" :author "a"})]
-      (resolve-comment! (:id c1))
-      (is (= 1 (count-unresolved-comments "resolved-test")))))
+    (db/create-session! {:id "resolved-test" :project "p" :branch "b" :target-branch "main" :repo-path "/tmp"})
+    (let [c1 (db/create-comment! {:session-id "resolved-test" :file "a.cljs" :line 1 :text "t" :author "a"})
+          _ (db/create-comment! {:session-id "resolved-test" :file "a.cljs" :line 2 :text "t" :author "a"})]
+      (db/resolve-comment! (:id c1))
+      (is (= 1 (db/count-unresolved-comments "resolved-test")))))
 
-  (testing "includes reply comments (counts all unresolved)"
-    (create-session! {:id "reply-test" :project "p" :branch "b" :target-branch "main" :repo-path "/tmp"})
-    (let [parent (create-comment! {:session-id "reply-test" :file "a.cljs" :line 1 :line-content-hash "h" :text "parent" :author "a"})]
-      (create-comment! {:session-id "reply-test" :parent-id (:id parent) :file "a.cljs" :line 1 :line-content-hash "h" :text "reply" :author "a"})
-      ;; Now counts both parent and reply (2 total)
-      (is (= 2 (count-unresolved-comments "reply-test"))))))
+  (testing "counts a thread once, not its replies"
+    (db/create-session! {:id "reply-test" :project "p" :branch "b" :target-branch "main" :repo-path "/tmp"})
+    (let [parent (db/create-comment! {:session-id "reply-test" :file "a.cljs" :line 1 :text "parent" :author "a"})]
+      (db/create-comment! {:session-id "reply-test" :parent-id (:id parent) :file "a.cljs" :line 1 :text "reply" :author "a"})
+      (is (= 1 (db/count-unresolved-comments "reply-test")))
+      (db/resolve-comment! (:id parent))
+      (is (= 0 (db/count-unresolved-comments "reply-test")) "replies of a resolved thread do not count"))))
 
 ;; ============================================================================
 ;; Board Status Tests - use boards-test fixture pattern
@@ -652,6 +644,45 @@
       (is (nil? (.-parent_id (.get (.prepare raw-db "SELECT parent_id FROM tasks WHERE id = 't1'")))))
       (.run (.prepare raw-db "INSERT INTO task_commits (task_id, sha, created_at) VALUES ('t1', 'abcd123', 'x')"))
       (is (= "abcd123" (.-sha (.get (.prepare raw-db "SELECT sha FROM task_commits WHERE task_id = 't1'")))))
+      (finally
+        (.close raw-db)
+        (helpers/remove-dir dir)))))
+
+(deftest run-migrations-drops-unique-oauth-state-test
+  (let [dir (helpers/create-temp-dir "differ-oauth-state-migration-test")
+        raw-db (Database (str dir "/raw.db"))
+        insert-state "INSERT INTO oauth_state (id, state, client_id, redirect_uri, expires_at, created_at)
+                      VALUES (?, 'S', 'c1', 'http://localhost/cb', 'x', 'x')"]
+    (try
+      (.pragma raw-db "foreign_keys = ON")
+      (.exec raw-db "CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT UNIQUE NOT NULL, name TEXT,
+                       api_key TEXT UNIQUE, created_at TEXT NOT NULL);
+                     CREATE TABLE oauth_clients (client_id TEXT PRIMARY KEY, client_secret TEXT,
+                       client_name TEXT, redirect_uris TEXT NOT NULL DEFAULT '[]', scope TEXT DEFAULT 'read',
+                       client_uri TEXT, logo_uri TEXT, created_at TEXT NOT NULL);
+                     CREATE TABLE oauth_state (id TEXT PRIMARY KEY, state TEXT UNIQUE NOT NULL,
+                       client_id TEXT NOT NULL, redirect_uri TEXT NOT NULL,
+                       redirect_uri_provided_explicitly INTEGER DEFAULT 0, code_challenge TEXT,
+                       scopes TEXT DEFAULT '[]', code TEXT UNIQUE, user_id TEXT, stale INTEGER DEFAULT 0,
+                       expires_at TEXT NOT NULL, created_at TEXT NOT NULL,
+                       FOREIGN KEY (client_id) REFERENCES oauth_clients(client_id),
+                       FOREIGN KEY (user_id) REFERENCES users(id));
+                     CREATE TABLE oauth_access_tokens (id TEXT PRIMARY KEY, user_id TEXT NOT NULL,
+                       oauth_state_id TEXT, expires_at TEXT NOT NULL, created_at TEXT NOT NULL,
+                       FOREIGN KEY (user_id) REFERENCES users(id),
+                       FOREIGN KEY (oauth_state_id) REFERENCES oauth_state(id));
+                     INSERT INTO users (id, email, created_at) VALUES ('u1', 'a@b', 'x');
+                     INSERT INTO oauth_clients (client_id, created_at) VALUES ('c1', 'x');")
+      (.run (.prepare raw-db insert-state) "row1")
+      (.exec raw-db "INSERT INTO oauth_access_tokens VALUES ('t1', 'u1', 'row1', 'x', 'x')")
+      (is (thrown? js/Error (.run (.prepare raw-db insert-state) "row2")))
+      (db/run-migrations! raw-db)
+      (db/run-migrations! raw-db)
+      (.run (.prepare raw-db insert-state) "row2")
+      (is (= 2 (.-n (.get (.prepare raw-db "SELECT COUNT(*) AS n FROM oauth_state WHERE state = 'S'")))))
+      (is (= "row1" (.-oauth_state_id (.get (.prepare raw-db "SELECT oauth_state_id FROM oauth_access_tokens")))))
+      (is (= 1 (.pragma raw-db "foreign_keys" #js {:simple true})))
+      (is (empty? (.pragma raw-db "foreign_key_check")))
       (finally
         (.close raw-db)
         (helpers/remove-dir dir)))))

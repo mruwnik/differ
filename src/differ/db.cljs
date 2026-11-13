@@ -329,8 +329,34 @@
                                   (.run clear-stmt (to-array board-ids)))))))]
     (txn)))
 
+(def ^:private oauth-state-columns
+  "Column list of oauth_state, shared by create-tables and
+   migrate-oauth-state-unique-state. `state` is the client's value and is not
+   unique: each authorize request gets its own row."
+  "(
+      id TEXT PRIMARY KEY,
+      state TEXT NOT NULL,
+      client_id TEXT NOT NULL,
+      redirect_uri TEXT NOT NULL,
+      redirect_uri_provided_explicitly INTEGER DEFAULT 0,
+      code_challenge TEXT,
+      scopes TEXT DEFAULT '[]',
+      code TEXT UNIQUE,
+      user_id TEXT,
+      stale INTEGER DEFAULT 0,
+      expires_at TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (client_id) REFERENCES oauth_clients(client_id),
+      FOREIGN KEY (user_id) REFERENCES users(id)
+    )")
+
+(def ^:private oauth-state-indexes
+  "
+    CREATE INDEX IF NOT EXISTS idx_oauth_state_state ON oauth_state(state);
+    CREATE INDEX IF NOT EXISTS idx_oauth_state_code ON oauth_state(code);")
+
 (defn- create-tables [db]
-  (.exec db "
+  (.exec db (str "
     CREATE TABLE IF NOT EXISTS sessions (
       id TEXT PRIMARY KEY,
       project TEXT NOT NULL,
@@ -391,25 +417,8 @@
       created_at TEXT NOT NULL
     );
 
-    CREATE TABLE IF NOT EXISTS oauth_state (
-      id TEXT PRIMARY KEY,
-      state TEXT UNIQUE NOT NULL,
-      client_id TEXT NOT NULL,
-      redirect_uri TEXT NOT NULL,
-      redirect_uri_provided_explicitly INTEGER DEFAULT 0,
-      code_challenge TEXT,
-      scopes TEXT DEFAULT '[]',
-      code TEXT UNIQUE,
-      user_id TEXT,
-      stale INTEGER DEFAULT 0,
-      expires_at TEXT NOT NULL,
-      created_at TEXT NOT NULL,
-      FOREIGN KEY (client_id) REFERENCES oauth_clients(client_id),
-      FOREIGN KEY (user_id) REFERENCES users(id)
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_oauth_state_state ON oauth_state(state);
-    CREATE INDEX IF NOT EXISTS idx_oauth_state_code ON oauth_state(code);
+    CREATE TABLE IF NOT EXISTS oauth_state " oauth-state-columns ";
+" oauth-state-indexes "
 
     CREATE TABLE IF NOT EXISTS oauth_access_tokens (
       id TEXT PRIMARY KEY,
@@ -465,9 +474,43 @@
       created_at TEXT NOT NULL
     );
 
-  ")
+  "))
   ;; Kanban board tables - uses shared DDL constant (see kanban-ddl)
   (.exec db kanban-ddl))
+
+(defn- migrate-oauth-state-unique-state
+  "Drop the UNIQUE constraint on oauth_state.state from databases created
+   before each authorize request got its own row. SQLite cannot drop a
+   constraint in place, so the table is rebuilt (the documented 12-step
+   procedure: foreign keys off, copy, swap, check, foreign keys back).
+   Row ids are kept, so issued access tokens still point at their row."
+  [^js db]
+  (let [unique-on-state? (some (fn [^js idx]
+                                 (and (= 1 (.-unique idx))
+                                      (= "u" (.-origin idx))
+                                      (= ["state"]
+                                         (mapv (fn [^js c] (.-name c))
+                                               (.all (.prepare db (str "PRAGMA index_info(\"" (.-name idx) "\")")))))))
+                               (.all (.prepare db "PRAGMA index_list(oauth_state)")))]
+    (when unique-on-state?
+      (let [fk-on (= 1 (.pragma db "foreign_keys" #js {:simple true}))
+            cols "id, state, client_id, redirect_uri, redirect_uri_provided_explicitly,
+                  code_challenge, scopes, code, user_id, stale, expires_at, created_at"
+            rebuild (.transaction db
+                                  (fn []
+                                    (.exec db (str "CREATE TABLE oauth_state_new " oauth-state-columns ";
+                                                    INSERT INTO oauth_state_new (" cols ")
+                                                      SELECT " cols " FROM oauth_state;
+                                                    DROP TABLE oauth_state;
+                                                    ALTER TABLE oauth_state_new RENAME TO oauth_state;"
+                                                   oauth-state-indexes))
+                                    (when (seq (.pragma db "foreign_key_check"))
+                                      (throw (js/Error. "oauth_state migration broke a foreign key")))))]
+        (.pragma db "foreign_keys = OFF")
+        (try
+          (rebuild)
+          (finally
+            (when fk-on (.pragma db "foreign_keys = ON"))))))))
 
 (defn run-migrations!
   "Run schema creation and all migrations against db, in order. Used by
@@ -476,6 +519,7 @@
    reachable by calling an individual migration fn)."
   [db]
   (create-tables db)
+  (migrate-oauth-state-unique-state db)
   (migrate-comments-table db)
   (migrate-sessions-table db)
   (migrate-detached-session-ids db)
@@ -663,12 +707,13 @@
      (mapv row->comment rows))))
 
 (defn count-unresolved-comments
-  "Count all unresolved comments for a session (including replies).
-   This provides consistent semantics across local and GitHub sessions."
+  "Count unresolved threads (top-level comments) for a session.
+   Replies are not counted, which matches GitHub sessions, where a thread
+   is resolved as a whole."
   [session-id]
   (let [^js stmt (.prepare (db)
                            "SELECT COUNT(*) as count FROM comments
-                            WHERE session_id = ? AND resolved = 0")]
+                            WHERE session_id = ? AND resolved = 0 AND parent_id IS NULL")]
     (.-count (.get stmt session-id))))
 
 (defn create-comment!
@@ -711,6 +756,16 @@
   "Mark a comment as unresolved."
   [comment-id]
   (update-comment! comment-id {:resolved false}))
+
+(defn reopen-thread!
+  "Unresolve comment-id and every resolved comment above it, up to the
+   thread root. Called when a reply is added, so the thread counts again."
+  [comment-id]
+  (loop [id comment-id]
+    (when-let [c (when id (get-comment id))]
+      (when (:resolved c)
+        (unresolve-comment! id))
+      (recur (:parent-id c)))))
 
 (defn delete-comment!
   "Delete a comment and all its replies.
@@ -810,16 +865,17 @@
   (let [^js stmt (.prepare (db) "SELECT * FROM oauth_state WHERE id = ?")]
     (row->oauth-state (.get stmt id))))
 
-(defn get-oauth-state-by-state [state]
-  (let [^js stmt (.prepare (db) "SELECT * FROM oauth_state WHERE state = ?")]
-    (row->oauth-state (.get stmt state))))
-
 (defn get-oauth-state-by-code [code]
   (let [^js stmt (.prepare (db) "SELECT * FROM oauth_state WHERE code = ?")]
     (row->oauth-state (.get stmt code))))
 
-(defn create-oauth-state! [{:keys [state client-id redirect-uri redirect-uri-provided-explicitly
-                                   code-challenge scopes expires-at]}]
+(defn create-oauth-state!
+  "Persist an authorization request as a new row and return it. Every request
+   gets its own row, even when a client sends the same `state` again (a
+   reloaded or retried authorize URL), so a later request can never change a
+   pending code or the scopes of tokens issued from an earlier row."
+  [{:keys [state client-id redirect-uri redirect-uri-provided-explicitly
+           code-challenge scopes expires-at]}]
   (let [id (util/gen-uuid)
         now (util/now-iso)
         ^js stmt (.prepare (db)
@@ -832,21 +888,21 @@
           code-challenge
           (js/JSON.stringify (clj->js (or scopes [])))
           expires-at now)
-    (get-oauth-state-by-state state)))
+    (get-oauth-state id)))
 
-(defn update-oauth-state! [state updates]
-  (let [oauth-state (get-oauth-state-by-state state)]
+(defn update-oauth-state! [id updates]
+  (let [oauth-state (get-oauth-state id)]
     (when oauth-state
       (let [^js stmt (.prepare (db)
-                               "UPDATE oauth_state SET code = ?, user_id = ?, stale = ? WHERE state = ?")]
+                               "UPDATE oauth_state SET code = ?, user_id = ?, stale = ? WHERE id = ?")]
         (.run stmt
               (or (:code updates) (:code oauth-state))
               (or (:user-id updates) (:user-id oauth-state))
               (if (contains? updates :stale)
                 (if (:stale updates) 1 0)
                 (if (:stale oauth-state) 1 0))
-              state)
-        (get-oauth-state-by-state state)))))
+              id)
+        (get-oauth-state id)))))
 
 ;; OAuth Access Token operations
 

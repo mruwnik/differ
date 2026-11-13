@@ -3,7 +3,8 @@
   (:require [re-frame.core :as rf]
             [differ.client.views.sessions :as sessions]
             [differ.client.views.diff :as diff]
-            [differ.client.views.board :as board]))
+            [differ.client.views.board :as board]
+            [differ.client.theme :as theme]))
 
 (defn- session-selector []
   (let [sessions @(rf/subscribe [:sessions])
@@ -15,9 +16,9 @@
                       (when (seq id)
                         (rf/dispatch [:navigate-session id])))
         :style {:background "transparent"
-                :border "1px solid #e1e4e8"
+                :border "1px solid var(--color-border)"
                 :border-radius "6px"
-                :color "#24292e"
+                :color "var(--color-fg)"
                 :padding "4px 8px"
                 :font-size "14px"
                 :cursor "pointer"
@@ -31,6 +32,19 @@
                (when (pos? (:unresolved-count s 0))
                  (str " (" (:unresolved-count s) ")")))])])))
 
+(defn- theme-toggle []
+  (let [current @(rf/subscribe [:theme])]
+    [:div.diff-view-toggle {:role "group" :aria-label "Color theme"}
+     (for [[value label] theme/choices]
+       ^{:key value}
+       [:button.btn-toggle
+        {:type "button"
+         :class (when (= current value) "active")
+         :aria-pressed (= current value)
+         :title (if (= value "system") "Follow the system setting" (str label " theme"))
+         :on-click #(rf/dispatch [:set-theme value])}
+        label])]))
+
 (defn header []
   (let [page @(rf/subscribe [:current-page])
         connected? @(rf/subscribe [:sse-connected?])]
@@ -40,7 +54,7 @@
             :on-click #(rf/dispatch [:navigate-sessions])}
        "Differ"]
       [:span {:style {:cursor "pointer"
-                      :color (if (#{:boards :board} page) "#24292e" "#6a737d")
+                      :color (if (#{:boards :board} page) "var(--color-fg)" "var(--color-fg-muted)")
                       :font-size "14px"
                       :font-weight (if (#{:boards :board} page) "600" "400")}
               :on-click #(rf/dispatch [:navigate-boards])}
@@ -50,14 +64,15 @@
      [:div {:style {:display "flex" :align-items "center" :gap "12px"}}
       (when (= page :session)
         [:span {:style {:font-size "12px"
-                        :color (if connected? "#28a745" "#d73a49")}}
-         (if connected? "Live" "Disconnected")])]]))
+                        :color (if connected? "var(--color-success-text)" "var(--color-danger-text)")}}
+         (if connected? "Live" "Disconnected")])
+      [theme-toggle]]]))
 
 (defn error-banner []
   (let [error @(rf/subscribe [:error])]
     (when error
-      [:div {:style {:background "#ffebe9"
-                     :border "1px solid #d73a49"
+      [:div {:style {:background "var(--color-danger-subtle)"
+                     :border "1px solid var(--color-danger-emphasis)"
                      :padding "12px 16px"
                      :margin-bottom "16px"
                      :border-radius "6px"
@@ -74,8 +89,8 @@
       [:div {:style {:position "fixed"
                      :top "8px"
                      :right "8px"
-                     :background "#0366d6"
-                     :color "white"
+                     :background "var(--color-accent-emphasis)"
+                     :color "var(--color-fg-on-emphasis)"
                      :padding "4px 12px"
                      :border-radius "4px"
                      :font-size "12px"}}

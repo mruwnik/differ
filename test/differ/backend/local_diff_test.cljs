@@ -12,7 +12,9 @@
             [differ.backend.protocol :as proto]
             [differ.db :as db]
             [differ.util :as util]
-            [differ.test-helpers :as helpers]))
+            [differ.test-helpers :as helpers]
+            ["fs" :as fs]
+            ["path" :as path]))
 
 ;; A regular atom (not a dynamic var): dynamic bindings don't propagate across
 ;; the async ticks these tests await, so the repo path must live somewhere flat.
@@ -286,3 +288,37 @@
                             (is (not (contains? base-names "only-on-main-tip.txt"))))
                           (done)))
                  (.catch (fn [err] (is false (str "rejected: " err)) (done))))))))
+
+(deftest option-like-refs-not-read-as-options-test
+  (testing "refs starting with '-' reach git as refs, not options"
+    (async done
+           (let [dir (helpers/create-temp-dir "differ-marker")
+                 bad-ref (str "--output=" (path/join dir "out"))
+                 backend (local/create-local-backend @test-repo bad-ref "local:sid" "feature")
+                 ref-backend (local/create-local-backend @test-repo "main")
+                 finish (fn []
+                          (is (empty? (js->clj (fs/readdirSync dir))))
+                          (helpers/remove-dir dir)
+                          (done))]
+             (helpers/create-test-branch @test-repo "feature")
+             (helpers/checkout-test-branch @test-repo "main")
+             (-> (js/Promise.all
+                  #js [(proto/get-diff backend)
+                       (proto/get-file-diff backend "README.md")
+                       (proto/get-changed-files backend)
+                       (proto/get-file-content backend "base" "README.md")
+                       (proto/get-file-content ref-backend bad-ref "README.md")
+                       (proto/list-directory ref-backend bad-ref "")
+                       (proto/list-directory ref-backend bad-ref "src")
+                       (proto/file-exists? ref-backend bad-ref "README.md")])
+                 (.then (fn [[diff file-diff changed base-content content listing sub-listing exists]]
+                          (is (nil? diff))
+                          (is (nil? file-diff))
+                          (is (empty? changed))
+                          (is (nil? base-content))
+                          (is (nil? content))
+                          (is (empty? listing))
+                          (is (empty? sub-listing))
+                          (is (false? exists))
+                          (finish)))
+                 (.catch (fn [err] (is false (str "rejected: " err)) (finish))))))))

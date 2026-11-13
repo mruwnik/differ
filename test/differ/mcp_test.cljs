@@ -754,6 +754,11 @@
       (is (contains? props :status))
       (is (contains? props :move_to)))))
 
+(deftest create-task-tool-unknown-board-test
+  (testing "create_task with a key that is not an absolute path errors, as over REST"
+    (is (thrown-with-msg? js/Error #"No board found for repo"
+                          (mcp/handle-tool "create_task" {:repo-path "not-a-board" :title "t"})))))
+
 ;; NOTE: this exercises the handler's argument pass-through via with-redefs
 ;; stubs on boards/take-task! and boards/get-board rather than real DB
 ;; writes — mcp_test's with-test-env fixture does not wire
@@ -1248,6 +1253,14 @@
 (deftest add-board-column-creates-board-test
   (let [repo (str "/tmp/mcp-columns-new-" (random-uuid))]
     (is (= "qa" (last (:statuses (mcp/handle-tool "add_board_column" {:repo-path repo :status "qa"})))))))
+
+(deftest add-board-column-unknown-board-test
+  (testing "add_board_column with a key that is not an absolute path errors and creates no board"
+    (let [board (boards/get-or-create-board! (str "/tmp/mcp-columns-known-" (random-uuid)))]
+      (doseq [bad [(:id board) "not-a-board"]]
+        (is (thrown-with-msg? js/Error #"No board found for repo"
+                              (mcp/handle-tool "add_board_column" {:repo-path bad :status "qa"}))))
+      (is (= [(:id board)] (mapv :id (boards/list-boards)))))))
 
 (deftest remove-board-column-unknown-repo-test
   (is (thrown-with-msg? js/Error #"No board found"

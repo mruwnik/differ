@@ -3,7 +3,7 @@
    This module exists for backward compatibility.
    New code should use differ.backend.local or the ReviewBackend protocol."
   (:require [differ.backend.local :as local]
-            ["child_process" :as cp]
+            [differ.git-exec :as git-exec]
             ["path" :as path]
             ["fs" :as fs]
             [clojure.string :as str]))
@@ -73,23 +73,12 @@
        file-sections))))
 
 ;; These functions need repo-path + target-branch, so they call git directly
-;; using the local backend's internal functions
+;; through differ.git-exec, like the local backend does
 
-(defn- exec-sync
-  "Execute command synchronously, return stdout or nil on error."
-  [cmd opts]
-  (try
-    (let [result (cp/execSync cmd (clj->js (merge {:encoding "utf8"} opts)))]
-      (str/trim result))
-    (catch :default e
-      (js/console.warn "[git] Command failed:" cmd (.-message e))
-      nil)))
-
-(defn- exec-git
-  "Execute git command in given directory."
-  [repo-path & args]
-  (let [cmd (str "git " (str/join " " args))]
-    (exec-sync cmd {:cwd repo-path})))
+(def ^:private exec-git
+  "git-exec/exec-git-logged: trimmed stdout or nil, and failed commands are
+   logged. Callers must put caller-supplied refs after --end-of-options."
+  git-exec/exec-git-logged)
 
 (defn get-staged-files
   "Get list of files that are staged for commit."
@@ -108,18 +97,13 @@
 (defn stage-file!
   "Stage a file for commit (git add)."
   [repo-path file-path]
-  (exec-git repo-path "add" (str "\"" file-path "\"")))
-
-(defn branch-exists?
-  "Check if a branch exists."
-  [repo-path branch]
-  (some? (exec-git repo-path "rev-parse" "--verify" branch)))
+  (exec-git repo-path "add" "--" file-path))
 
 (defn get-merge-base
   "Get the merge base between source and target branch.
    If source-branch is nil, uses HEAD (working tree)."
   [repo-path target-branch & [source-branch]]
-  (exec-git repo-path "merge-base" target-branch (or source-branch "HEAD")))
+  (exec-git repo-path "merge-base" "--end-of-options" target-branch (or source-branch "HEAD")))
 
 (defn get-diff
   "Get unified diff between target branch and source branch.
@@ -128,8 +112,8 @@
    introduced on source-branch since it diverged from target-branch."
   [repo-path target-branch & [source-branch]]
   (if source-branch
-    (exec-git repo-path "diff" (str target-branch "..." source-branch))
-    (exec-git repo-path "diff" target-branch)))
+    (exec-git repo-path "diff" "--end-of-options" (str target-branch "..." source-branch))
+    (exec-git repo-path "diff" "--end-of-options" target-branch)))
 
 (defn get-diff-stat
   "Get diff statistics (files changed, insertions, deletions).
@@ -137,8 +121,8 @@
    Uses three-dot diff for branch comparison."
   [repo-path target-branch & [source-branch]]
   (if source-branch
-    (exec-git repo-path "diff" "--stat" (str target-branch "..." source-branch))
-    (exec-git repo-path "diff" "--stat" target-branch)))
+    (exec-git repo-path "diff" "--stat" "--end-of-options" (str target-branch "..." source-branch))
+    (exec-git repo-path "diff" "--stat" "--end-of-options" target-branch)))
 
 (defn get-changed-files
   "Get list of files that changed relative to target branch.
@@ -146,8 +130,8 @@
    Uses three-dot diff for branch comparison."
   [repo-path target-branch & [source-branch]]
   (let [output (if source-branch
-                 (exec-git repo-path "diff" "--name-status" (str target-branch "..." source-branch))
-                 (exec-git repo-path "diff" "--name-status" target-branch))]
+                 (exec-git repo-path "diff" "--name-status" "--end-of-options" (str target-branch "..." source-branch))
+                 (exec-git repo-path "diff" "--name-status" "--end-of-options" target-branch))]
     (if output
       (->> (str/split-lines output)
            (filter seq)
@@ -169,14 +153,14 @@
    Uses three-dot diff for branch comparison."
   [repo-path target-branch file-path & [source-branch]]
   (if source-branch
-    (exec-git repo-path "diff" (str target-branch "..." source-branch) "--" file-path)
-    (exec-git repo-path "diff" target-branch "--" file-path)))
+    (exec-git repo-path "diff" "--end-of-options" (str target-branch "..." source-branch) "--" file-path)
+    (exec-git repo-path "diff" "--end-of-options" target-branch "--" file-path)))
 
 (defn get-file-content
   "Get file content at a specific ref (or working tree if ref is nil)."
   [repo-path ref file-path]
   (if ref
-    (exec-git repo-path "show" (str ref ":" file-path))
+    (exec-git repo-path "show" "--end-of-options" (str ref ":" file-path))
     (let [full-path (path/join repo-path file-path)]
       (try
         (fs/readFileSync full-path "utf8")

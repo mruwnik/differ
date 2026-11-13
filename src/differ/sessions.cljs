@@ -10,6 +10,7 @@
   (:require [differ.db :as db]
             [differ.git :as git]
             [differ.util :as util]
+            [differ.schema :as schema]
             [differ.config :as config]
             [differ.backend.protocol :as proto]
             [differ.backend.local :as local]
@@ -252,8 +253,14 @@
   [{:keys [repo-path project branch target-branch]}]
   (js/Promise.resolve
    (let [validation (validate-repo-path repo-path)]
-     (if-not (:valid validation)
+     (cond
+       (not (:valid validation))
        {:error (:error validation)}
+
+       (some util/option-like-ref? [branch target-branch])
+       {:error "Invalid branch name: must not start with '-'"}
+
+       :else
        (let [resolved-path (:path validation)
              project (or project (git/get-project-id resolved-path))
              branch (or branch (git/get-current-branch resolved-path))
@@ -589,8 +596,7 @@
        :files files
        :excluded-files (:manual-removals session)
        :comments comments
-       ;; Count all unresolved including replies - consistent with GitHub sessions
-       :unresolved-count (count (remove :resolved comments))})))
+       :unresolved-count (schema/count-unresolved-threads comments)})))
 
 (defn archive-session!
   "Archive/delete a session and all its data."

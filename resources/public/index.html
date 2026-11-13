@@ -4,6 +4,16 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Differ - Local Code Review</title>
+  <script>
+    // Set the theme before first paint; same rules as differ.client.theme.
+    (function () {
+      var choice;
+      try { choice = localStorage.getItem("differ-theme"); } catch (e) {}
+      var dark = choice === "dark" || (choice !== "light" && !!window.matchMedia &&
+        window.matchMedia("(prefers-color-scheme: dark)").matches);
+      document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
+    })();
+  </script>
   <link rel="stylesheet" href="/css/style.css">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css">
 </head>

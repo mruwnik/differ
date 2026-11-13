@@ -227,6 +227,12 @@
  (fn [db _]
    (or (:expanded-folders db) {})))
 
+;; Theme choice: "light", "dark" or "system"
+(rf/reg-sub
+ :theme
+ (fn [db _]
+   (:theme db)))
+
 ;; Diff view mode (split = side-by-side, unified = stacked)
 (rf/reg-sub
  :diff-view-mode
