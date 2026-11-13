@@ -73,7 +73,7 @@
 
 ;; glibc only reads MALLOC_* at process start, so re-exec once with it set.
 ;; Pinning the mmap threshold stops glibc ratcheting it up after big
-;; execSync git outputs, which otherwise fragments the main arena and
+;; git outputs, which otherwise fragments the main arena and
 ;; holds ~100MB+ of freed memory; the small semi-space stops V8 lazily
 ;; growing a heap that's mostly garbage.
 (defn- relaunch-with-memory-tuning! []
