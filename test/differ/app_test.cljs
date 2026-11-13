@@ -200,3 +200,69 @@
                                                        {:path (str "$(touch " marker ")")})))))))
                     (.then (fn [_]
                              (is (not (fs/existsSync marker))))))))))))
+
+;; ============================================================================
+;; Cross-site requests
+;; ============================================================================
+
+(deftest cross-site-request?-test
+  (let [cross? #(app/cross-site-request? % #{"localhost"})]
+    (testing "safe methods and requests without Origin or Sec-Fetch-Site pass"
+      (is (not (cross? {:method "GET" :origin "http://evil.example" :host "127.0.0.1:8576"})))
+      (is (not (cross? {:method "OPTIONS" :sec-fetch-site "cross-site" :host "127.0.0.1:8576"})))
+      (is (not (cross? {:method "POST" :host "127.0.0.1:8576"}))))
+    (testing "same host on another port, or a trusted base-URL host, passes"
+      (is (not (cross? {:method "POST" :origin "http://127.0.0.1:8081" :host "127.0.0.1:8576"})))
+      (is (not (cross? {:method "POST" :origin "http://[::1]:8081" :host "[::1]:8576"})))
+      (is (not (cross? {:method "PATCH" :origin "http://localhost:8081" :host "127.0.0.1:8576"}))))
+    (testing "another site, Origin: null, or Sec-Fetch-Site: cross-site is refused"
+      (is (cross? {:method "POST" :origin "http://evil.example" :host "127.0.0.1:8576"}))
+      (is (cross? {:method "DELETE" :origin "null" :host "127.0.0.1:8576"}))
+      (is (cross? {:method "POST" :sec-fetch-site "cross-site" :host "127.0.0.1:8576"})))))
+
+(deftest cross-site-requests-refused-test
+  (testing "state-changing requests from another site get 403 and change nothing"
+    (async done
+           (run-with-server
+            done
+            (fn [base]
+              (let [create (fn [headers content-type]
+                             (request (str base "/api/sessions")
+                                      {:method "POST"
+                                       :headers (merge {"Content-Type" content-type} headers)
+                                       :body (js/JSON.stringify #js {:repo_path (repo-path)})}))]
+                (-> (create {"Origin" "http://evil.example"} "text/plain")
+                    (.then (fn [{:keys [status]}]
+                             (is (= 403 status))
+                             (create {"Origin" "http://evil.example"} "application/json")))
+                    (.then (fn [{:keys [status]}]
+                             (is (= 403 status))
+                             (create {"Sec-Fetch-Site" "cross-site"} "application/json")))
+                    (.then (fn [{:keys [status]}]
+                             (is (= 403 status))
+                             (is (empty? (sessions/list-sessions)))
+                             ;; Same host, other port: the dev UI proxy case.
+                             (create {"Origin" "http://127.0.0.1:8081"} "application/json")))
+                    (.then (fn [{:keys [status]}]
+                             (is (= 200 status))
+                             (is (= 1 (count (sessions/list-sessions))))
+                             (create {} "application/json")))
+                    (.then (fn [{:keys [status]}]
+                             (is (= 200 status))
+                             ;; The login form posts same-origin and still parses.
+                             (request (str base "/oauth/token")
+                                      {:method "POST"
+                                       :headers {"Content-Type" "application/x-www-form-urlencoded"
+                                                 "Origin" base}
+                                       :body "grant_type=client_credentials"})))
+                    (.then (fn [{:keys [status body]}]
+                             (is (= 400 status))
+                             (is (= "Unsupported grant_type: client_credentials" (:error body)))
+                             (request (str base "/oauth/authorize")
+                                      {:method "POST"
+                                       :redirect "manual"
+                                       :headers {"Content-Type" "application/x-www-form-urlencoded"
+                                                 "Origin" base}
+                                       :body "client_id=nope"})))
+                    (.then (fn [{:keys [status]}]
+                             (is (not= 403 status)))))))))))
