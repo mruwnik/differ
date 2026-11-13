@@ -48,6 +48,15 @@ npx shadow-cljs watch server ui
 
 Open <http://localhost:8081> for development (with hot reload) or <http://localhost:8576> for production.
 
+Then connect your agent, e.g. Claude Code (details in [MCP Integration](#mcp-integration)):
+
+```bash
+claude mcp add --transport http differ http://localhost:8576/mcp
+# then, inside Claude Code: /mcp -> differ -> authenticate
+```
+
+Read the [Security notes](#security-notes) before running it anywhere but a trusted machine.
+
 ## Production Build
 
 ```bash
@@ -65,7 +74,7 @@ node target/server.js
 
 Differ exposes an MCP endpoint at `http://localhost:8576/mcp` for AI agent integration.
 
-**Note:** By default the MCP server implements the OAuth flow for clients that require it, but accepts all requests without actually verifying credentials. This is intentional as local services are assumed to be secure. Don't expose it to the internet.
+**Note:** Tool calls require a Bearer token, which clients obtain through the server's OAuth flow (`initialize` and `tools/list` work without one). By default the authorization endpoint approves every request without asking for credentials. This is intentional as local services are assumed to be secure. Don't expose it to the internet.
 
 **Optional login:** Set both `DIFFER_AUTH_USERNAME` and `DIFFER_AUTH_PASSWORD` (env vars or `.env`) to require a username/password before the authorization endpoint issues a token. When set, the OAuth authorize page shows a login form and only grants access after the credentials match. When unset, the auto-approve behavior above is used.
 
@@ -78,12 +87,18 @@ Differ exposes an MCP endpoint at `http://localhost:8576/mcp` for AI agent integ
 
 ### Claude Code
 
-Add to your MCP settings file (`~/.claude/settings.json` or project-level `.claude/settings.json`):
+Add the server with the CLI (add `--scope user` to have it in every project):
+
+```bash
+claude mcp add --transport http differ http://localhost:8576/mcp
+```
+
+Or check a `.mcp.json` into the project root (Claude Code asks for approval before using project servers):
 
 ```json
 {
   "mcpServers": {
-    "differ-review": {
+    "differ": {
       "type": "http",
       "url": "http://localhost:8576/mcp"
     }
@@ -91,11 +106,23 @@ Add to your MCP settings file (`~/.claude/settings.json` or project-level `.clau
 }
 ```
 
-See [Claude Code MCP docs](https://docs.anthropic.com/en/docs/claude-code/mcp) for more details.
+The bundled slash commands expect the server to be named `differ` (their tools are `mcp__differ__*`).
+
+**First use:** run `/mcp` in Claude Code, select `differ` and authenticate. Claude Code opens the server's authorization page in a browser; with the default settings it approves at once (with the optional login, enter the username and password). Access tokens issued by differ are valid for a year.
+
+**Browser on another machine** (e.g. Claude Code over SSH): the OAuth redirect goes to a callback that Claude Code listens on at `http://localhost:<port>/callback` on the machine where Claude Code runs, and the browser also has to reach differ's authorization page (at `DIFFER_URL`, default `http://localhost:8576`). Claude Code picks a random callback port unless you fix it with `--callback-port`. Forward both ports from the browser machine, e.g.:
+
+```bash
+claude mcp add --transport http --callback-port 8577 differ http://localhost:8576/mcp
+# on the machine with the browser:
+ssh -L 8576:localhost:8576 -L 8577:localhost:8577 user@host
+```
+
+See [Claude Code MCP docs](https://code.claude.com/docs/en/mcp) for more details.
 
 ### Other Agents
 
-The endpoint accepts standard MCP JSON-RPC over HTTP POST. Any agent that supports MCP can connect by pointing to the URL.
+The endpoint accepts standard MCP JSON-RPC over HTTP POST. Any agent that supports MCP over HTTP can connect by pointing to the URL. How the server is configured differs between clients; the client must support the OAuth flow (the server publishes `/.well-known/oauth-authorization-server` and `/.well-known/oauth-protected-resource` and supports dynamic client registration, PKCE and refresh tokens) or send a valid `Authorization: Bearer` token. Redirect URIs must point to localhost or a private-network address.
 
 ### Available MCP Tools
 
