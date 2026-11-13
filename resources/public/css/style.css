@@ -1102,7 +1102,9 @@ a:hover {
 }
 
 /* Dark syntax colors (highlight.js "GitHub Dark"; section lightened for
-   contrast). These outrank the light rules above and the CDN stylesheet. */
+   contrast). These outrank the CDN stylesheet and the plain .hljs-* rules,
+   but have the same specificity (0,3,0) as the diff-row rules above, so they
+   must stay after them. */
 :root[data-theme="dark"] .hljs-doctag,
 :root[data-theme="dark"] .hljs-keyword,
 :root[data-theme="dark"] .hljs-meta .hljs-keyword,
