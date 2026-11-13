@@ -99,27 +99,72 @@ The endpoint accepts standard MCP JSON-RPC over HTTP POST. Any agent that suppor
 
 ### Available MCP Tools
 
-| Tool | Description |
-|------|-------------|
-| `get_or_create_session` | Get or create a review session for a repo |
-| `list_sessions` | List all active review sessions |
-| `register_files` | Add files to the review set |
-| `unregister_files` | Remove files from the review set |
-| `get_review_state` | Get current session state with all comments |
-| `get_pending_feedback` | Get unresolved comments |
-| `add_comment` | Add a comment or reply |
-| `resolve_comment` | Mark a comment as resolved |
-| `unresolve_comment` | Reopen a resolved comment |
-| `submit_review` | Finish your review with an optional summary comment |
-| `get_session_diff` | Get the diff content for a session |
-| `get_file_versions` | Get original and modified versions of a file |
-| `get_context` | Get session context (path, branch, PR info) |
-| `list_directory` | List directory contents at a ref |
-| `get_file_content` | Get file content at a ref |
-| `get_history` | Get commit/change history for the session |
-| `create_pull_request` | Push branch and create a GitHub PR |
-| `list_github_prs` | List open GitHub PRs for a repo, annotated with differ session state |
-| `wait_for_event` | Block until new events appear for a scope (GitHub PR activity or session updates); see below |
+Required arguments are listed; see each tool's schema (`tools/list`) for the optional ones.
+
+**Sessions and diff**
+
+| Tool | Required | Description |
+|------|----------|-------------|
+| `list_sessions` | – | List active review sessions, optionally filtered by `project` |
+| `get_or_create_session` | `repo_path` or `github_pr` | Get or create the session for a local repo/branch or a GitHub PR URL |
+| `register_files` | `session_id`, `paths`, `agent_id` | Add files to the review set |
+| `unregister_files` | `session_id`, `paths`, `agent_id` | Remove files from the review set |
+| `get_session_diff` | `session_id` | Get the parsed diff for a session (optionally one `file`) |
+| `get_file_versions` | `session_id`, `file` | Get original and modified versions of a file |
+| `get_context` | `session_id` | Get session context (local: path, branch; GitHub: PR info) |
+| `list_directory` | `session_id` | List directory contents at a ref |
+| `get_file_content` | `session_id`, `file` | Get file content at a ref, optionally a line range |
+| `get_history` | `session_id` | Get commit/change history for the session |
+
+**Comments and review**
+
+| Tool | Required | Description |
+|------|----------|-------------|
+| `get_review_state` | `session_id` | Get session state with files and all comments |
+| `get_pending_feedback` | `session_id` | Get unresolved comments and CI status |
+| `add_comment` | `session_id`, `text`, `author` | Add a comment, or a reply with `parent_id` |
+| `resolve_comment` | `session_id`, `comment_id`, `author` | Mark a comment thread as resolved |
+| `unresolve_comment` | `session_id`, `comment_id`, `author` | Reopen a resolved comment thread |
+| `submit_review` | `session_id` | Finish your review with an optional summary comment |
+
+**GitHub and events**
+
+| Tool | Required | Description |
+|------|----------|-------------|
+| `request_review` | `session_id` | Push the branch; for local sessions create a GitHub PR, for GitHub sessions push local commits (with `repo_path`) and return the PR |
+| `list_github_prs` | `project` (`owner/repo`) | List GitHub PRs for a repo, annotated with differ session state |
+| `wait_for_event` | `scope` | Block until new events appear for a scope (GitHub PR activity or session updates); see below |
+
+**Kanban board** (see [Kanban Board](#kanban-board))
+
+| Tool | Required | Description |
+|------|----------|-------------|
+| `create_task` | `repo_path`, `title` | Create a task (creates the repo's board if needed) |
+| `list_tasks` | `repo_path` | List tasks, most urgent first; filters and field projection |
+| `take_task` | `worker_name` | Claim a task by `task_id`, or auto-assign the next one from `repo_path` |
+| `update_task` | `task_id` | Change status, fields, checklist, commits, dependencies; add a note |
+| `release_task` | `task_id` | Release your claim without changing the status |
+| `add_note` | `task_id`, `content` | Add a note to a task |
+| `get_upstream` | `task_id` | Tasks the given task transitively depends on |
+| `get_downstream` | `task_id` | Tasks that transitively depend on the given task |
+| `add_board_column` | `repo_path`, `status` | Add a status column |
+| `remove_board_column` | `repo_path`, `status` | Remove a status column (`move_to` moves its tasks) |
+| `board_active` | `repo_path` | Compact "who is working on what" view |
+| `board_stats` | `repo_path` | Throughput statistics over a trailing window |
+
+**Google Docs** (see [Google Docs](#google-docs))
+
+| Tool | Required | Description |
+|------|----------|-------------|
+| `gdocs_info` | `doc` | Show a document's title and tabs |
+| `gdocs_read` | `doc` | Read a document, or one `tab`, as markdown |
+| `gdocs_write` | `doc`, `tab` | Render markdown (`markdown` or `file`) into an existing tab |
+
+**Misc**
+
+| Tool | Required | Description |
+|------|----------|-------------|
+| `random_name` | – | Pick a random name (e.g. for a reviewer or worker) |
 
 ### `wait_for_event`
 
@@ -288,7 +333,7 @@ Edit `resources/config.edn` to customize settings:
  ;; Watcher settings (server)
  :watcher-debounce-ms 300         ;; Debounce file change events
 
- ;; Push whitelist - controls which repos/branches can be pushed via create_pull_request
+ ;; Push whitelist - controls which repos/branches can be pushed via request_review
  ;; Empty map = all repos/branches allowed
  ;; Example: {"owner/repo" ["feature/*" "fix/*"], "myorg/*" ["*"]}
  :push-whitelist {}}
@@ -296,7 +341,7 @@ Edit `resources/config.edn` to customize settings:
 
 ### Push Whitelist
 
-The `create_pull_request` tool can be restricted via a whitelist in `config.edn`:
+The pushes `request_review` makes when it creates a new PR can be restricted via a whitelist in `config.edn` (pushing further commits to an already open PR of a GitHub session is not checked):
 
 ```edn
 {:push-whitelist {"owner/repo" ["feature/*" "fix/*"]
