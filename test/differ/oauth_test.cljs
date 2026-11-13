@@ -257,23 +257,77 @@
                                    :state state})]
       (is (str/includes? (:redirect-url result) (str "state=" state))))))
 
+(defn- code-of [authorize-result]
+  (second (re-find #"code=([^&]+)" (:redirect-url authorize-result))))
+
 (deftest authorize-repeated-state-test
-  (testing "a repeated authorize request with the same state replaces the pending one"
+  (testing "a repeated state gets its own row and does not touch the first"
     (oauth/register-client {:client-id "test-client"
                             :redirect-uris ["http://localhost:3000/callback"]})
-    (let [state (str "repeat-" (random-uuid))
-          params {:client-id "test-client"
+    (let [params {:client-id "test-client"
                   :redirect-uri "http://localhost:3000/callback"
                   :scopes ["read"]
-                  :state state}
-          code-of #(second (re-find #"code=([^&]+)" (:redirect-url %)))
+                  :state (str "repeat-" (random-uuid))}
           first-code (code-of (oauth/authorize params))
-          second-result (oauth/authorize params)
-          second-code (code-of second-result)]
-      (is (some? (:redirect-url second-result)))
-      (is (not= first-code second-code))
-      (is (nil? (db/get-oauth-state-by-code first-code)))
-      (is (= state (:state (db/get-oauth-state-by-code second-code)))))))
+          second-code (code-of (oauth/authorize params))
+          first-row (db/get-oauth-state-by-code first-code)
+          second-row (db/get-oauth-state-by-code second-code)]
+      (is (some? first-row))
+      (is (some? second-row))
+      (is (not= (:id first-row) (:id second-row)))
+      (is (nil? (:error (oauth/exchange-authorization-code {:code first-code
+                                                            :client-id "test-client"}))))
+      (is (nil? (:error (oauth/exchange-authorization-code {:code second-code
+                                                            :client-id "test-client"})))))))
+
+(deftest authorize-repeated-state-keeps-issued-scopes-test
+  (testing "a later request with the same state does not change an issued token's scopes"
+    (oauth/register-client {:client-id "test-client"
+                            :redirect-uris ["http://localhost:3000/callback"]})
+    (doseq [[granted later] [[["read"] ["read" "write"]]
+                             [["read" "write"] ["read"]]]]
+      (let [params {:client-id "test-client"
+                    :redirect-uri "http://localhost:3000/callback"
+                    :state (str "scopes-" (random-uuid))}
+            token (:access_token (oauth/exchange-authorization-code
+                                  {:code (code-of (oauth/authorize (assoc params :scopes granted)))
+                                   :client-id "test-client"}))]
+        (is (= (set granted) (set (:scopes (oauth/verify-token token)))))
+        (is (some? (:redirect-url (oauth/authorize (assoc params :scopes later)))))
+        (is (= (set granted) (set (:scopes (oauth/verify-token token)))))))))
+
+(deftest authorize-repeated-state-other-client-test
+  (testing "another client, redirect_uri or PKCE challenge with the same state leaves the pending code alone"
+    (oauth/register-client {:client-id "client-a"
+                            :redirect-uris ["http://localhost:3000/callback"]})
+    (oauth/register-client {:client-id "client-b"
+                            :redirect-uris ["http://localhost:4000/callback"
+                                            "http://localhost:4000/other"]})
+    (let [state (str "shared-" (random-uuid))
+          verifier "verifier-a-0123456789012345678901234567890123456789"
+          a-code (code-of (oauth/authorize {:client-id "client-a"
+                                            :redirect-uri "http://localhost:3000/callback"
+                                            :scopes ["read"]
+                                            :state state
+                                            :code-challenge (util/sha256-base64url verifier)}))
+          b-code (code-of (oauth/authorize {:client-id "client-b"
+                                            :redirect-uri "http://localhost:4000/callback"
+                                            :scopes ["read" "write"]
+                                            :state state
+                                            :code-challenge (util/sha256-base64url "other-verifier")}))
+          _ (oauth/authorize {:client-id "client-b"
+                              :redirect-uri "http://localhost:4000/other"
+                              :scopes ["read"]
+                              :state state})
+          a-result (oauth/exchange-authorization-code {:code a-code
+                                                       :client-id "client-a"
+                                                       :code-verifier verifier})]
+      (is (nil? (:error a-result)))
+      (is (= ["read"] (:scopes (oauth/verify-token (:access_token a-result)))))
+      (is (= "Client ID mismatch"
+             (:error (oauth/exchange-authorization-code {:code b-code
+                                                         :client-id "client-a"
+                                                         :code-verifier verifier})))))))
 
 (deftest authorize-handles-redirect-with-query-test
   (testing "appends to existing query string in redirect URI"

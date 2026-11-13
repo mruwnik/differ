@@ -655,6 +655,45 @@
         (.close raw-db)
         (helpers/remove-dir dir)))))
 
+(deftest run-migrations-drops-unique-oauth-state-test
+  (let [dir (helpers/create-temp-dir "differ-oauth-state-migration-test")
+        raw-db (Database (str dir "/raw.db"))
+        insert-state "INSERT INTO oauth_state (id, state, client_id, redirect_uri, expires_at, created_at)
+                      VALUES (?, 'S', 'c1', 'http://localhost/cb', 'x', 'x')"]
+    (try
+      (.pragma raw-db "foreign_keys = ON")
+      (.exec raw-db "CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT UNIQUE NOT NULL, name TEXT,
+                       api_key TEXT UNIQUE, created_at TEXT NOT NULL);
+                     CREATE TABLE oauth_clients (client_id TEXT PRIMARY KEY, client_secret TEXT,
+                       client_name TEXT, redirect_uris TEXT NOT NULL DEFAULT '[]', scope TEXT DEFAULT 'read',
+                       client_uri TEXT, logo_uri TEXT, created_at TEXT NOT NULL);
+                     CREATE TABLE oauth_state (id TEXT PRIMARY KEY, state TEXT UNIQUE NOT NULL,
+                       client_id TEXT NOT NULL, redirect_uri TEXT NOT NULL,
+                       redirect_uri_provided_explicitly INTEGER DEFAULT 0, code_challenge TEXT,
+                       scopes TEXT DEFAULT '[]', code TEXT UNIQUE, user_id TEXT, stale INTEGER DEFAULT 0,
+                       expires_at TEXT NOT NULL, created_at TEXT NOT NULL,
+                       FOREIGN KEY (client_id) REFERENCES oauth_clients(client_id),
+                       FOREIGN KEY (user_id) REFERENCES users(id));
+                     CREATE TABLE oauth_access_tokens (id TEXT PRIMARY KEY, user_id TEXT NOT NULL,
+                       oauth_state_id TEXT, expires_at TEXT NOT NULL, created_at TEXT NOT NULL,
+                       FOREIGN KEY (user_id) REFERENCES users(id),
+                       FOREIGN KEY (oauth_state_id) REFERENCES oauth_state(id));
+                     INSERT INTO users (id, email, created_at) VALUES ('u1', 'a@b', 'x');
+                     INSERT INTO oauth_clients (client_id, created_at) VALUES ('c1', 'x');")
+      (.run (.prepare raw-db insert-state) "row1")
+      (.exec raw-db "INSERT INTO oauth_access_tokens VALUES ('t1', 'u1', 'row1', 'x', 'x')")
+      (is (thrown? js/Error (.run (.prepare raw-db insert-state) "row2")))
+      (db/run-migrations! raw-db)
+      (db/run-migrations! raw-db)
+      (.run (.prepare raw-db insert-state) "row2")
+      (is (= 2 (.-n (.get (.prepare raw-db "SELECT COUNT(*) AS n FROM oauth_state WHERE state = 'S'")))))
+      (is (= "row1" (.-oauth_state_id (.get (.prepare raw-db "SELECT oauth_state_id FROM oauth_access_tokens")))))
+      (is (= 1 (.pragma raw-db "foreign_keys" #js {:simple true})))
+      (is (empty? (.pragma raw-db "foreign_key_check")))
+      (finally
+        (.close raw-db)
+        (helpers/remove-dir dir)))))
+
 ;; ============================================================================
 ;; run-migrations! wiring test
 ;; Uses a raw better-sqlite3 Database (bypassing differ.db/init! and

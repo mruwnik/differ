@@ -102,7 +102,7 @@
       );
       CREATE TABLE IF NOT EXISTS oauth_state (
         id TEXT PRIMARY KEY,
-        state TEXT UNIQUE NOT NULL,
+        state TEXT NOT NULL,
         client_id TEXT NOT NULL,
         redirect_uri TEXT NOT NULL,
         redirect_uri_provided_explicitly INTEGER DEFAULT 0,
