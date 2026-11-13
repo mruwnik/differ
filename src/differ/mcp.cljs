@@ -214,7 +214,7 @@
                   :required ["session_id"]}}
 
    {:name "create_task"
-    :description "Create a task on a repo's kanban board. Auto-creates the board if needed."
+    :description "Create a task on a repo's kanban board. Auto-creates the board if needed, but only for an absolute repo path."
     :inputSchema {:type "object"
                   :properties {:repo_path {:type "string"
                                            :description "Absolute path to the repo directory"}
@@ -389,7 +389,7 @@
                   :required ["task_id"]}}
 
    {:name "add_board_column"
-    :description "Add a status column to a repo's kanban board (creating the board if needed). Statuses are lowercase snake_case ids, e.g. 'qa'; 'blocked' is reserved (computed from dependencies). Column order matters: board_stats classifies moves as advanced/reverted by it. Returns the board with its updated `statuses`."
+    :description "Add a status column to a repo's kanban board (creating the board if needed, but only for an absolute repo path). Statuses are lowercase snake_case ids, e.g. 'qa'; 'blocked' is reserved (computed from dependencies). Column order matters: board_stats classifies moves as advanced/reverted by it. Returns the board with its updated `statuses`."
     :inputSchema {:type "object"
                   :properties {:repo_path {:type "string"
                                            :description "Absolute path to the repo directory"}
