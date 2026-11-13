@@ -11,6 +11,8 @@
             [differ.github-api :as gh-api]
             [differ.backend.local :as local-be]
             [differ.backend.protocol :as proto]
+            ["child_process" :as cp]
+            ["fs" :as fs]
             ["path" :as path]))
 
 ;; ============================================================================
@@ -466,6 +468,108 @@
                           (done)))
                  (.catch (fn [e]
                            (restore)
+                           (is false (str "unexpected error: " (.-message e)))
+                           (done))))))))
+
+;; ============================================================================
+;; get-or-create-session: detached HEAD
+;; ============================================================================
+
+(defn- git! [dir & args]
+  (cp/execFileSync "git" (clj->js args) #js {:cwd dir :stdio "pipe"}))
+
+(deftest detached-head-checkouts-get-separate-sessions-test
+  (testing "two detached worktrees of one repo do not share a session"
+    (async done
+           (let [repo (test-repo)
+                 wt-dir (helpers/create-temp-dir "differ-test-wt")
+                 wt1 (path/join wt-dir "one")
+                 wt2 (path/join wt-dir "two")
+                 cleanup #(helpers/remove-dir wt-dir)
+                 project "https://example.com/acme/widgets.git"
+                 main-id (sessions/local-session-id project "main")]
+             ;; Same origin URL, so both worktrees resolve to the same project.
+             (git! repo "remote" "add" "origin" project)
+             (git! repo "worktree" "add" "--detach" wt1)
+             (git! repo "worktree" "add" "--detach" wt2)
+             (-> (sessions/get-or-create-session {:repo-path wt1})
+                 (.then (fn [r1]
+                          (-> (sessions/get-or-create-session {:repo-path wt2})
+                              (.then (fn [r2] [r1 r2])))))
+                 (.then (fn [[r1 r2]]
+                          (let [s1 (:session r1) s2 (:session r2)]
+                            (is (= "HEAD" (:branch s1) (:branch s2)))
+                            (is (true? (:is-new r2)))
+                            (is (not= (:id s1) (:id s2)))
+                            (is (= wt2 (:repo-path s2))))
+                          (sessions/get-or-create-session {:repo-path wt1})))
+                 (.then (fn [again]
+                          (is (false? (:is-new again)) "same checkout rejoins its session")
+                          (sessions/get-or-create-session {:repo-path repo})))
+                 (.then (fn [named]
+                          (is (= main-id (:id (:session named)))
+                              "branch sessions keep their id")
+                          (cleanup)
+                          (done)))
+                 (.catch (fn [e]
+                           (cleanup)
+                           (is false (str "unexpected error: " (.-message e)))
+                           (done))))))))
+
+(deftest detached-head-session-key-follows-symlinks-test
+  (testing "one detached checkout reached through a symlink keeps one session"
+    (async done
+           (let [repo (test-repo)
+                 wt-dir (helpers/create-temp-dir "differ-test-wt")
+                 wt (path/join wt-dir "one")
+                 link (path/join wt-dir "link")
+                 cleanup #(helpers/remove-dir wt-dir)]
+             ;; With an origin URL the project id does not depend on the path
+             (git! repo "remote" "add" "origin" "https://example.com/acme/widgets.git")
+             (git! repo "worktree" "add" "--detach" wt)
+             (fs/symlinkSync wt link)
+             (-> (sessions/get-or-create-session {:repo-path wt})
+                 (.then (fn [r1]
+                          (-> (sessions/get-or-create-session {:repo-path link})
+                              (.then (fn [r2] [r1 r2])))))
+                 (.then (fn [[r1 r2]]
+                          (is (false? (:is-new r2)))
+                          (is (= (:id (:session r1)) (:id (:session r2))))
+                          (cleanup)
+                          (done)))
+                 (.catch (fn [e]
+                           (cleanup)
+                           (is false (str "unexpected error: " (.-message e)))
+                           (done))))))))
+
+(deftest detached-head-session-survives-head-moves-test
+  (testing "a commit or a checkout of another sha keeps the detached session"
+    (async done
+           (let [repo (test-repo)
+                 wt-dir (helpers/create-temp-dir "differ-test-wt")
+                 wt (path/join wt-dir "one")
+                 cleanup #(helpers/remove-dir wt-dir)
+                 rejoin #(sessions/get-or-create-session {:repo-path wt})]
+             (git! repo "worktree" "add" "--detach" wt)
+             (-> (rejoin)
+                 (.then (fn [first-r]
+                          (git! wt "commit" "--allow-empty" "-q" "-m" "move HEAD")
+                          (-> (rejoin)
+                              (.then (fn [after-commit]
+                                       (git! wt "checkout" "-q" "--detach" "HEAD~1")
+                                       (-> (rejoin)
+                                           (.then (fn [after-checkout]
+                                                    [first-r after-commit after-checkout]))))))))
+                 (.then (fn [[first-r after-commit after-checkout]]
+                          (let [id (:id (:session first-r))]
+                            (is (false? (:is-new after-commit)))
+                            (is (= id (:id (:session after-commit))))
+                            (is (false? (:is-new after-checkout)))
+                            (is (= id (:id (:session after-checkout)))))
+                          (cleanup)
+                          (done)))
+                 (.catch (fn [e]
+                           (cleanup)
                            (is false (str "unexpected error: " (.-message e)))
                            (done))))))))
 

@@ -90,6 +90,35 @@
         ALTER TABLE sessions ADD COLUMN github_pr_number INTEGER;
       "))))
 
+(defn- migrate-detached-session-ids
+  "Re-key local detached-HEAD sessions stored under the old shared id
+   (project|HEAD) to the per-checkout id (project|HEAD:<path>), using the
+   row's repo_path, and move their comments along. A row whose new id is
+   already taken is left as it is."
+  [^js db]
+  (let [rows (.all (.prepare db "SELECT id, project, repo_path FROM sessions
+                                 WHERE session_type = 'local' AND branch = 'HEAD'
+                                   AND repo_path IS NOT NULL"))
+        ^js taken (.prepare db "SELECT 1 FROM sessions WHERE id = ?")
+        ^js move-session (.prepare db "UPDATE sessions SET id = ? WHERE id = ?")
+        ^js move-comments (.prepare db "UPDATE comments SET session_id = ? WHERE session_id = ?")
+        rekey! (.transaction db
+                             (fn [new-id old-id]
+                               ;; comments still point at old-id until the second update
+                               (.pragma db "defer_foreign_keys = ON")
+                               (.run move-session new-id old-id)
+                               (.run move-comments new-id old-id)))]
+    (doseq [^js row rows
+            :let [old-id (.-id row)]
+            ;; rows already on a per-path id are skipped before any realpath call
+            :when (= old-id (str "local:" (util/session-id (.-project row) "HEAD")))
+            :let [repo-path (.-repo_path row)
+                  real-path (try (fs/realpathSync repo-path) (catch :default _ repo-path))
+                  new-id (str "local:" (util/session-id (.-project row)
+                                                        (util/detached-key-branch real-path)))]
+            :when (nil? (.get taken new-id))]
+      (rekey! new-id old-id))))
+
 (def default-board-statuses
   "Canonical task lifecycle for new boards. Also interpolated into the
    boards.statuses column default in kanban-ddl, and used as the JSON
@@ -494,6 +523,7 @@
   (migrate-oauth-state-unique-state db)
   (migrate-comments-table db)
   (migrate-sessions-table db)
+  (migrate-detached-session-ids db)
   (migrate-github-tokens-table db)
   (migrate-kanban-tables db)
   (migrate-task-priority db)

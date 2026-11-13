@@ -27,6 +27,8 @@
          ^{:key (:id s)}
          [:option {:value (:id s)}
           (str (:project s) " / " (:branch s)
+               ;; Detached checkouts all report HEAD; the path tells them apart
+               (when (= "HEAD" (:branch s)) (str " (" (:repo-path s) ")"))
                (when (pos? (:unresolved-count s 0))
                  (str " (" (:unresolved-count s) ")")))])])))
 
