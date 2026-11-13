@@ -31,6 +31,8 @@
                   :parent-id nil
                   :text ""}
    :user {:author "user"}  ;; Default author for human comments
+   :theme "system"         ;; "light", "dark" or "system"
+   :system-dark? false     ;; OS prefers-color-scheme is dark
    :config default-config
    ;; Board/kanban state
    :boards []

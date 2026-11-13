@@ -375,6 +375,13 @@ a:hover {
   color: var(--color-fg-on-emphasis);
 }
 
+/* Inset, because the group's overflow: hidden clips an outer ring;
+   text color so it shows on the active (accent) button too */
+.btn-toggle:focus-visible {
+  outline: 2px solid var(--color-fg);
+  outline-offset: -2px;
+}
+
 /* Diff viewer */
 .diff-container {
   display: flex;

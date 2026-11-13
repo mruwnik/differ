@@ -5,7 +5,8 @@
             [differ.client.db :as db]
             [differ.client.api :as api]
             [differ.client.board-dnd :as board-dnd]
-            [differ.client.task-filter :as task-filter]))
+            [differ.client.task-filter :as task-filter]
+            [differ.client.theme :as theme]))
 
 ;; LocalStorage helpers
 (defn- load-preference [key]
@@ -24,18 +25,42 @@
  :initialize
  (fn [_ _]
    (let [saved-view-mode (load-preference "differ-view-mode")
+         theme-choice (theme/load-choice (theme/local-storage))
+         system-dark? (theme/system-dark?)
          ;; Check if returning from GitHub OAuth - explicit check for "true" string
          search-params (js/URLSearchParams. (.-search js/location))
          github-connected? (= (.get search-params "github_connected") "true")]
      ;; Clean up the URL if we have the github_connected param (preserve hash fragment)
      (when github-connected?
        (.replaceState js/history nil "" (str (.-pathname js/location) (.-hash js/location))))
-     {:db (cond-> db/default-db
+     {:db (cond-> (assoc db/default-db :theme theme-choice :system-dark? system-dark?)
             saved-view-mode (assoc :diff-view-mode saved-view-mode)
             github-connected? (assoc :github-just-connected true))
+      :apply-theme (theme/resolve-theme theme-choice system-dark?)
       :dispatch-n (cond-> [[:load-config]
                            [:load-sessions]]
                     github-connected? (conj [:show-github-settings]))})))
+
+;; Theme
+(rf/reg-fx
+ :apply-theme
+ (fn [resolved]
+   (theme/apply-theme! resolved)))
+
+(rf/reg-fx
+ :save-theme
+ (fn [choice]
+   (theme/save-choice! (theme/local-storage) choice)))
+
+(rf/reg-event-fx
+ :set-theme
+ (fn [{:keys [db]} [_ choice]]
+   (theme/select-choice db choice)))
+
+(rf/reg-event-fx
+ :system-theme-changed
+ (fn [{:keys [db]} [_ dark?]]
+   (theme/system-changed db dark?)))
 
 ;; Config
 (rf/reg-event-fx

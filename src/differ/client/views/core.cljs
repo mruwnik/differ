@@ -3,7 +3,8 @@
   (:require [re-frame.core :as rf]
             [differ.client.views.sessions :as sessions]
             [differ.client.views.diff :as diff]
-            [differ.client.views.board :as board]))
+            [differ.client.views.board :as board]
+            [differ.client.theme :as theme]))
 
 (defn- session-selector []
   (let [sessions @(rf/subscribe [:sessions])
@@ -29,6 +30,19 @@
                (when (pos? (:unresolved-count s 0))
                  (str " (" (:unresolved-count s) ")")))])])))
 
+(defn- theme-toggle []
+  (let [current @(rf/subscribe [:theme])]
+    [:div.diff-view-toggle.theme-toggle {:role "group" :aria-label "Color theme"}
+     (for [[value label] theme/choices]
+       ^{:key value}
+       [:button.btn-toggle
+        {:type "button"
+         :class (when (= current value) "active")
+         :aria-pressed (= current value)
+         :title (if (= value "system") "Follow the system setting" (str label " theme"))
+         :on-click #(rf/dispatch [:set-theme value])}
+        label])]))
+
 (defn header []
   (let [page @(rf/subscribe [:current-page])
         connected? @(rf/subscribe [:sse-connected?])]
@@ -49,7 +63,8 @@
       (when (= page :session)
         [:span {:style {:font-size "12px"
                         :color (if connected? "var(--color-success-text)" "var(--color-danger-text)")}}
-         (if connected? "Live" "Disconnected")])]]))
+         (if connected? "Live" "Disconnected")])
+      [theme-toggle]]]))
 
 (defn error-banner []
   (let [error @(rf/subscribe [:error])]
