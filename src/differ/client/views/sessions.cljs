@@ -69,11 +69,11 @@
           [:span.session-project (extract-project-name project)]
           [:span.session-branch
            (if (str/blank? branch)
-             [:em {:style {:color "#6a737d"}} "working tree"]
+             [:em {:style {:color "var(--color-fg-muted)"}} "working tree"]
              [:span branch])
            " -> "
            target-branch
-           [:span {:style {:color "#6a737d" :margin-left "8px"}}
+           [:span {:style {:color "var(--color-fg-muted)" :margin-left "8px"}}
             (format-time updated-at)]]]
          [:span {:class (str "session-badge" (when (zero? count) " zero"))}
           (if (zero? count)
@@ -102,8 +102,8 @@
     (fn []
       (let [recent-paths (get-recent-paths)]
         (if @show-form?
-          [:div {:style {:background "#f6f8fa"
-                         :border "1px solid #d1d5da"
+          [:div {:style {:background "var(--color-bg-subtle)"
+                         :border "1px solid var(--color-border-control)"
                          :border-radius "6px"
                          :padding "16px"
                          :margin-bottom "16px"}}
@@ -123,12 +123,12 @@
                                        (reset! show-form? false)))
                      :style {:width "100%"
                              :padding "8px 12px"
-                             :border "1px solid #d1d5da"
+                             :border "1px solid var(--color-border-control)"
                              :border-radius "4px"
                              :font-size "14px"}}]
             (when (seq recent-paths)
               [:div {:style {:margin-top "8px"}}
-               [:span {:style {:font-size "12px" :color "#6a737d"}} "Recent: "]
+               [:span {:style {:font-size "12px" :color "var(--color-fg-muted)"}} "Recent: "]
                (for [path recent-paths]
                  ^{:key path}
                  [:button.btn-link
@@ -159,8 +159,8 @@
                     :padding "2px 6px"
                     :border-radius "3px"
                     :margin-left "8px"
-                    :background (if is-pat? "#fff3cd" "#d1f7d6")
-                    :color (if is-pat? "#856404" "#22863a")
+                    :background (if is-pat? "var(--color-attention-badge-bg)" "var(--color-success-badge-bg)")
+                    :color (if is-pat? "var(--color-attention-badge-fg)" "var(--color-success-fg-alt)")
                     :font-weight "500"}}
      (if is-pat? "PAT" "OAuth")]))
 
@@ -212,17 +212,17 @@
           {:on-click #(rf/dispatch [:hide-pat-modal])}
           "×"]]
         [:div.modal-body
-         [:p {:style {:color "#6a737d" :margin "0 0 16px 0" :font-size "13px"}}
+         [:p {:style {:color "var(--color-fg-muted)" :margin "0 0 16px 0" :font-size "13px"}}
           "Personal Access Tokens can access repositories that restrict OAuth apps. "
           "Some organizations block third-party OAuth applications, requiring PATs instead."]
 
          (when error
-           [:div {:style {:background "#ffeef0"
-                          :border "1px solid #f97583"
+           [:div {:style {:background "var(--color-danger-subtle-alt)"
+                          :border "1px solid var(--color-danger-border)"
                           :padding "8px 12px"
                           :border-radius "4px"
                           :margin-bottom "12px"
-                          :color "#cb2431"
+                          :color "var(--color-danger-fg-alt)"
                           :font-size "13px"}}
             error])
 
@@ -236,11 +236,11 @@
                    :disabled loading?
                    :style {:width "100%"
                            :padding "8px 12px"
-                           :border "1px solid #d1d5da"
+                           :border "1px solid var(--color-border-control)"
                            :border-radius "4px"
                            :font-size "14px"
                            :box-sizing "border-box"}}]
-          [:span {:style {:font-size "11px" :color "#6a737d"}}
+          [:span {:style {:font-size "11px" :color "var(--color-fg-muted)"}}
            "A name to help you remember what this token is for"]]
 
          [:div {:style {:margin-bottom "16px"}}
@@ -258,22 +258,22 @@
                    :disabled loading?
                    :style {:width "100%"
                            :padding "8px 12px"
-                           :border "1px solid #d1d5da"
+                           :border "1px solid var(--color-border-control)"
                            :border-radius "4px"
                            :font-size "14px"
                            :font-family "monospace"
                            :box-sizing "border-box"}}]
-          [:span {:style {:font-size "11px" :color "#6a737d"}}
+          [:span {:style {:font-size "11px" :color "var(--color-fg-muted)"}}
            "Classic PAT or fine-grained token with repo access"]]
 
-         [:div {:style {:background "#f6f8fa"
-                        :border "1px solid #d1d5da"
+         [:div {:style {:background "var(--color-bg-subtle)"
+                        :border "1px solid var(--color-border-control)"
                         :border-radius "4px"
                         :padding "12px"
                         :margin-bottom "16px"}}
           [:p {:style {:margin "0 0 8px 0" :font-weight "600" :font-size "13px"}}
            "Create a token:"]
-          [:ol {:style {:margin "0" :padding-left "20px" :font-size "12px" :color "#6a737d"}}
+          [:ol {:style {:margin "0" :padding-left "20px" :font-size "12px" :color "var(--color-fg-muted)"}}
            [:li "Go to "
             [:a {:href "https://github.com/settings/tokens/new?scopes=repo&description=differ-access"
                  :target "_blank"
@@ -311,27 +311,27 @@
      (when visible?
        [:div.github-settings-content
         (when just-connected?
-          [:div {:style {:background "#dcffe4"
-                         :border "1px solid #28a745"
+          [:div {:style {:background "var(--color-success-subtle)"
+                         :border "1px solid var(--color-success-emphasis)"
                          :padding "8px 12px"
                          :border-radius "4px"
                          :margin-bottom "12px"
-                         :color "#22863a"
+                         :color "var(--color-success-fg-alt)"
                          :font-size "13px"}}
            "GitHub account connected successfully!"])
         (cond
           loading?
-          [:p {:style {:color "#6a737d" :margin "8px 0"}} "Loading..."]
+          [:p {:style {:color "var(--color-fg-muted)" :margin "8px 0"}} "Loading..."]
 
           (not (:configured status))
-          [:p {:style {:color "#6a737d" :margin "8px 0"}}
+          [:p {:style {:color "var(--color-fg-muted)" :margin "8px 0"}}
            "GitHub OAuth not configured. Set GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET environment variables."]
 
           :else
           [:div
            (when (seq tokens)
              [:div
-              [:p {:style {:color "#6a737d" :margin "0 0 8px 0" :font-size "12px"}}
+              [:p {:style {:color "var(--color-fg-muted)" :margin "0 0 8px 0" :font-size "12px"}}
                "Connected accounts have access to all repositories you can access on GitHub."]
               [:ul.token-list
                (for [token tokens]
@@ -346,9 +346,9 @@
              {:on-click #(rf/dispatch [:show-pat-modal])}
              "Add Personal Access Token"]]
            (when (seq tokens)
-             [:p {:style {:color "#6a737d" :margin "8px 0 0 0" :font-size "11px"}}
+             [:p {:style {:color "var(--color-fg-muted)" :margin "8px 0 0 0" :font-size "11px"}}
               "To add a different account, first log out of GitHub or use a private window."])
-           [:p {:style {:color "#6a737d" :margin "8px 0 0 0" :font-size "11px"}}
+           [:p {:style {:color "var(--color-fg-muted)" :margin "8px 0 0 0" :font-size "11px"}}
             "Use PATs to access repositories in organizations that restrict OAuth apps."]])
         [pat-modal]])]))
 
@@ -383,5 +383,5 @@
           [session-item session])])
 
      ;; GitHub settings at the bottom
-     [:div {:style {:margin-top "32px" :border-top "1px solid #e1e4e8" :padding-top "24px"}}
+     [:div {:style {:margin-top "32px" :border-top "1px solid var(--color-border)" :padding-top "24px"}}
       [github-settings]]]))
