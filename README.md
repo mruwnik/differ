@@ -76,7 +76,7 @@ node target/server.js
 
 Differ exposes an MCP endpoint at `http://localhost:8576/mcp` for AI agent integration.
 
-**Note:** Tool calls require a Bearer token, which clients obtain through the server's OAuth flow (`initialize` and `tools/list` work without one). By default the authorization endpoint approves every request without asking for credentials. This is intentional as local services are assumed to be secure. Don't expose it to the internet.
+**Note:** Tool calls require a Bearer token, which clients obtain through the server's OAuth flow (`initialize` and `tools/list` work without one). By default the authorization endpoint approves every request without asking for credentials, and any client can register itself, so by default the token check does not limit who can call tools: anyone who can reach the port can get a token. Set `DIFFER_AUTH_*` (below) to change that. This is intentional as local services are assumed to be secure. Don't expose it to the internet.
 
 **Optional login:** Set both `DIFFER_AUTH_USERNAME` and `DIFFER_AUTH_PASSWORD` (env vars or `.env`) to require a username/password before the authorization endpoint issues a token. When set, the OAuth authorize page shows a login form and only grants access after the credentials match. When unset, the auto-approve behavior above is used.
 
@@ -108,7 +108,7 @@ Or check a `.mcp.json` into the project root (Claude Code asks for approval befo
 }
 ```
 
-The bundled slash commands expect the server to be named `differ` (their tools are `mcp__differ__*`).
+The bundled slash commands expect the server to be named `differ` (their tools are `mcp__differ__*`). If you registered it as `differ-review` before, rename that entry to `differ` (or re-add it with the command above) or edit the prefix in the copied commands; otherwise their `allowed-tools` match nothing.
 
 **First use:** run `/mcp` in Claude Code, select `differ` and authenticate. Claude Code opens the server's authorization page in a browser; with the default settings it approves at once (with the optional login, enter the username and password). Access tokens issued by differ are valid for a year.
 
@@ -457,6 +457,7 @@ GitHub PR sessions and `request_review` need a GitHub token. Either create a Git
 
 - The server listens on all network interfaces (no host is configured), not only on localhost.
 - The web UI, the REST API under `/api` and the `/events` stream have no login. The optional `DIFFER_AUTH_*` login protects only the issuing of MCP tokens.
-- The server reads files of the repositories it reviews, runs `git` in them and can push branches with the stored GitHub tokens.
+- The server runs `git` in the repositories it reviews and can push branches with the stored GitHub tokens. Anyone who can reach the API can open a session on any git repository the server's user can read (`POST /api/sessions` or `get_or_create_session`) and read its files.
+- Web pages in your browser can reach it too. The API sends permissive CORS headers (`Access-Control-Allow-Origin: *`) and accepts form-encoded POSTs, so any website you visit while differ is running can read reviewed files and trigger actions such as comments, token changes and pushes. Binding, firewalling or an SSH tunnel does not prevent this.
 
-Run it on a trusted machine and network, block the port from other hosts with a firewall if the machine is shared or reachable from untrusted networks, and use an SSH tunnel (`ssh -L 8576:localhost:8576 host`) for remote access rather than exposing the port.
+Run it on a trusted machine and network, block the port from other hosts with a firewall if the machine is shared or reachable from untrusted networks, and use an SSH tunnel (`ssh -L 8576:localhost:8576 host`) for remote access rather than exposing the port. Stop it when you are not using it, since the browser risk above applies whenever it runs.
