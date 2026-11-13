@@ -861,7 +861,10 @@
                                 id project checkout))
         session-of (fn [comment-id]
                      (.-session_id (.get (.prepare raw-db "SELECT session_id FROM comments WHERE id = ?")
-                                         comment-id)))]
+                                         comment-id)))
+        branch-id (str "local:" (util/session-id "r" "main"))
+        github-id "github:o/r:1"
+        row-of (fn [id] (js->clj (.get (.prepare raw-db "SELECT * FROM sessions WHERE id = ?") id)))]
     (try
       (fs/mkdirSync checkout)
       (.pragma raw-db "foreign_keys = ON")
@@ -870,15 +873,33 @@
       (insert-session! (old-id "p") "p")
       (insert-session! (old-id "q") "q")
       (insert-session! (new-id "q" checkout) "q")
+      ;; decoys: a local branch session and a GitHub PR session, never re-keyed
+      (.run (.prepare raw-db "INSERT INTO sessions (id, session_type, project, branch,
+                                target_branch, repo_path, created_at, updated_at)
+                              VALUES (?, 'local', 'r', 'main', 'main', ?, 'x', 'x')")
+            branch-id checkout)
+      (.run (.prepare raw-db "INSERT INTO sessions (id, session_type, project, branch, target_branch,
+                                repo_path, github_owner, github_repo, github_pr_number,
+                                created_at, updated_at)
+                              VALUES (?, 'github', 'o/r', 'feature', 'main',
+                                      'https://github.com/o/r', 'o', 'r', 1, 'x', 'x')")
+            github-id)
       (.exec raw-db (str "INSERT INTO comments (id, session_id, text, author, created_at, updated_at)
                           VALUES ('c1', '" (old-id "p") "', 't', 'a', 'x', 'x'),
-                                 ('c2', '" (old-id "q") "', 't', 'a', 'x', 'x')"))
-      (db/run-migrations! raw-db)
-      (db/run-migrations! raw-db)
+                                 ('c2', '" (old-id "q") "', 't', 'a', 'x', 'x'),
+                                 ('c3', '" branch-id "', 't', 'a', 'x', 'x'),
+                                 ('c4', '" github-id "', 't', 'a', 'x', 'x')"))
+      (let [decoys-before (mapv row-of [branch-id github-id])]
+        (db/run-migrations! raw-db)
+        (db/run-migrations! raw-db)
+        (is (= decoys-before (mapv row-of [branch-id github-id]))
+            "branch and GitHub sessions are left as they are"))
       (let [ids (set (map #(.-id %) (.all (.prepare raw-db "SELECT id FROM sessions"))))]
-        (is (= #{(new-id "p" checkout) (old-id "q") (new-id "q" checkout)} ids))
+        (is (= #{(new-id "p" checkout) (old-id "q") (new-id "q" checkout) branch-id github-id} ids))
         (is (= (new-id "p" checkout) (session-of "c1")) "comments follow the session")
-        (is (= (old-id "q") (session-of "c2")) "a row whose new id is taken is left alone"))
+        (is (= (old-id "q") (session-of "c2")) "a row whose new id is taken is left alone")
+        (is (= branch-id (session-of "c3")) "branch session comments stay")
+        (is (= github-id (session-of "c4")) "GitHub session comments stay"))
       (finally
         (.close raw-db)
         (helpers/remove-dir dir)))))
