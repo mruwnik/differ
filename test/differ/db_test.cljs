@@ -154,15 +154,6 @@
   (let [^js stmt (.prepare *test-db* "SELECT * FROM users WHERE email = ?")]
     (row->user (.get stmt email))))
 
-(defn count-unresolved-comments
-  "Count all unresolved comments for a session (including replies).
-   This provides consistent semantics across local and GitHub sessions."
-  [session-id]
-  (let [^js stmt (.prepare *test-db*
-                           "SELECT COUNT(*) as count FROM comments
-                            WHERE session_id = ? AND resolved = 0")]
-    (.-count (.get stmt session-id))))
-
 ;; ============================================================================
 ;; Isolation Tests
 ;; ============================================================================
@@ -442,26 +433,27 @@
 
 (deftest count-unresolved-comments-test
   (testing "counts all unresolved comments"
-    (create-session! {:id "count-session" :project "p" :branch "b" :target-branch "main" :repo-path "/tmp"})
-    (is (= 0 (count-unresolved-comments "count-session")))
-    (create-comment! {:session-id "count-session" :file "a.cljs" :line 1 :line-content-hash "h" :text "comment 1" :author "a"})
-    (is (= 1 (count-unresolved-comments "count-session")))
-    (create-comment! {:session-id "count-session" :file "b.cljs" :line 2 :line-content-hash "h" :text "comment 2" :author "a"})
-    (is (= 2 (count-unresolved-comments "count-session"))))
+    (db/create-session! {:id "count-session" :project "p" :branch "b" :target-branch "main" :repo-path "/tmp"})
+    (is (= 0 (db/count-unresolved-comments "count-session")))
+    (db/create-comment! {:session-id "count-session" :file "a.cljs" :line 1 :text "comment 1" :author "a"})
+    (is (= 1 (db/count-unresolved-comments "count-session")))
+    (db/create-comment! {:session-id "count-session" :file "b.cljs" :line 2 :text "comment 2" :author "a"})
+    (is (= 2 (db/count-unresolved-comments "count-session"))))
 
   (testing "excludes resolved comments"
-    (create-session! {:id "resolved-test" :project "p" :branch "b" :target-branch "main" :repo-path "/tmp"})
-    (let [c1 (create-comment! {:session-id "resolved-test" :file "a.cljs" :line 1 :line-content-hash "h" :text "t" :author "a"})
-          _ (create-comment! {:session-id "resolved-test" :file "a.cljs" :line 2 :line-content-hash "h" :text "t" :author "a"})]
-      (resolve-comment! (:id c1))
-      (is (= 1 (count-unresolved-comments "resolved-test")))))
+    (db/create-session! {:id "resolved-test" :project "p" :branch "b" :target-branch "main" :repo-path "/tmp"})
+    (let [c1 (db/create-comment! {:session-id "resolved-test" :file "a.cljs" :line 1 :text "t" :author "a"})
+          _ (db/create-comment! {:session-id "resolved-test" :file "a.cljs" :line 2 :text "t" :author "a"})]
+      (db/resolve-comment! (:id c1))
+      (is (= 1 (db/count-unresolved-comments "resolved-test")))))
 
-  (testing "includes reply comments (counts all unresolved)"
-    (create-session! {:id "reply-test" :project "p" :branch "b" :target-branch "main" :repo-path "/tmp"})
-    (let [parent (create-comment! {:session-id "reply-test" :file "a.cljs" :line 1 :line-content-hash "h" :text "parent" :author "a"})]
-      (create-comment! {:session-id "reply-test" :parent-id (:id parent) :file "a.cljs" :line 1 :line-content-hash "h" :text "reply" :author "a"})
-      ;; Now counts both parent and reply (2 total)
-      (is (= 2 (count-unresolved-comments "reply-test"))))))
+  (testing "counts a thread once, not its replies"
+    (db/create-session! {:id "reply-test" :project "p" :branch "b" :target-branch "main" :repo-path "/tmp"})
+    (let [parent (db/create-comment! {:session-id "reply-test" :file "a.cljs" :line 1 :text "parent" :author "a"})]
+      (db/create-comment! {:session-id "reply-test" :parent-id (:id parent) :file "a.cljs" :line 1 :text "reply" :author "a"})
+      (is (= 1 (db/count-unresolved-comments "reply-test")))
+      (db/resolve-comment! (:id parent))
+      (is (= 0 (db/count-unresolved-comments "reply-test")) "replies of a resolved thread do not count"))))
 
 ;; ============================================================================
 ;; Board Status Tests - use boards-test fixture pattern

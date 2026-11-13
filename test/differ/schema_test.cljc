@@ -214,3 +214,15 @@
     (is (contains? (set schema/comment-keys) :session-id))
     (is (contains? (set schema/comment-keys) :file))
     (is (contains? (set schema/comment-keys) :line))))
+
+(deftest count-unresolved-threads-test
+  (let [flat [{:id "a" :resolved false}
+              {:id "a1" :parent-id "a" :resolved false}
+              {:id "b" :resolved true}
+              {:id "b1" :parent-id "b" :resolved false}]]
+    (testing "flat list: replies are not counted"
+      (is (= 1 (schema/count-unresolved-threads flat))))
+    (testing "threaded list gives the same count"
+      (is (= 1 (schema/count-unresolved-threads (schema/build-threads flat)))))
+    (testing "empty"
+      (is (= 0 (schema/count-unresolved-threads []))))))

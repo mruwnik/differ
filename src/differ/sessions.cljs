@@ -10,6 +10,7 @@
   (:require [differ.db :as db]
             [differ.git :as git]
             [differ.util :as util]
+            [differ.schema :as schema]
             [differ.config :as config]
             [differ.backend.protocol :as proto]
             [differ.backend.local :as local]
@@ -584,8 +585,7 @@
        :files files
        :excluded-files (:manual-removals session)
        :comments comments
-       ;; Count all unresolved including replies - consistent with GitHub sessions
-       :unresolved-count (count (remove :resolved comments))})))
+       :unresolved-count (schema/count-unresolved-threads comments)})))
 
 (defn archive-session!
   "Archive/delete a session and all its data."

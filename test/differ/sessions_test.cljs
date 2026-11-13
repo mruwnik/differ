@@ -5,9 +5,12 @@
             [differ.test-helpers :as helpers]
             [differ.util :as util]
             [differ.sessions :as sessions]
+            [differ.comments :as comments]
             [differ.github-oauth :as github-oauth]
             [differ.db]
             [differ.github-api :as gh-api]
+            [differ.backend.local :as local-be]
+            [differ.backend.protocol :as proto]
             ["path" :as path]))
 
 ;; ============================================================================
@@ -465,3 +468,52 @@
                            (restore)
                            (is false (str "unexpected error: " (.-message e)))
                            (done))))))))
+
+;; ============================================================================
+;; unresolved-count
+;; ============================================================================
+
+(deftest unresolved-count-counts-open-threads-not-replies-test
+  ;; Replies go through LocalBackend, the path REST and MCP use.
+  (async done
+    (let [repo (test-repo)
+          sid "local:unresolved-count"
+          _ (differ.db/create-session! {:id sid :session-type "local" :project "p"
+                                        :branch "main" :target-branch "main"
+                                        :repo-path repo})
+          backend (local-be/create-local-backend repo "main" sid "main")
+          add! (fn [parent-id]
+                 (.then (proto/add-comment! backend {:parent-id parent-id
+                                                     :file "README.md" :line 1
+                                                     :text "t" :author "a"})
+                        (fn [c] (:id c))))
+          ids (atom {})
+          count-now (fn []
+                      [(:unresolved-count (first (sessions/list-sessions)))
+                       (:unresolved-count (sessions/get-session sid))
+                       (:unresolved-count (sessions/get-review-state sid repo))])]
+      (-> (add! nil)
+          (.then (fn [id] (swap! ids assoc :resolved-root id) (add! id)))
+          (.then (fn [id] (swap! ids assoc :reply id) (add! (:resolved-root @ids))))
+          (.then (fn [_] (add! nil)))
+          (.then (fn [id] (swap! ids assoc :open-root id) (add! id)))
+          (.then (fn [_]
+                   (comments/resolve-comment! (:resolved-root @ids) "a")
+                   (testing "replies are not counted; a resolved thread's replies are not counted"
+                     (is (= [1 1 1] (count-now))))
+                   (add! (:resolved-root @ids))))
+          (.then (fn [_]
+                   (testing "a reply to a resolved thread reopens it and counts it once"
+                     (is (= [2 2 2] (count-now))))
+                   (comments/resolve-comment! (:resolved-root @ids) "a")
+                   (add! (:reply @ids))))
+          (.then (fn [_]
+                   (testing "a reply to a reply reopens the thread root"
+                     (is (false? (:resolved (differ.db/get-comment (:resolved-root @ids)))))
+                     (is (= [2 2 2] (count-now))))
+                   (comments/resolve-comment! (:resolved-root @ids) "a")
+                   (comments/resolve-comment! (:open-root @ids) "a")
+                   (testing "resolving every thread brings the count to zero"
+                     (is (= [0 0 0] (count-now))))))
+          (.catch (fn [e] (is false (str "unexpected error: " (.-message e)))))
+          (.finally done)))))

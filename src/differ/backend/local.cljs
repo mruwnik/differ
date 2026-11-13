@@ -392,6 +392,9 @@
            source (source-branch-arg repo-path branch)
            line-hash (when (and file line)
                        (compute-line-hash repo-path source file line))]
+       ;; A reply reopens its thread, so it shows up in the unresolved count
+       (when parent
+         (db/reopen-thread! parent-id))
        (db/create-comment!
         {:session-id (proto/session-id this)
          :parent-id parent-id
