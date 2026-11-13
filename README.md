@@ -83,7 +83,7 @@ Differ exposes an MCP endpoint at `http://localhost:8576/mcp` for AI agent integ
 > **Scope of the optional login — read before relying on it.** These credentials gate **only the MCP OAuth flow** — i.e. who can complete `/oauth/authorize` to obtain a Bearer token for the `/mcp` endpoint. They do **not** protect the web UI or its REST API:
 >
 > - The web UI (served at `/`) and every `/api/*` route are **unauthenticated**. Anyone who can reach the port can browse diffs, read file contents, and add/resolve comments and board tasks without a password.
-> - The login is not a network boundary. Regardless of whether it is set, do **not** expose the server to the internet — bind it to localhost/trusted networks (or put it behind your own authenticating reverse proxy / VPN if you need remote access).
+> - The login is not a network boundary. Regardless of whether it is set, do **not** expose the server to the internet — keep it on localhost/trusted networks; it has no host setting and listens on all interfaces (see [Security notes](#security-notes)), so use a firewall (or put it behind your own authenticating reverse proxy / VPN if you need remote access).
 >
 > In short: the optional login raises the bar for issuing MCP tokens; it is not a substitute for keeping the server off untrusted networks.
 
