@@ -56,6 +56,14 @@
      :save-theme choice
      :apply-theme (resolve-theme choice (:system-dark? db))}))
 
+(defn stored-elsewhere
+  "Effects for another tab storing a choice: show it, but don't store it
+   again."
+  [db choice]
+  (let [choice (normalize-choice choice)]
+    {:db (assoc db :theme choice)
+     :apply-theme (resolve-theme choice (:system-dark? db))}))
+
 (defn system-changed
   "Effects for the OS color scheme changing."
   [db dark?]
@@ -81,6 +89,14 @@
   [on-change]
   (when-let [query (dark-query)]
     (.addEventListener query "change" #(on-change (.-matches %)))))
+
+(defn watch-storage!
+  "Call `on-change` with the new choice when another tab stores one."
+  [on-change]
+  (.addEventListener js/window "storage"
+                     (fn [^js e]
+                       (when (= storage-key (.-key e))
+                         (on-change (normalize-choice (.-newValue e)))))))
 
 (defn apply-theme! [theme]
   (.setAttribute (.-documentElement js/document) "data-theme" theme))

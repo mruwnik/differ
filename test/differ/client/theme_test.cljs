@@ -106,3 +106,14 @@
     (is (= "dark" (:apply-theme (theme/system-changed (assoc db/default-db :theme "dark") false)))))
   (testing "an OS change never touches the stored choice"
     (is (not (contains? (theme/system-changed db/default-db true) :save-theme)))))
+
+(deftest stored-elsewhere-test
+  (testing "a choice stored in another tab is shown, not stored again"
+    (let [fx (theme/stored-elsewhere (assoc db/default-db :theme "light" :system-dark? false) "dark")]
+      (is (= "dark" (get-in fx [:db :theme])))
+      (is (= "dark" (:apply-theme fx)))
+      (is (not (contains? fx :save-theme)))))
+  (testing "system follows this tab's OS setting; a removed or junk value means system"
+    (is (= "dark" (:apply-theme (theme/stored-elsewhere (assoc db/default-db :system-dark? true) "system"))))
+    (is (= "system" (get-in (theme/stored-elsewhere db/default-db nil) [:db :theme])))
+    (is (= "system" (get-in (theme/stored-elsewhere db/default-db "neon") [:db :theme])))))

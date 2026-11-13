@@ -58,6 +58,11 @@
    (theme/select-choice db choice)))
 
 (rf/reg-event-fx
+ :theme-stored-elsewhere
+ (fn [{:keys [db]} [_ choice]]
+   (theme/stored-elsewhere db choice)))
+
+(rf/reg-event-fx
  :system-theme-changed
  (fn [{:keys [db]} [_ dark?]]
    (theme/system-changed db dark?)))

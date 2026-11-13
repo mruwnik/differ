@@ -55,6 +55,7 @@
 (defn init []
   (rf/dispatch-sync [:initialize])
   (theme/watch-system! #(rf/dispatch [:system-theme-changed %]))
+  (theme/watch-storage! #(rf/dispatch [:theme-stored-elsewhere %]))
   (setup-popstate-handler)
   ;; Navigate based on current URL
   (let [{:keys [page session-id board-repo]} (parse-route)]
