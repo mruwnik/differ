@@ -754,6 +754,11 @@
       (is (contains? props :status))
       (is (contains? props :move_to)))))
 
+(deftest create-task-tool-unknown-board-test
+  (testing "create_task with a key that is not an absolute path errors, as over REST"
+    (is (thrown-with-msg? js/Error #"No board found for repo"
+                          (mcp/handle-tool "create_task" {:repo-path "not-a-board" :title "t"})))))
+
 ;; NOTE: this exercises the handler's argument pass-through via with-redefs
 ;; stubs on boards/take-task! and boards/get-board rather than real DB
 ;; writes — mcp_test's with-test-env fixture does not wire

@@ -787,3 +787,10 @@
     {}
     {:title ""}
     {:title "   "}))
+
+(deftest create-board-task-handler-unknown-board-test
+  (let [board (boards/get-or-create-board! "/tmp/api-create-known")
+        {:keys [status data]} (call-create-board-task (:id board) {:title "t"})]
+    (is (= 404 status))
+    (is (re-find #"No board found for repo" (str (:error data))))
+    (is (= [(:id board)] (mapv :id (boards/list-boards))))))

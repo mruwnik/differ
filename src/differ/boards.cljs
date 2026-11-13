@@ -3,7 +3,8 @@
   (:require [clojure.string :as str]
             [differ.config :as config]
             [differ.db :as db]
-            [differ.util :as util]))
+            [differ.util :as util]
+            ["path" :as path]))
 
 ;; ============================================================================
 ;; Row converters
@@ -480,6 +481,17 @@
     (.run stmt id repo-path (db/statuses-json db/default-board-statuses) now now)
     (get-board-by-repo repo-path)))
 
+(defn- board-for-new-task!
+  "Board for repo-path, created if needed. Only an absolute path creates a
+   board, so an unknown key (such as a board id) is an error."
+  [repo-path]
+  (or (get-board-by-repo repo-path)
+      (when (and (string? repo-path) (path/isAbsolute repo-path))
+        (get-or-create-board! repo-path))
+      (throw (ex-info (str "No board found for repo: " repo-path
+                           " (a new board needs an absolute repo path)")
+                      {:not-found true}))))
+
 ;; ============================================================================
 ;; Task operations
 ;; ============================================================================
@@ -649,7 +661,7 @@
     (mapv row->claim-event (.all stmt task-id))))
 
 (defn create-task!
-  "Create a task, auto-creating board for repo-path if needed.
+  "Create a task, auto-creating board for an absolute repo-path if needed.
    Accepts optional :blocked-by vector of task IDs, :priority (integer,
    higher = more urgent, default 0), :tags (seq of strings), :assignee
    (agent name; only that agent may claim the task), :checklist (seq of
@@ -659,7 +671,7 @@
   [{:keys [repo-path title description blocked-by priority tags assignee checklist add-commits parent-id]}]
   (validate-priority priority)
   (let [blocked-by (mapv resolve-task-id blocked-by)
-        board (get-or-create-board! repo-path)
+        board (board-for-new-task! repo-path)
         id (util/gen-uuid)
         now (util/now-iso)
         parent-id (resolve-parent-id parent-id)

@@ -926,7 +926,8 @@
           (sse/broadcast-all! :task-created {:task task :repo-path repo-path})
           (json-response res {:task task}))
         (catch :default e
-          (error-response res 400 (or (ex-message e) (.-message e))))))))
+          (error-response res (if (:not-found (ex-data e)) 404 400)
+                          (or (ex-message e) (.-message e))))))))
 
 (defn update-task-api-handler
   "PATCH /api/tasks/:id"
