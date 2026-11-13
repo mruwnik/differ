@@ -15,20 +15,17 @@
 
 ;; Git command execution (sync version for local checks)
 
-(defn- exec-sync
-  "Execute command synchronously, return stdout or nil on error."
-  [cmd opts]
+(defn- exec-git
+  "Execute git command in given directory, return trimmed stdout or nil on
+   error. Uses spawnSync with an args array (no shell)."
+  [repo-path & args]
   (try
-    (let [result (cp/execSync cmd (clj->js (merge {:encoding "utf8"} opts)))]
-      (str/trim result))
+    (let [result (cp/spawnSync "git" (clj->js (vec args))
+                               #js {:cwd repo-path :encoding "utf8"})]
+      (when (zero? (.-status result))
+        (str/trim (.-stdout result))))
     (catch :default _e
       nil)))
-
-(defn- exec-git
-  "Execute git command in given directory."
-  [repo-path & args]
-  (let [cmd (str "git " (str/join " " args))]
-    (exec-sync cmd {:cwd repo-path})))
 
 (defn normalize-pr-state
   "Normalize PR state to lowercase string, defaulting to 'open'.

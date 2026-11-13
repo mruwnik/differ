@@ -3,7 +3,9 @@
   (:require [clojure.test :refer [deftest testing is use-fixtures]]
             [clojure.string :as str]
             [differ.git :as git]
-            [differ.test-helpers :as helpers]))
+            [differ.test-helpers :as helpers]
+            ["fs" :as fs]
+            ["path" :as path]))
 
 ;; ============================================================================
 ;; Pure Function Tests - parse-diff-hunks
@@ -286,3 +288,36 @@ diff --git a/file2.txt b/file2.txt
     (let [project-id (git/get-project-id *test-repo*)]
       (is (string? project-id))
       (is (str/includes? project-id "differ-test-repo")))))
+
+;; ============================================================================
+;; Argument handling - refs and paths reach git as plain arguments
+;; ============================================================================
+
+(deftest shell-metacharacters-not-executed-test
+  (let [dir (helpers/create-temp-dir "differ-marker")
+        marker (path/join dir "marker")]
+    (try
+      (testing "branch names are not run through a shell"
+        (git/get-diff *test-repo* (str "main;touch " marker ";"))
+        (git/get-diff *test-repo* "main" (str "HEAD$(touch " marker ")"))
+        (git/get-changed-files *test-repo* (str "main`touch " marker "`"))
+        (git/get-file-content *test-repo* (str "main;touch " marker ";") "README.md")
+        (is (not (fs/existsSync marker))))
+
+      (testing "file paths are not run through a shell"
+        (git/stage-file! *test-repo* (str "$(touch " marker ")"))
+        (git/get-file-diff *test-repo* "main" (str "x\";touch " marker ";\""))
+        (is (not (fs/existsSync marker))))
+      (finally
+        (helpers/remove-dir dir)))))
+
+(deftest stage-file-special-characters-test
+  (testing "stages a file whose name contains spaces and shell characters"
+    (helpers/add-test-file *test-repo* "odd name $HOME.txt" "content")
+    (git/stage-file! *test-repo* "odd name $HOME.txt")
+    (is (contains? (git/get-staged-files *test-repo*) "odd name $HOME.txt")))
+
+  (testing "stages a file whose name starts with '-'"
+    (helpers/add-test-file *test-repo* "-dash.txt" "content")
+    (git/stage-file! *test-repo* "-dash.txt")
+    (is (contains? (git/get-staged-files *test-repo*) "-dash.txt"))))

@@ -75,21 +75,26 @@
 ;; These functions need repo-path + target-branch, so they call git directly
 ;; using the local backend's internal functions
 
-(defn- exec-sync
-  "Execute command synchronously, return stdout or nil on error."
-  [cmd opts]
-  (try
-    (let [result (cp/execSync cmd (clj->js (merge {:encoding "utf8"} opts)))]
-      (str/trim result))
-    (catch :default e
-      (js/console.warn "[git] Command failed:" cmd (.-message e))
-      nil)))
-
 (defn- exec-git
-  "Execute git command in given directory."
+  "Execute git command in given directory, return trimmed stdout or nil on
+   error. Uses spawnSync with an args array (no shell), so branch names and
+   paths are never interpreted by a shell."
   [repo-path & args]
-  (let [cmd (str "git " (str/join " " args))]
-    (exec-sync cmd {:cwd repo-path})))
+  (try
+    (let [result (cp/spawnSync "git" (clj->js (vec args))
+                               #js {:cwd repo-path
+                                    :encoding "utf8"
+                                    :maxBuffer (* 50 1024 1024)})]  ; 50MB buffer
+      (if (zero? (.-status result))
+        (str/trim (.-stdout result))
+        (do
+          (js/console.warn "[git] Command failed:" (pr-str args)
+                           (or (some-> (.-error result) .-message)
+                               (str/trim (or (.-stderr result) ""))))
+          nil)))
+    (catch :default e
+      (js/console.warn "[git] Command failed:" (pr-str args) (.-message e))
+      nil)))
 
 (defn get-staged-files
   "Get list of files that are staged for commit."
@@ -108,7 +113,7 @@
 (defn stage-file!
   "Stage a file for commit (git add)."
   [repo-path file-path]
-  (exec-git repo-path "add" (str "\"" file-path "\"")))
+  (exec-git repo-path "add" "--" file-path))
 
 (defn branch-exists?
   "Check if a branch exists."
